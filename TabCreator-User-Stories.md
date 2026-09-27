@@ -14,7 +14,7 @@ Implement stories in ID order; each lists its dependencies, the files to touch, 
 - Engine: Rust stable, `wasm-bindgen`, `wasm-pack build --target web`, `rustfft`. No other runtime crates without a note in the PR.
 - Tests: Vitest (unit, jsdom), `cargo test` (engine), Playwright (e2e on Chromium, Firefox, WebKit), `@axe-core/playwright`.
 - Tooling: pnpm, ESLint + Prettier, `rustfmt` + `clippy -D warnings`, GitHub Actions.
-- No backend, no analytics, no telemetry, no network calls at runtime.
+- No backend, no analytics, no telemetry, no network calls at runtime. (NFR-06 permits opt-in, anonymous crash reporting; it is not built in v1.)
 
 **Repository layout**
 
@@ -66,6 +66,7 @@ export interface Take {
   tuning: 'EADGBE'; micLabel: string;
   audioMime: string | null;     // null when audio deleted
   trimStartMs: number; trimEndMs: number | null;
+  countInBpm?: number;          // set only when the take was recorded with a count-in; drives bar lines
   settings: AnalysisSettings; analysisVersion: string | null;
   updatedAt: string;
 }
@@ -107,11 +108,11 @@ Epics 0–6 deliver the core record → analyze → edit loop; Epics 7–8 make 
 | 0 Project foundation | A running app, engine build, storage and test harness | US-0.1 – US-0.4 | NFR-06, NFR-12 |
 | 1 Microphone setup | Get clean, unprocessed audio from the right mic | US-1.1 – US-1.3 | FR-01, FR-03, FR-19 |
 | 2 Tuner | Guitar is in standard tuning before recording | US-2.1 | FR-02 |
-| 3 Recording | Capture a take that is never lost | US-3.1 – US-3.4 | FR-04, FR-05, FR-18, NFR-11 |
+| 3 Recording | Capture a take that is never lost | US-3.1 – US-3.4 | FR-04, FR-05, FR-18, FR-20, NFR-11 |
 | 4 Note detection | Turn audio into timed, pitched notes | US-4.1 – US-4.6 | FR-06, FR-07, FR-16, FR-17, NFR-01, NFR-02, NFR-04 |
 | 5 Fret mapping | Pick a playable string and fret per note | US-5.1 – US-5.2 | FR-08, NFR-03 |
-| 6 Tab view and editor | Show, correct and play back the tab | US-6.1 – US-6.5 | FR-09 – FR-13, NFR-05 |
-| 7 Library and export | Keep, find and share takes | US-7.1 – US-7.3 | FR-14, FR-15, NFR-09 |
+| 6 Tab view and editor | Show, correct and play back the tab | US-6.1 – US-6.5 | FR-09 – FR-13, FR-20, NFR-05 |
+| 7 Library and export | Keep, find and share takes | US-7.1 – US-7.3 | FR-14, FR-15, FR-20, NFR-09 |
 | 8 Offline, accessibility, quality | Works offline, for everyone, in every target browser | US-8.1 – US-8.4 | NFR-01 – NFR-10 |
 
 ## Epic 0 — Project foundation
@@ -388,27 +389,28 @@ Priority: Must · Covers: NFR-11 · Depends on: US-3.1
 
 ### US-3.3 Count-in
 
-**As a** guitarist **I want** an optional count-in at my tempo **so that** I can start playing on time after pressing Record.
+**As a** guitarist **I want** an optional count-in at my tempo **so that** I can start playing on time after pressing Record, and my tab gets bar lines.
 
-Priority: Should · Covers: FR-05 · Depends on: US-3.1
+Priority: Should · Covers: FR-05, FR-20 · Depends on: US-3.1
 
 **Implementation notes**
 
 - Record screen controls: "Count-in" toggle (default off) and tempo field 40–240 BPM (default 100), both persisted in `localStorage`.
 - `metronome.ts` schedules 4 clicks on the AudioContext clock: 30 ms sine bursts, 1500 Hz on beat 1, 1000 Hz on beats 2–4, −12 dBFS. A large beat number (4-3-2-1) is shown visually as well.
-- Capture starts at the scheduled time of the fifth beat so the clicks are not in the take. No metronome plays during the recording (rhythm is out of scope).
+- Capture starts at the scheduled time of the fifth beat so the clicks are not in the take, so take time 0 is the downbeat of bar 1. No metronome plays during the recording.
 - Esc or clicking Record again during the count-in cancels it.
-- Store the tempo on the take for later phases (`countInBpm?: number` — add to `Take` as optional).
+- Store the tempo on the take as `countInBpm` when the take is created (so recovered takes keep it); leave it unset when count-in is off. US-6.1 uses it to draw bar lines.
 
 **Acceptance criteria**
 
 - [ ] With count-in on, recording starts exactly 4 beats after the click (±20 ms of scheduled time).
 - [ ] No click sound is present in the recorded audio.
 - [ ] Cancelling during the count-in creates no take.
+- [ ] A take recorded with count-in stores `countInBpm`; a take recorded without it has none.
 
 **Tests**
 
-- Vitest: beat schedule for 40, 100 and 240 BPM.
+- Vitest: beat schedule for 40, 100 and 240 BPM; `countInBpm` set only when count-in is on.
 - Playwright: with count-in at 120 BPM the take's start timestamp is 2.0 s after the click.
 
 ### US-3.4 Trim a recording
@@ -650,18 +652,19 @@ The player sees the tab, hears the take with a cursor following along, and fixes
 
 ### US-6.1 ASCII tab layout
 
-**As a** guitarist **I want** my notes laid out as standard six-line tab **so that** I can read it like any tab online.
+**As a** guitarist **I want** my notes laid out as standard six-line tab, with bar lines when I used a count-in, **so that** I can read it like any tab online.
 
-Priority: Must · Covers: FR-09 · Depends on: US-0.1
+Priority: Must (layout, FR-09) / Should (bar lines, FR-20) · Covers: FR-09, FR-20 · Depends on: US-0.1, US-3.3 (bar lines only)
 
 **Implementation notes**
 
-- `tab-render.ts` is a pure function `layoutTab(notes, widthChars): TabLayout` used by both the screen and the text export.
+- `tab-render.ts` is a pure function `layoutTab(notes, widthChars, countInBpm?): TabLayout` used by both the screen and the text export.
 - Lines top to bottom: `e|`, `B|`, `G|`, `D|`, `A|`, `E|`, each ending in `|`.
 - Notes in `startMs` order. Each note occupies its fret digits (1 or 2 characters) on its string; the other five strings get `-` of the same width.
 - Spacing after each note = `clamp(round(ioi / 125 ms), 1, 8)` dashes, where `ioi` is the time to the next note's start; the last note gets one dash. Each line starts with one dash after `|` and ends with three dashes before the closing `|`.
-- Wrap into systems so each line (including the 2-character prefix and closing `|`) ≤ `widthChars`; never split a note; one blank line between systems.
-- `TabLayout` = `{systems: [{lines: string[6], cells: [{noteId, col, width, string}]}]}` so the UI can place interactive elements exactly over the characters.
+- Bar lines (only when `countInBpm` is set): 4/4, bar length `barMs = 4 × 60000 / countInBpm`, boundaries at `n × barMs` (n ≥ 1) in take time (untrimmed, so trimming never moves them). For each boundary `b`, draw `|` on all six lines followed by one dash, placed after the spacing dashes of the last note starting before `b` (a note starting exactly on `b` comes after the bar line). Every boundary crossed gets its own bar line, so empty bars stay visible. Omit boundaries after the last note. Without `countInBpm`, no bar lines.
+- Wrap into systems so each line (including the 2-character prefix and closing `|`) ≤ `widthChars`; never split a note; prefer breaking at a bar line; a bar line at a break is dropped (the system edge stands in for it); one blank line between systems.
+- `TabLayout` = `{systems: [{lines: string[6], cells: [{noteId, col, width, string}], barCols: number[]}]}` so the UI can place interactive elements exactly over the characters.
 - `toText(take, notes)` for export: header `TabCreator — <title>`, `Tuning: E A D G B E (standard)`, `Recorded: <YYYY-MM-DD HH:mm>`, blank line, then systems at width 80.
 
 **Acceptance criteria**
@@ -669,10 +672,12 @@ Priority: Must · Covers: FR-09 · Depends on: US-0.1
 - [ ] The sample phrase from the requirements doc, with notes 125 ms apart, renders exactly as shown there (golden test).
 - [ ] Two-digit frets align all six lines.
 - [ ] No line exceeds `widthChars`; no note is split across systems.
+- [ ] With `countInBpm` 120, a bar line appears at every 2.0 s boundary between the correct notes; a note starting exactly on a boundary sits after it.
+- [ ] Without `countInBpm`, every existing golden output is unchanged.
 
 **Tests**
 
-- Vitest golden tests: empty tab, single note, the sample phrase, frets 10–24, 200 notes wrapped at 80 and at 40.
+- Vitest golden tests: empty tab, single note, the sample phrase, frets 10–24, 200 notes wrapped at 80 and at 40; the sample phrase with `countInBpm` 240 (bar line before the note at 1000 ms); a gap spanning two empty bars; a wrap falling on a bar line.
 
 ### US-6.2 Tab screen with confidence highlights
 
@@ -816,6 +821,7 @@ Priority: Must · Covers: FR-15 · Depends on: US-6.1, US-6.2
 **Implementation notes**
 
 - Copy: `navigator.clipboard.writeText(toText(take, notes))`; toast "Tab copied". Shortcut Ctrl/Cmd+Shift+C on the Tab screen.
+- `toText` passes `take.countInBpm` to `layoutTab`, so exported text carries the same bar lines as the screen (FR-20).
 - Download: `Blob` of the same text, `text/plain;charset=utf-8`, file name `<title-slug>.txt` (lowercase, a–z0–9 and hyphens, max 60 chars, fallback `tab.txt`), via a temporary `<a download>`.
 - Line endings `\r\n` when `navigator.platform`/`userAgentData` indicates Windows, else `\n`.
 
@@ -824,10 +830,11 @@ Priority: Must · Covers: FR-15 · Depends on: US-6.1, US-6.2
 - [ ] Copied text equals the downloaded file contents (except line endings).
 - [ ] The text opens correctly in Notepad and TextEdit with columns aligned in a monospace font.
 - [ ] Titles with emoji or slashes produce valid file names.
+- [ ] A take recorded with count-in exports with the same bar lines as shown on screen.
 
 **Tests**
 
-- Vitest: slug function; `toText` golden file.
+- Vitest: slug function; `toText` golden files with and without `countInBpm`.
 - Playwright: intercept the download and compare with clipboard contents (Chromium clipboard permission granted).
 
 ### US-7.3 Durable storage and library backup
@@ -939,7 +946,7 @@ Priority: Must · Covers: NFR-01, NFR-02, NFR-03 · Depends on: US-4.4, US-5.1
 **Implementation notes**
 
 - `engine/tests/fixtures.rs` runs the full `analyze` + `map_frets` on every fixture in `testdata/synth` and `testdata/real` and computes: note F1 (onset ±50 ms, exact MIDI), octave-error rate, and string/fret agreement.
-- Thresholds: synth clean F1 ≥ 0.95, synth noisy F1 ≥ 0.90, octave errors ≤ 2%, fret agreement ≥ 80%. `testdata/real` (human recordings, added as they are made) reports but does not fail until it holds ≥ 20 takes from ≥ 3 players.
+- Thresholds: synth clean F1 ≥ 0.95, synth noisy F1 ≥ 0.90, octave errors ≤ 2%, fret agreement ≥ 80%. `testdata/real` (human recordings, added as they are made) reports but does not fail until it holds ≥ 20 takes; a single player (the project owner) records them all.
 - Write `accuracy-report.md` as a CI artifact with a per-fixture table and the change against `main`.
 - Fail CI if any metric drops by more than 1 percentage point from `main`, even if still above the threshold.
 
@@ -977,6 +984,7 @@ Every requirement is covered by at least one story.
 | FR-17 Re-analysis | US-4.6 |
 | FR-18 Trim | US-3.4 |
 | FR-19 Choose microphone | US-1.2 |
+| FR-20 Bar lines from count-in | US-3.3, US-6.1, US-7.2 |
 | NFR-01 Note accuracy | US-4.4, US-8.4 |
 | NFR-02 Octave errors | US-4.2, US-4.4, US-8.4 |
 | NFR-03 Fret-choice accuracy | US-5.1, US-8.4 |

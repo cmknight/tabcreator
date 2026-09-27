@@ -1,0 +1,23 @@
+# Detection pipeline and fret mapping
+
+Exact parameters, cost weights and sensitivity mapping: stories US-4.1–US-4.6, US-5.1–US-5.2.
+
+## Audio to notes
+
+1. **Pre-process** — downmix to mono, resample to 22.05 kHz, high-pass at 70 Hz, normalize level.
+2. **Pitch tracking** — pYIN pitch + voicing probability per ~10 ms frame, limited to 75–1400 Hz.
+3. **Onset detection** — spectral flux marks each pick, including repeated same-pitch notes; pitch-change onsets added for weak legato attacks.
+4. **Note building** — frames between onsets merge into one note: median pitch rounded to nearest semitone, start, end, confidence.
+5. **Clean-up** — drop notes < 40 ms or below confidence threshold; fix octave jumps that disagree with neighbours; flag doubtful notes for review (CAP-13).
+
+## Notes to string and fret
+
+Open strings: E2 82.4 Hz, A2 110 Hz, D3 146.8 Hz, G3 196 Hz, B3 246.9 Hz, E4 329.6 Hz. Most pitches are playable in 2–5 places, so mapping is a shortest-path (Viterbi) problem across the whole take:
+
+- Each candidate (string, fret) for a note is a state.
+- Transition cost grows with hand-shift fret distance, string skips, and stretches beyond 4 frets.
+- Small biases prefer frets 0–12, and open strings when surrounding notes are low on the neck.
+- The cheapest path is the default tab.
+- A user-moved note is locked; the rest of its phrase is re-optimized around it.
+
+Cost weights are tuned against the NFR-03 test set.

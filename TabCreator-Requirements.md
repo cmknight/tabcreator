@@ -15,10 +15,11 @@ v1 is record-then-analyze: the player records a take, stops, and gets a tab they
 | Timing | Analyze after recording stops | Live preview while playing |
 | Instrument | 6-string guitar, standard tuning (E A D G B E), no capo | Alternate tunings, capo, 7-string, bass |
 | String/fret choice | Automatic, optimized for playability; user can override | Hand-position hint ("I'm at fret 5") |
-| Output | ASCII tab, editable in the app | Rhythm notation, Guitar Pro / MusicXML export |
+| Input | Microphone only | Electric guitar through an audio interface |
+| Output | ASCII tab with bar lines from the count-in tempo, editable in the app | Full rhythm notation (note durations), Guitar Pro / MusicXML export |
 | Storage | In the browser only; no accounts, no server | Optional cloud sync |
 
-**Out of scope for v1:** chord recognition, rhythm/duration notation, techniques (bends, slides, hammer-ons), importing audio files, and sharing to other users.
+**Out of scope for v1:** chord recognition, rhythm/duration notation beyond count-in bar lines, audio-interface input, techniques (bends, slides, hammer-ons), importing audio files, and sharing to other users.
 
 ## Users and user journey
 
@@ -55,7 +56,8 @@ Priorities use MoSCoW: Must ships in v1, Should is v1 if time allows, Could is a
 | FR-16 | Sensitivity setting (noise gate) for noisy rooms | Should |
 | FR-17 | Re-run analysis on a saved recording with different settings | Could |
 | FR-18 | Trim the start/end of a recording before analysis | Could |
-| FR-19 | Choose the input device when more than one microphone or audio interface is connected | Should |
+| FR-19 | Choose the microphone when more than one is connected | Should |
+| FR-20 | Show bar lines in the tab from the count-in tempo (4/4) when the take was recorded with a count-in | Should |
 
 ## Non-functional requirements
 
@@ -66,7 +68,7 @@ Priorities use MoSCoW: Must ships in v1, Should is v1 if time allows, Could is a
 | NFR-03 | Accuracy | Default string/fret choice matches a human transcriber's in ≥ 80% of notes on the test set |
 | NFR-04 | Performance | Analysis of a 60 s take completes in ≤ 2 s on a 2022 mid-range laptop |
 | NFR-05 | Performance | Tab editor responds to a click or keystroke in ≤ 100 ms |
-| NFR-06 | Privacy | All audio processing in the browser; no audio, tab or analytics data leaves the machine without explicit opt-in |
+| NFR-06 | Privacy | All audio processing in the browser; no audio, tab or analytics data leaves the machine without explicit opt-in. Opt-in, anonymous crash reporting is permitted |
 | NFR-07 | Offline | Every feature works with no network after first load (installable PWA with offline cache) |
 | NFR-08 | Browsers | Last 2 versions of Chrome, Edge, Safari and Firefox on Windows and macOS |
 | NFR-09 | Storage | A 5-minute take uses ≤ 5 MB (compressed audio); user can delete audio and keep the tab |
@@ -119,7 +121,7 @@ Weights for these costs are tuned against the test set in NFR-03.
 
 ## Tab format and data model
 
-The tab is always rendered from a structured note list, so edits change data, not text. v1 shows notes in played order with spacing roughly proportional to time; rhythm values come in a later phase.
+The tab is always rendered from a structured note list, so edits change data, not text. v1 shows notes in played order with spacing roughly proportional to time. When the take was recorded with a count-in, bar lines are drawn from its tempo (4/4, bar 1 at the start of the take, FR-20); note durations come in a later phase.
 
 ```
 e|-----------------0-3-5-3-0--------|
@@ -132,10 +134,10 @@ E|----------------------------------|
 
 | Entity | Key fields |
 | --- | --- |
-| Take | id, title, createdAt, durationMs, audioRef, sampleRate, tuning ("EADGBE"), analysisVersion |
+| Take | id, title, createdAt, durationMs, audioRef, sampleRate, tuning ("EADGBE"), analysisVersion, countInBpm (optional) |
 | Note | id, takeId, startMs, endMs, midiPitch, string (1–6), fret (0–24), confidence (0–1), lockedByUser |
-| AnalysisSettings | sensitivity, minNoteMs, confidenceThreshold, maxFret |
-| Edit | id, takeId, type (fret, string, insert, delete), before, after, timestamp — for undo/redo |
+| AnalysisSettings | sensitivity, minNoteMs, maxFret (confidence threshold is derived from sensitivity) |
+| Edit | type (fret, string, insert, delete), before, after — held in memory for undo/redo during the session; not saved |
 
 The `.txt` export wraps at 80 characters per line and includes a header with the title, tuning and date. Storing `analysisVersion` lets a later, better engine re-analyze old takes without losing user edits to locked notes.
 
@@ -150,10 +152,12 @@ The `.txt` export wraps at 80 characters per line and includes a header with the
 | Browser storage can be cleared by the user or evicted | Saved takes lost | Request persistent storage; offer export of the whole library as a file |
 | Polyphonic (chord) phase is much harder | Phase 2 slips | Keep the engine modular; prototype Basic Pitch early |
 
-**Open questions**
+**Resolved questions**
 
-- [ ] Is opt-in, anonymous crash reporting acceptable under the privacy promise?
-- [ ] Should electric guitar through an audio interface be supported in v1, or microphone only?
-- [ ] Accuracy test set: who records it, and how many takes and players are enough?
-- [ ] Brand name and trademark check for "TabCreator".
-- [ ] Should v1 include a basic rhythm hint (bar lines from the count-in tempo), or pure note order?
+- [x] Opt-in, anonymous crash reporting is acceptable under the privacy promise (permitted, not required for v1).
+- [x] Microphone only in v1; audio-interface input is a later phase.
+- [x] The project owner records the accuracy test set; one player is enough, and real recordings gate CI once there are ≥ 20 takes.
+- [x] Trademark conflicts for "TabCreator" are ignored.
+- [x] v1 includes a basic rhythm hint: bar lines from the count-in tempo (FR-20).
+- [x] Undo/redo history does not need to survive a page reload.
+- [x] The confidence threshold has no separate setting; it is derived from sensitivity.
