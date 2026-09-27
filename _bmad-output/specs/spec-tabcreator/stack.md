@@ -11,6 +11,8 @@ Single-page web app; analysis engine compiled to WebAssembly running in a Web Wo
 | Pitch model (chords phase) | Spotify Basic Pitch via ONNX Runtime Web | Polyphonic detection in the browser |
 | Storage | IndexedDB for takes and notes; Origin Private File System for audio | Local only (NFR-06) |
 
+Target browser: desktop Chrome (last 2 versions, Windows and macOS); other Chromium browsers best-effort.
+
 Tuner runs separately from the engine (light, real-time, main thread).
 
 **Alternatives rejected**

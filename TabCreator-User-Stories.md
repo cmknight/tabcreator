@@ -12,9 +12,9 @@ Implement stories in ID order; each lists its dependencies, the files to touch, 
 
 - App: Vite + React 18 + TypeScript (`strict: true`), CSS Modules, no UI framework. `vite-plugin-pwa` for the service worker. `idb` for IndexedDB. `fflate` for zip.
 - Engine: Rust stable, `wasm-bindgen`, `wasm-pack build --target web`, `rustfft`. No other runtime crates without a note in the PR.
-- Tests: Vitest (unit, jsdom), `cargo test` (engine), Playwright (e2e on Chromium, Firefox, WebKit), `@axe-core/playwright`.
+- Tests: Vitest (unit, jsdom), `cargo test` (engine), Playwright (e2e on Chromium — desktop Chrome is the only target browser), `@axe-core/playwright`.
 - Tooling: pnpm, ESLint + Prettier, `rustfmt` + `clippy -D warnings`, GitHub Actions.
-- No backend, no analytics, no telemetry, no network calls at runtime. (NFR-06 permits opt-in, anonymous crash reporting; it is not built in v1.)
+- No backend, no analytics, no telemetry, no crash reporting, no network calls at runtime (NFR-06).
 
 **Repository layout**
 
@@ -66,18 +66,28 @@ export interface Take {
   tuning: 'EADGBE'; micLabel: string;
   audioMime: string | null;     // null when audio deleted
   trimStartMs: number; trimEndMs: number | null;
+  warnings?: { tuningOffsetCents: number; belowRangeNotes: number }; // from analysis (US-4.4); drives FR-24 warnings
   countInBpm?: number;          // set only when the take was recorded with a count-in; drives bar lines
   settings: AnalysisSettings; analysisVersion: string | null;
   updatedAt: string;
 }
 
-export interface Tab { takeId: string; notes: Note[]; updatedAt: string; }
+export interface Tab {
+  takeId: string; notes: Note[]; updatedAt: string;
+  deletedStartMs: number[];     // start times of notes the user deleted; re-analysis never brings them back (US-4.6)
+}
+
+export interface AnalysisResult {  // engine analyze() output
+  notes: DetectedNote[];
+  tuningOffsetCents: number;    // median deviation of voiced frames from the A440 semitone grid
+  belowRangeNotes: number;      // voiced notes below E2 that were dropped (drop tuning or capo)
+}
 ```
 
 **Engine contract** (Rust exports via `wasm-bindgen`, called only from `engine-worker.ts`)
 
 ```ts
-analyze(pcm: Float32Array, sampleRate: number, settingsJson: string, progress: (f: number) => void): string // JSON DetectedNote[]
+analyze(pcm: Float32Array, sampleRate: number, settingsJson: string, progress: (f: number) => void): string // JSON AnalysisResult
 map_frets(notesJson: string, locksJson: string, maxFret: number): string  // in: [{midi,startMs,endMs}], out: JSON ({string,fret}|null)[]
 engine_version(): string                                                  // e.g. "1.0.0"
 ```
@@ -86,7 +96,7 @@ engine_version(): string                                                  // e.g
 
 | Direction | Message |
 | --- | --- |
-| app → worker | `{type:'analyze', reqId, pcm (transferred), sampleRate, settings}` |
+| app → worker | `{type:'analyze', reqId, pcm (transferred), sampleRate, settings, skipStartMs}` (`skipStartMs` = 100 after a count-in, else 0) |
 | app → worker | `{type:'mapFrets', reqId, notes:{midi,startMs,endMs}[], locks:{index,string,fret}[], maxFret}` |
 | worker → app | `{type:'progress', reqId, fraction}` at most every 100 ms |
 | worker → app | `{type:'result', reqId, payload}` or `{type:'error', reqId, message}` |
@@ -105,15 +115,15 @@ Epics 0–6 deliver the core record → analyze → edit loop; Epics 7–8 make 
 
 | Epic | Goal | Stories | Requirements |
 | --- | --- | --- | --- |
-| 0 Project foundation | A running app, engine build, storage and test harness | US-0.1 – US-0.4 | NFR-06, NFR-12 |
-| 1 Microphone setup | Get clean, unprocessed audio from the right mic | US-1.1 – US-1.3 | FR-01, FR-03, FR-19 |
+| 0 Project foundation | A running app, engine build, storage and test harness | US-0.1 – US-0.4 | FR-22, NFR-06, NFR-12 |
+| 1 Microphone setup | Get clean, unprocessed audio from the right mic | US-1.1 – US-1.3 | FR-01, FR-03, FR-19, FR-22, FR-23 |
 | 2 Tuner | Guitar is in standard tuning before recording | US-2.1 | FR-02 |
 | 3 Recording | Capture a take that is never lost | US-3.1 – US-3.4 | FR-04, FR-05, FR-18, FR-20, NFR-11 |
-| 4 Note detection | Turn audio into timed, pitched notes | US-4.1 – US-4.6 | FR-06, FR-07, FR-16, FR-17, NFR-01, NFR-02, NFR-04 |
+| 4 Note detection | Turn audio into timed, pitched notes | US-4.1 – US-4.6 | FR-05, FR-06, FR-07, FR-16, FR-17, FR-22, FR-24, FR-25, NFR-01, NFR-02, NFR-04 |
 | 5 Fret mapping | Pick a playable string and fret per note | US-5.1 – US-5.2 | FR-08, NFR-03 |
-| 6 Tab view and editor | Show, correct and play back the tab | US-6.1 – US-6.5 | FR-09 – FR-13, FR-20, NFR-05 |
-| 7 Library and export | Keep, find and share takes | US-7.1 – US-7.3 | FR-14, FR-15, FR-20, NFR-09 |
-| 8 Offline, accessibility, quality | Works offline, for everyone, in every target browser | US-8.1 – US-8.4 | NFR-01 – NFR-10 |
+| 6 Tab view and editor | Show, correct and play back the tab | US-6.1 – US-6.5 | FR-08 – FR-13, FR-20, FR-22, NFR-05 |
+| 7 Library and export | Keep, find and share takes | US-7.1 – US-7.3 | FR-14, FR-15, FR-20, FR-21, FR-22, NFR-09 |
+| 8 Offline, accessibility, quality | Works offline, for everyone, in desktop Chrome | US-8.1 – US-8.4 | FR-22, NFR-01 – NFR-10 |
 
 ## Epic 0 — Project foundation
 
@@ -131,7 +141,7 @@ Priority: Must · Covers: NFR-08 · Depends on: —
 - `App.tsx` renders a top bar (app name, links: Record, Library, Tuner, Settings) and routes with a tiny hash router (`#/record`, `#/tab/:takeId`, `#/library`, `#/tuner`, `#/settings`); default `#/record`. No router library.
 - Placeholder screen components for each route with an `<h1>`.
 - `strings.ts` holds all UI text. Theme tokens as CSS custom properties in `app/src/ui/theme.css` (light values; dark added in US-8.2).
-- CI (`.github/workflows/ci.yml`): install, lint, `vitest run`, `cargo test`, `wasm-pack build`, `vite build`, Playwright on chromium/firefox/webkit.
+- CI (`.github/workflows/ci.yml`): install, lint, `vitest run`, `cargo test`, `wasm-pack build`, `vite build`, Playwright on Chromium.
 
 **Acceptance criteria**
 
@@ -143,26 +153,28 @@ Priority: Must · Covers: NFR-08 · Depends on: —
 **Tests**
 
 - Vitest: router parses each route, unknown hash falls back to `#/record`.
-- Playwright: navigate all five routes in all three browsers.
+- Playwright: navigate all five routes.
 
 ### US-0.2 Engine crate and worker bridge
 
 **As a** developer **I want** the Rust engine compiled to WebAssembly and callable from a Web Worker **so that** analysis never blocks the UI.
 
-Priority: Must · Covers: NFR-04, NFR-12 · Depends on: US-0.1
+Priority: Must · Covers: NFR-04, NFR-12, FR-22 · Depends on: US-0.1
 
 **Implementation notes**
 
-- `engine/` crate with `crate-type = ["cdylib", "rlib"]`; export `engine_version`, plus stub `analyze` (returns `[]`) and `map_frets` (returns lowest-fret position per note) with the signatures in the Engine contract.
+- `engine/` crate with `crate-type = ["cdylib", "rlib"]`; export `engine_version`, plus stub `analyze` (returns `{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0}`) and `map_frets` (returns lowest-fret position per note) with the signatures in the Engine contract.
 - Build with `wasm-pack build engine --target web --out-dir ../app/src/engine/pkg`; add `pnpm build:engine` and run it before `vite build` and `vite dev`.
 - `engine-worker.ts` (module worker) initialises the wasm once, handles the Worker protocol messages, catches Rust panics (`console_error_panic_hook`) and replies with `{type:'error'}`.
-- `engine-client.ts` exposes `analyze(pcm, sampleRate, settings, onProgress): Promise<DetectedNote[]>` and `mapFrets(notes, locks, maxFret): Promise<{string,fret}[]>`, correlating by `reqId`; transfers the PCM buffer.
+- `engine-client.ts` exposes `analyze(pcm, sampleRate, settings, skipStartMs, onProgress): Promise<AnalysisResult>` and `mapFrets(notes, locks, maxFret): Promise<{string,fret}[]>`, correlating by `reqId`; transfers the PCM buffer.
+- If the wasm fails to load or initialise, the client rejects every request with `engine-unavailable`; the Tab and Settings screens show "The analysis engine failed to load" with a Reload button (FR-22). Recording and the library keep working.
 
 **Acceptance criteria**
 
 - [ ] The Settings screen shows "Engine v{engine_version()}".
-- [ ] Calling `analyze` with 60 s of silence resolves with `[]` and the UI stays responsive (no main-thread task > 50 ms).
+- [ ] Calling `analyze` with 60 s of silence resolves with no notes and the UI stays responsive (no main-thread task > 50 ms).
 - [ ] A panic in Rust rejects the promise with a readable message; the worker keeps serving later requests.
+- [ ] A wasm file that fails to load shows the engine-failed message with Reload; recording still works.
 
 **Tests**
 
@@ -182,17 +194,19 @@ Priority: Must · Covers: NFR-06, NFR-09 · Depends on: US-0.1
 - `audio-store.ts` over the Origin Private File System: `audio/{takeId}.{ext}` for compressed audio, `raw/{takeId}.f32` for raw PCM during recording. API: `writeCompressed(id, blob)`, `readCompressed(id): Blob|null`, `deleteAudio(id)`, `openRawWriter(id)` returning `{append(Float32Array), close()}`, `readRaw(id): Float32Array`, `deleteRaw(id)`, `listRaw(): string[]`.
 - Raw writes happen in `opfs-worker.ts` with `createSyncAccessHandle`, so they are durable per append.
 - `migrate()` runs on startup; version bumps add a numbered migration function.
+- Every write catches `QuotaExceededError` and rejects with a typed `storage-full` error, leaving existing data intact. `Tab.deletedStartMs` defaults to `[]` for older tabs.
 
 **Acceptance criteria**
 
 - [ ] Round-trip of a Take and Tab returns deep-equal objects.
 - [ ] `deleteTake` leaves no tab, compressed audio or raw file behind.
 - [ ] 10 s of raw PCM appended in 1 s chunks reads back sample-exact.
+- [ ] A write that exceeds the quota rejects with `storage-full` and changes nothing already stored.
 
 **Tests**
 
 - Vitest with `fake-indexeddb` for `db.ts`.
-- Playwright (all browsers): raw writer round-trip and `deleteTake` clean-up via a test page `#/__test/storage` that exists only in dev builds.
+- Playwright: raw writer round-trip and `deleteTake` clean-up via a test page `#/__test/storage` that exists only in dev builds.
 
 ### US-0.4 Test fixtures and fake microphone
 
@@ -202,14 +216,14 @@ Priority: Must · Covers: NFR-01, NFR-12 · Depends on: US-0.1
 
 **Implementation notes**
 
-- `tools/make_fixtures.py` (numpy + soundfile) synthesises plucked-string notes with Karplus–Strong at 48 kHz mono and writes `testdata/synth/{name}.wav` plus `{name}.json` = `{notes:[{startMs,endMs,midi,string,fret}], tempoBpm}`. Fixtures: `open_strings` (6 notes), `c_major_scale_pos1`, `e_minor_pentatonic_pos12`, `chromatic_40_88`, `repeated_notes_16th_160bpm`, `legato_slurs`, `octave_traps` (low E/A with strong 2nd harmonic), `silence_60s`, `noise_room_-50dbfs`, `level_too_hot` (clipped).
+- `tools/make_fixtures.py` (numpy + soundfile) synthesises plucked-string notes with Karplus–Strong at 48 kHz mono and writes `testdata/synth/{name}.wav` plus `{name}.json` = `{notes:[{startMs,endMs,midi,string,fret}], tempoBpm}`. Fixtures: `open_strings` (6 notes), `c_major_scale_pos1`, `e_minor_pentatonic_pos12`, `chromatic_40_88`, `repeated_notes_16th_120bpm`, `repeated_notes_16th_160bpm` (reported only), `legato_slurs`, `octave_traps` (low E/A with strong 2nd harmonic), `octave_leaps` (genuine octave jumps that must survive), `ringing_overlap` (notes ringing into the next), `vibrato`, `bend_up`, `slide_up`, `countin_bleed` (count-in clicks at −30 dBFS leaking into the first 80 ms), `detuned_-45c` (whole take 45 cents flat), `drop_d` (includes D2), `silence_60s`, `noise_room_-50dbfs`, `level_too_hot` (clipped).
 - Each fixture also gets a variant with 30 dB SNR pink noise (`*_noisy`).
 - `fake-mic.ts`: in dev and test builds only, when the URL has `?fakeMic=<fixture>`, replace `navigator.mediaDevices.getUserMedia` and `enumerateDevices` so the app gets a MediaStream from the decoded WAV (via `MediaStreamAudioDestinationNode`), labelled "Fake mic: <fixture>". Production builds must tree-shake this out.
 
 **Acceptance criteria**
 
 - [ ] `python tools/make_fixtures.py` is deterministic (fixed seed); outputs are committed.
-- [ ] Loading `?fakeMic=open_strings` in each browser yields an audio stream with the fixture's audio.
+- [ ] Loading `?fakeMic=open_strings` yields an audio stream with the fixture's audio.
 - [ ] A production bundle contains no `fakeMic` string.
 
 **Tests**
@@ -225,7 +239,7 @@ The app gets clean, unprocessed audio from the microphone the player chooses, an
 
 **As a** guitarist **I want** to understand why the app needs my microphone and grant access in one step **so that** I can start without confusion.
 
-Priority: Must · Covers: FR-01, NFR-06 · Depends on: US-0.1
+Priority: Must · Covers: FR-01, FR-22, NFR-06 · Depends on: US-0.1
 
 **Implementation notes**
 
@@ -233,13 +247,16 @@ Priority: Must · Covers: FR-01, NFR-06 · Depends on: US-0.1
 - It maps errors to a typed result: `NotAllowedError` → `denied`, `NotFoundError` → `no-device`, `NotReadableError` → `in-use`, anything else → `unknown`.
 - First visit to Record or Tuner shows a Setup card before any browser prompt: heading "TabCreator needs your microphone", text "Audio is analysed on this computer and never uploaded.", button "Allow microphone". Only the button triggers `getUserMedia`.
 - Store `micGranted=true` in `localStorage` after success so later visits skip the card; if the permission is later revoked, show the card again.
-- Each error shows a specific message with recovery steps (for `denied`: how to re-enable in the browser's site settings, with a "Try again" button).
+- Each error shows a specific message with recovery steps and a "Try again" button that works without reloading the page (for `denied`: how to re-enable in Chrome's site settings).
+- If the track ends mid-session (permission revoked or device lost), stop any recording cleanly, keeping the audio captured so far, and show the Setup card with "Microphone access was lost" (FR-22).
 
 **Acceptance criteria**
 
 - [ ] No permission prompt appears until the user clicks "Allow microphone".
 - [ ] After granting, the Record screen shows the level meter within 1 s.
 - [ ] Denying shows the `denied` message and "Try again"; the app does not crash or loop prompts.
+- [ ] After re-enabling access in site settings, "Try again" works without a page reload.
+- [ ] Revoking permission during a recording keeps the audio captured so far and shows "Microphone access was lost".
 - [ ] The browser-reported track settings show echo cancellation, noise suppression and auto gain off where the browser supports reporting them.
 
 **Tests**
@@ -251,7 +268,7 @@ Priority: Must · Covers: FR-01, NFR-06 · Depends on: US-0.1
 
 **As a** guitarist with a USB mic **I want** to pick which microphone to use **so that** I record from the best one.
 
-Priority: Should · Covers: FR-19 · Depends on: US-1.1
+Priority: Should · Covers: FR-19, FR-23 · Depends on: US-1.1
 
 **Implementation notes**
 
@@ -259,12 +276,16 @@ Priority: Should · Covers: FR-19 · Depends on: US-1.1
 - Persist the chosen `deviceId` in `localStorage` (`micDeviceId`); fall back to the default device if it is missing.
 - Listen to `devicechange`; refresh the list and, if the active device disappears, switch to default and show a toast "Microphone disconnected — switched to <label>".
 - Changing the device stops the old stream's tracks before opening the new one. Disabled while recording.
+- If the active device disappears during a recording, stop the recording cleanly (as a normal stop, keeping everything captured) and show "Microphone disconnected — recording stopped and saved".
+- Input-quality warning (FR-23): when the stream's actual sample rate (`track.getSettings().sampleRate` or the AudioContext rate) is below 44 100 Hz, or the device label matches a Bluetooth-headset pattern (`/airpods|bluetooth|hands-free|headset|buds/i`), show on Record and Tuner: "This microphone may be a Bluetooth headset in call mode — accuracy will be poor. Use the built-in or a wired mic."
 
 **Acceptance criteria**
 
 - [ ] With two inputs, both appear by label and selecting one changes the live meter source.
 - [ ] The choice survives a page reload.
 - [ ] Unplugging the active mic switches to default and shows the toast.
+- [ ] Unplugging the active mic during a recording stops it and the take is saved and analysed.
+- [ ] A 16 kHz input or a device labelled "AirPods" shows the Bluetooth warning; the built-in mic does not.
 
 **Tests**
 
@@ -341,7 +362,7 @@ Priority: Must · Covers: FR-04 · Depends on: US-0.3, US-1.1, US-1.3
 **Implementation notes**
 
 - `recorder-worklet.ts` (AudioWorkletProcessor) posts 128-frame blocks to `recorder.ts`, which batches them into 1-second `Float32Array` chunks at the context's native sample rate (do not force 44.1 kHz).
-- In parallel, a `MediaRecorder` on the same stream produces compressed audio: prefer `audio/webm;codecs=opus`, else `audio/mp4` (Safari), 96 kbps. This is what is kept long-term (NFR-09: a 5-minute take ≤ 5 MB).
+- In parallel, a `MediaRecorder` on the same stream produces compressed audio: `audio/webm;codecs=opus`, 96 kbps. This is what is kept long-term (NFR-09: a 5-minute take ≤ 5 MB).
 - Record screen: large round Record button (label "Record", `aria-pressed`), elapsed time `m:ss`, level meter. Space toggles record/stop when focus is not in a text field.
 - On start: create `Take` with `status:'recording'`, `title: "Take YYYY-MM-DD HH:mm"` (local time), default settings, `micLabel` from the track. Save it immediately.
 - Hard cap 5:00: at 4:30 show "30 seconds left"; at 5:00 stop automatically with the message "Maximum length reached".
@@ -399,7 +420,7 @@ Priority: Should · Covers: FR-05, FR-20 · Depends on: US-3.1
 - `metronome.ts` schedules 4 clicks on the AudioContext clock: 30 ms sine bursts, 1500 Hz on beat 1, 1000 Hz on beats 2–4, −12 dBFS. A large beat number (4-3-2-1) is shown visually as well.
 - Capture starts at the scheduled time of the fifth beat so the clicks are not in the take, so take time 0 is the downbeat of bar 1. No metronome plays during the recording.
 - Esc or clicking Record again during the count-in cancels it.
-- Store the tempo on the take as `countInBpm` when the take is created (so recovered takes keep it); leave it unset when count-in is off. US-6.1 uses it to draw bar lines.
+- Store the tempo on the take as `countInBpm` when the take is created (so recovered takes keep it); leave it unset when count-in is off. US-6.1 uses it to draw bar lines, and analysis skips the first 100 ms of a take that has it, so click bleed is never transcribed (US-4.1).
 
 **Acceptance criteria**
 
@@ -446,12 +467,12 @@ All engine parameters live in one `Params` struct in `lib.rs`, built from `Analy
 
 **As a** developer **I want** every take converted to one standard signal **so that** the detectors behave the same regardless of browser or mic.
 
-Priority: Must · Covers: FR-06 · Depends on: US-0.2
+Priority: Must · Covers: FR-05, FR-06 · Depends on: US-0.2
 
 **Implementation notes**
 
-- `preprocess.rs`: input mono `f32` PCM at any rate (44.1 or 48 kHz typical) plus optional trim range in ms.
-- Steps: apply trim → resample to 22 050 Hz with `rubato` (sinc, 128 taps) → 2nd-order Butterworth high-pass at 70 Hz (bilinear transform, zero-phase by filtering forward and backward) → peak-normalise to −1 dBFS unless the peak is below −60 dBFS (then return as-is, flagged silent).
+- `preprocess.rs`: input mono `f32` PCM at any rate (44.1 or 48 kHz typical) plus optional trim range in ms and `skipStartMs`.
+- Steps: apply trim → zero the first `skipStartMs` (100 after a count-in; times stay relative to the take start) → resample to 22 050 Hz with `rubato` (sinc, 128 taps) → 2nd-order Butterworth high-pass at 60 Hz (bilinear transform, zero-phase by filtering forward and backward) → peak-normalise to −1 dBFS unless the peak is below −60 dBFS (then return as-is, flagged silent).
 - Also return a per-frame RMS array (frame 2048, hop 256) in dBFS for the noise gate.
 
 **Acceptance criteria**
@@ -459,6 +480,7 @@ Priority: Must · Covers: FR-06 · Depends on: US-0.2
 - [ ] A 440 Hz sine at 48 kHz comes out at 440 Hz ±0.1 Hz after resampling.
 - [ ] A 50 Hz hum is attenuated by ≥ 6 dB; 82 Hz is attenuated by ≤ 3 dB.
 - [ ] Output length = round(input duration × 22 050) ± 1 sample.
+- [ ] `countin_bleed` with `skipStartMs` 100 yields no note in the first 100 ms.
 
 **Tests**
 
@@ -500,12 +522,14 @@ Priority: Must · Covers: FR-06, FR-07 · Depends on: US-4.1, US-4.2
 - `onset.rs`, spectral-flux onsets: STFT with Hann window 2048, hop 256 (same frames as pYIN). Log magnitude `ln(1 + 100·|X|)`. Flux = sum of positive differences between consecutive frames over bins 70 Hz–5 kHz. Normalise flux by its 99th percentile.
 - Peak picking: frame `n` is an onset if flux[n] is the maximum within ±3 frames, flux[n] > `k` × median(flux[n−7..n+7]) + 0.05, and RMS[n] > gate `g`. Minimum 40 ms between onsets.
 - Pitch-change onsets for legato: where the rounded MIDI pitch of voiced frames changes by ≥ 1 semitone and the new value holds for ≥ 3 frames, add an onset at the first frame of the new value.
+- Do not add a pitch-change onset where the pitch glides continuously rather than stepping (bend, slide) or oscillates by less than a semitone around a centre (vibrato); mark the span as a glide so US-4.4 flags it (FR-25).
 - Merge onsets closer than 30 ms (keep the earlier). Output onset frame indices, sorted.
 
 **Acceptance criteria**
 
-- [ ] `repeated_notes_16th_160bpm`: every onset found within 30 ms, no extras.
+- [ ] `repeated_notes_16th_120bpm`: every onset found within 30 ms, no extras. `repeated_notes_16th_160bpm` is reported, not gating.
 - [ ] `legato_slurs`: ≥ 90% of slurred notes get an onset.
+- [ ] `vibrato`: no note is split; `bend_up` and `slide_up`: one onset per picked note.
 - [ ] `noise_room_-50dbfs` and `silence_60s`: zero onsets at sensitivity 0.5.
 
 **Tests**
@@ -516,21 +540,26 @@ Priority: Must · Covers: FR-06, FR-07 · Depends on: US-4.1, US-4.2
 
 **As a** guitarist **I want** stray noises and octave slips removed **so that** the tab only shows what I played.
 
-Priority: Must · Covers: FR-06, FR-07, NFR-01, NFR-02 · Depends on: US-4.2, US-4.3
+Priority: Must · Covers: FR-06, FR-07, FR-24, FR-25, NFR-01, NFR-02 · Depends on: US-4.2, US-4.3
 
 **Implementation notes**
 
 - `notes.rs`: a note spans from an onset to the earlier of the next onset or the first run of ≥ 5 frames that are unvoiced or below the gate.
 - Pitch = round(median MIDI of voiced frames in the span, skipping its first 2 frames of attack); MIDI = 69 + 12·log2(f/440). Confidence = mean `voiced_prob` × fraction of voiced frames.
-- Drop a note if duration < `minNoteMs`, confidence < `c`, or MIDI outside 40..(64 + `maxFret`).
-- Octave fix: let `m` be the median MIDI of up to 2 kept neighbours on each side. If |midi − m| ≥ 10 and |(midi ± 12) − m| ≤ 5, shift by 12 toward `m` and multiply confidence by 0.8.
-- Output `DetectedNote[]` JSON sorted by `startMs`, times rounded to 1 ms and relative to the untrimmed take start.
+- Drop a note if duration < `minNoteMs`, confidence < `c`, or MIDI outside 40..(64 + `maxFret`); count dropped notes below 40 (E2) with confidence ≥ `c` as `belowRangeNotes`.
+- Ring-over: drop a note that has no spectral-flux onset and repeats the pitch of the note before the previous one (a ringing string re-emerging), so ringing strings produce no duplicates.
+- Glides (US-4.3): a note spanning a bend or slide takes its starting pitch and gets confidence capped at `c` + 0.1, so it is flagged low-confidence.
+- `tuningOffsetCents` = median over voiced frames of the deviation (in cents) from the nearest semitone of the A440 grid.
+- Octave fix, only for notes with confidence < `c` + 0.15 (confident octave leaps are genuine and kept): let `m` be the median MIDI of up to 2 kept neighbours on each side. If |midi − m| ≥ 10 and |(midi ± 12) − m| ≤ 5, shift by 12 toward `m` and multiply confidence by 0.8.
+- Output `AnalysisResult` JSON with notes sorted by `startMs`, times rounded to 1 ms and relative to the untrimmed take start.
 - `lowConfidence` (set app-side when building `Note`s) = confidence < `c` + 0.15.
 
 **Acceptance criteria**
 
-- [ ] Note F1 ≥ 0.95 on the clean synth fixtures and ≥ 0.90 on the `_noisy` set (match = onset within 50 ms and exact MIDI).
-- [ ] Octave errors ≤ 2% of matched notes on `octave_traps`.
+- [ ] Note F1 ≥ 0.95 on the clean synth fixtures at ≤ 120 BPM and ≥ 0.90 on the `_noisy` set (match = onset within 50 ms and exact MIDI; F1 counts missed and phantom notes).
+- [ ] Octave errors ≤ 2% of matched notes on `octave_traps`; on `octave_leaps` every genuine leap survives (a wrong correction counts as an error).
+- [ ] `ringing_overlap` produces no duplicate notes; `bend_up` and `slide_up` give the starting note, flagged low-confidence.
+- [ ] `detuned_-45c` reports `tuningOffsetCents` within −45 ± 5; `drop_d` reports `belowRangeNotes` ≥ 1.
 - [ ] `silence_60s` and `noise_room_-50dbfs` return zero notes.
 
 **Tests**
@@ -541,14 +570,16 @@ Priority: Must · Covers: FR-06, FR-07, NFR-01, NFR-02 · Depends on: US-4.2, US
 
 **As a** guitarist **I want** the tab to appear automatically after I stop recording, with visible progress **so that** I know the app is working.
 
-Priority: Must · Covers: FR-06, NFR-04 · Depends on: US-3.1, US-4.4, US-5.1
+Priority: Must · Covers: FR-06, FR-22, FR-24, NFR-04 · Depends on: US-3.1, US-4.4, US-5.1
 
 **Implementation notes**
 
-- `analyzeTake(takeId)` in `app/src/engine/analyze.ts`: get PCM (raw chunks in memory for a fresh take; otherwise decode compressed audio with `decodeAudioData` and mix to mono) → `engineClient.analyze` → `engineClient.mapFrets` → build `Note`s (new ids, `locked:false`, `lowConfidence` per US-4.4) → `putTab` → set take `status:'analyzed'`, `analysisVersion = engine_version()` → delete raw file.
+- `analyzeTake(takeId)` in `app/src/engine/analyze.ts`: get PCM (raw chunks in memory for a fresh take; otherwise decode compressed audio with `decodeAudioData` and mix to mono) → `engineClient.analyze` (with `skipStartMs` 100 when the take has `countInBpm`) → save `warnings` on the take → `engineClient.mapFrets` → build `Note`s (new ids, `locked:false`, `lowConfidence` per US-4.4) → `putTab` → set take `status:'analyzed'`, `analysisVersion = engine_version()` → delete raw file.
 - Tab screen shows a progress bar while analysing: weight preprocessing 10%, pitch 60%, onsets 15%, notes 5%, fret mapping 10%. A "Cancel" button terminates the worker (and restarts it) and leaves the take `recorded` with a "Analyse" button.
 - Zero notes: show "No notes found" with tips (check level, play single notes, raise sensitivity) and a link to the settings panel (US-4.6).
 - Errors: "Analysis failed: <message>" with "Retry".
+- Tuning warnings (FR-24, no automatic correction): when |`tuningOffsetCents`| ≥ 40, show "Your guitar seems about <n> cents <flat|sharp> — tune up and record again for accurate tab" with a link to the tuner; when `belowRangeNotes` > 0, show "Looks like drop tuning — not supported in v1". Warnings stay on the take until re-analysis clears them.
+- Storage full while saving the tab (`storage-full`): "Storage is full — delete takes or their audio in the Library, or back up and clear" with a link to the Library; the analysis result is kept in memory so Retry can save it (FR-22).
 - Opening `#/tab/{id}` for a `recorded` (not analysed) take starts analysis automatically.
 
 **Acceptance criteria**
@@ -557,6 +588,7 @@ Priority: Must · Covers: FR-06, NFR-04 · Depends on: US-3.1, US-4.4, US-5.1
 - [ ] The progress bar advances monotonically and reaches 100%.
 - [ ] Cancel returns control within 200 ms and a later "Analyse" succeeds.
 - [ ] A reload during analysis resumes it on the next open.
+- [ ] `detuned_-45c` shows the tuning warning; `drop_d` shows the drop-tuning warning; `c_major_scale_pos1` shows neither.
 
 **Tests**
 
@@ -573,18 +605,18 @@ Priority: Should (sensitivity, FR-16) / Could (re-analysis, FR-17) · Covers: FR
 
 - Tab screen "Analysis settings" panel: Sensitivity slider 0–1, step 0.05, labelled "Fewer notes" ↔ "More notes" (default 0.5); Minimum note length 20–100 ms (default 40); Highest fret 12–24 (default 24). "Re-analyse" button. Settings save to the take.
 - Defaults for new takes come from Settings screen values (same controls), stored in `localStorage`.
-- Re-analysis keeps locked notes: for each locked note, remove new notes whose start is within 50 ms of it, then insert the locked note; then run fret mapping with locks (US-5.2).
+- Re-analysis keeps locked notes: for each locked note, remove new notes whose start is within 50 ms of it, then insert the locked note. It also drops any new note starting within 50 ms of an entry in `Tab.deletedStartMs`. Then run fret mapping with locks (US-5.2).
 - If the tab has any locked notes, confirm first in an in-app dialog: "Re-analysing replaces notes you haven't edited. Your edited notes are kept."
 
 **Acceptance criteria**
 
 - [ ] On `noise_room` mixed with a scale, sensitivity 0.2 yields fewer false notes than 0.8.
-- [ ] Re-analysis preserves every locked note exactly (string, fret, time).
+- [ ] Re-analysis preserves every locked note exactly (string, fret, time) and never brings back a deleted note.
 - [ ] Changed settings persist on the take and appear when reopening it.
 
 **Tests**
 
-- Vitest: locked-note merge logic.
+- Vitest: locked-note merge and deleted-note suppression logic.
 - `cargo test`: `Params::from_settings` mapping.
 - Playwright: edit a note, change sensitivity, re-analyse, the edited note is unchanged.
 
@@ -632,7 +664,8 @@ Priority: Must · Covers: FR-08, FR-11 · Depends on: US-5.1
 
 - A lock `{index, string, fret}` restricts that note's candidates to exactly that position.
 - `phrase.ts`: a phrase is a maximal run of notes where each gap (next `startMs` − previous `endMs`) ≤ 1000 ms.
-- After any edit that locks a note (US-6.3), re-run `mapFrets` for that note's phrase only, passing every locked note in it; replace unlocked notes' string/fret with the result. Notes in other phrases never change.
+- After any edit that locks a note (US-6.3), re-run `mapFrets` for that note's phrase only, passing every locked note in it; replace unlocked notes' string/fret with the result. Locked notes (edited, inserted or confirmed) never change. Notes in other phrases never change.
+- Any note whose string or fret changed in the re-fit gets a 1.5 s highlight (outline, not colour alone), announced in the live region as "<n> nearby notes re-fingered".
 - The re-fit is part of the same undoable edit (US-6.4).
 
 **Acceptance criteria**
@@ -640,6 +673,7 @@ Priority: Must · Covers: FR-08, FR-11 · Depends on: US-5.1
 - [ ] Moving one note of `c_major_scale_pos1` from fret 3 on A to fret 8 on low E moves its immediate neighbours toward that position when cheaper.
 - [ ] Locked notes never change on re-fit or re-analysis.
 - [ ] Notes in other phrases are byte-identical before and after.
+- [ ] Notes changed by the re-fit are highlighted; confirmed notes never change.
 
 **Tests**
 
@@ -683,21 +717,25 @@ Priority: Must (layout, FR-09) / Should (bar lines, FR-20) · Covers: FR-09, FR-
 
 **As a** guitarist **I want** to see the tab with doubtful notes highlighted **so that** I know what to check first.
 
-Priority: Must (view, FR-09) / Should (highlights, FR-13) · Covers: FR-09, FR-13 · Depends on: US-6.1, US-4.5
+Priority: Must (view, FR-09) / Should (highlights, FR-13; bar-line toggle, FR-20) · Covers: FR-09, FR-13, FR-20, FR-22 · Depends on: US-6.1, US-4.5
 
 **Implementation notes**
 
-- `#/tab/{id}` shows: editable title (inline, Enter to save), date, duration, the tab, a toolbar (Play, Undo, Redo, Insert, Delete, Copy, Download, Trim, Analysis settings), and a status line ("42 notes · 3 to check").
+- `#/tab/{id}` shows: editable title (inline, Enter to save), date, duration, the tab, a toolbar (Play, Undo, Redo, Insert, Delete, Copy, Download, Trim, Bar lines, Analysis settings), and a status line ("42 notes · 3 to check").
 - Render each system as a `<pre>` in a monospace font at 16 px; measure character width to compute `widthChars` from the container; re-layout on resize (debounced 100 ms).
 - Overlay each note cell with a `<button>` absolutely positioned over its characters (from `TabLayout.cells`), `aria-label` e.g. "Note 12: B string, fret 3, D4, at 4.25 seconds".
 - Low-confidence notes: dotted underline plus amber background, and "?" in the aria label ("…, check this note"). A "Next to check" button (shortcut `N`) jumps to the next flagged note.
-- A note stops being flagged once the user edits or explicitly confirms it (press `Enter` on the note: sets `lowConfidence=false`, undoable).
+- A note stops being flagged once the user edits or explicitly confirms it (press `Enter` on the note: sets `lowConfidence=false` and `locked=true`, undoable).
+- "Bar lines" toggle (only when the take has `countInBpm`; default on, stored in `localStorage`): hiding removes bar lines from the view and from copy/download. The tooltip says "Approximate — from the count-in tempo; drifts if your tempo drifts."
+- If every note is flagged, show a banner: "Every note is uncertain — check the input level and room noise, then re-analyse" (FR-22).
 
 **Acceptance criteria**
 
 - [ ] Resizing the window reflows the tab without losing the selected note.
 - [ ] Flagged notes are distinguishable without colour (underline + label).
 - [ ] `N` cycles through flagged notes in time order; the count in the status line updates on confirm.
+- [ ] Confirming a note locks it.
+- [ ] Toggling Bar lines off removes them from the view and the export.
 
 **Tests**
 
@@ -715,7 +753,7 @@ Priority: Must · Covers: FR-11, NFR-05 · Depends on: US-6.2, US-5.2
 - Select: click a note or Tab into the tab area; Left/Right move the selection to the previous/next note; Esc clears it.
 - Change fret: type digits (two digits within 400 ms form one number, max `maxFret`); pitch follows (`midi = OPEN_MIDI[string] + fret`). Also a small popover on double-click with a fret number field.
 - Move string, same pitch: Up/Down move to the next thinner/thicker string where the pitch is playable (skip strings where it isn't; do nothing at the edge). Shows the fret it lands on.
-- Delete: Delete or Backspace, or the toolbar button. Selection moves to the next note.
+- Delete: Delete or Backspace, or the toolbar button. Selection moves to the next note. The deleted note's `startMs` is added to `Tab.deletedStartMs` (removed again on undo).
 - Insert: `I` or the toolbar button inserts after the selected note (or at the start when none): `startMs` = midpoint between it and the next note (or +250 ms at the end), duration 100 ms, same string, fret 0, confidence 1; it becomes selected with the fret ready to type.
 - Every edited or inserted note gets `locked=true` and `lowConfidence=false`, then US-5.2 re-fits its phrase. Save the Tab to storage after each edit (debounced 300 ms).
 - All edits go through `edit-history.ts` commands (US-6.4); components never mutate notes directly.
@@ -797,6 +835,7 @@ Priority: Must · Covers: FR-14, NFR-09 · Depends on: US-0.3, US-6.2
 - Search box filters by title, case- and accent-insensitive, as you type.
 - Row menu: Rename (inline), Delete audio only (keeps tab; sets `audioMime=null`), Delete take. Deletes use an in-app confirm dialog (never `window.confirm`) naming the take.
 - Empty state: "No takes yet" with a Record button.
+- Storage full: when a save fails with `storage-full`, show "Storage is full — delete takes or their audio, or back up and clear" at the top of the Library (FR-22).
 - Footer: total storage used (`navigator.storage.estimate()`), e.g. "23 takes · 41 MB used".
 - Use a virtualised list once there are > 100 takes.
 
@@ -841,7 +880,7 @@ Priority: Must · Covers: FR-15 · Depends on: US-6.1, US-6.2
 
 **As a** guitarist **I want** my takes protected from the browser clearing storage, and a way to back them up **so that** I don't lose my work.
 
-Priority: Should · Covers: NFR-06, NFR-09 (risk: storage eviction) · Depends on: US-7.1
+Priority: Should · Covers: FR-21, NFR-06, NFR-09 · Depends on: US-7.1
 
 **Implementation notes**
 
@@ -881,7 +920,7 @@ Priority: Must · Covers: NFR-06, NFR-07 · Depends on: US-0.1, US-0.2
 **Acceptance criteria**
 
 - [ ] After one online visit, with the network disabled, a reload loads the app and a full record → analyse → edit → export flow works.
-- [ ] Chrome and Edge offer "Install"; the installed app opens standalone.
+- [ ] Chrome offers "Install"; the installed app opens standalone.
 - [ ] Lighthouse PWA checks report installable with no errors.
 
 **Tests**
@@ -913,23 +952,23 @@ Priority: Must · Covers: NFR-10 · Depends on: US-6.3, US-7.1
 - Playwright + `@axe-core/playwright` on each route in light and dark.
 - Playwright keyboard-only flow.
 
-### US-8.3 Cross-browser support and performance budget
+### US-8.3 Chrome support and performance budget
 
-**As a** guitarist on any modern browser **I want** the app to behave the same **so that** I get the same results wherever I use it.
+**As a** guitarist using desktop Chrome **I want** the app to run fast and reliably **so that** I get the same results every time.
 
-Priority: Must · Covers: NFR-04, NFR-05, NFR-08 · Depends on: US-4.5, US-6.3
+Priority: Must · Covers: NFR-04, NFR-05, NFR-08, FR-22 · Depends on: US-4.5, US-6.3
 
 **Implementation notes**
 
-- Playwright projects: Chromium, Firefox, WebKit (covers Chrome/Edge, Firefox, Safari). Run the core e2e flow in each with the fake mic.
+- Playwright project: Chromium (desktop Chrome is the only target; other Chromium browsers are best-effort, not tested or blocked). Run the core e2e flow with the fake mic.
 - `tools/benchmark.ts` (Playwright, Chromium): analyse 60 s of `c_major_scale_pos1` looped, 5 runs, report median time; fail CI if the median > 2.0 s on the GitHub `ubuntu-latest` runner scaled by a calibration factor stored in `benchmark.config.json` (calibrate once against the reference laptop).
 - Editor budget: measure edit → paint on a 500-note tab with the Performance API; fail if p95 > 100 ms.
 - Bundle budget: initial JS ≤ 200 KB gzipped, `.wasm` ≤ 1 MB gzipped; fail CI if exceeded.
-- Detect unsupported browsers (no AudioWorklet, no OPFS, no WebAssembly) and show "Your browser isn't supported" with the supported list.
+- Detect unsupported browsers (no AudioWorklet, no OPFS, no WebAssembly) and show "TabCreator needs a recent desktop Chrome". Do not block by user agent: any browser with the required APIs is allowed.
 
 **Acceptance criteria**
 
-- [ ] The core flow passes in all three Playwright browsers.
+- [ ] The core flow passes in Playwright Chromium.
 - [ ] Benchmark, editor and bundle budgets are enforced in CI.
 - [ ] Unsupported-browser screen appears when any required API is missing (simulated by deleting it in a test).
 
@@ -946,7 +985,7 @@ Priority: Must · Covers: NFR-01, NFR-02, NFR-03 · Depends on: US-4.4, US-5.1
 **Implementation notes**
 
 - `engine/tests/fixtures.rs` runs the full `analyze` + `map_frets` on every fixture in `testdata/synth` and `testdata/real` and computes: note F1 (onset ±50 ms, exact MIDI), octave-error rate, and string/fret agreement.
-- Thresholds: synth clean F1 ≥ 0.95, synth noisy F1 ≥ 0.90, octave errors ≤ 2%, fret agreement ≥ 80%. `testdata/real` (human recordings, added as they are made) reports but does not fail until it holds ≥ 20 takes; a single player (the project owner) records them all.
+- Thresholds (gating): synth clean F1 ≥ 0.95 on fixtures at ≤ 120 BPM, synth noisy F1 ≥ 0.90, octave errors ≤ 2%, fret agreement ≥ 80%. `testdata/real` (human recordings, added as they are made) reports but does not fail until it holds ≥ 20 takes; a single player (the project owner) records them all. Reported, not gating: F1 on real laptop-mic recordings in a normal room (reference ≥ 0.90) and on faster fixtures such as `repeated_notes_16th_160bpm`. F1 counts missed and phantom notes.
 - Write `accuracy-report.md` as a CI artifact with a per-fixture table and the change against `main`.
 - Fail CI if any metric drops by more than 1 percentage point from `main`, even if still above the threshold.
 
@@ -984,7 +1023,12 @@ Every requirement is covered by at least one story.
 | FR-17 Re-analysis | US-4.6 |
 | FR-18 Trim | US-3.4 |
 | FR-19 Choose microphone | US-1.2 |
-| FR-20 Bar lines from count-in | US-3.3, US-6.1, US-7.2 |
+| FR-20 Bar lines from count-in | US-3.3, US-6.1, US-6.2, US-7.2 |
+| FR-21 Library backup and restore | US-7.3 |
+| FR-22 Error and empty states | US-0.2, US-0.3, US-1.1, US-3.1, US-4.5, US-6.2, US-7.1, US-8.3 |
+| FR-23 Input-quality warnings | US-1.2 |
+| FR-24 Tuning warnings | US-4.4, US-4.5 |
+| FR-25 Unnotated techniques | US-4.3, US-4.4 |
 | NFR-01 Note accuracy | US-4.4, US-8.4 |
 | NFR-02 Octave errors | US-4.2, US-4.4, US-8.4 |
 | NFR-03 Fret-choice accuracy | US-5.1, US-8.4 |

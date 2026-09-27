@@ -2,7 +2,7 @@
 
 v1 shows notes in played order with spacing roughly proportional to time; no note durations. Exact spacing and wrapping rules: story US-6.1.
 
-**Bar lines (CAP-24)** — when the take has a count-in tempo, a `|` is drawn across all six lines at each bar boundary (4 beats, 4/4 assumed, bar 1 at capture start). No bar lines without a count-in.
+**Bar lines (CAP-24)** — when the take has a count-in tempo, a `|` is drawn across all six lines at each bar boundary (4 beats, 4/4 assumed, bar 1 at capture start). No bar lines without a count-in. Bar lines are approximate (no tempo tracking, they drift with the player) and the user can hide them.
 
 Golden sample (notes 125 ms apart):
 
