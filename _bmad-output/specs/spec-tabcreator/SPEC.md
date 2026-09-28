@@ -1,7 +1,9 @@
 ---
 id: SPEC-tabcreator
 companions:
-  - stack.md
+  - ../../planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md
+  - ../../planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/DESIGN.md
+  - ../../planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md
   - detection-pipeline.md
   - data-model.md
   - tab-format.md
@@ -110,6 +112,9 @@ Priority in brackets (MoSCoW: Must ships in v1, Should if time allows, Could is 
 - **CAP-28** [Should] (FR-25)
   - **intent:** Techniques v1 does not notate (ringing strings, vibrato, bends, slides) still produce sensible notes.
   - **success:** On one fixture per case: ringing strings produce no duplicate notes; vibrato does not split a note; a bend or slide becomes its starting note flagged low-confidence.
+- **CAP-29** [Must] (NFR-11, FR-22)
+  - **intent:** Only one browser tab runs TabCreator at a time; the player can move the app to another tab without losing a recording.
+  - **success:** A second tab shows "TabCreator is open in another tab"; "Use here" moves the app within 3 s, a recording in progress in the first tab is kept, the first tab makes no further writes, and recovery never offers a take another tab is still recording.
 
 ## Constraints
 
@@ -124,9 +129,9 @@ Priority in brackets (MoSCoW: Must ships in v1, Should if time allows, Could is 
 - Storage: a 5-minute take uses ≤ 5 MB compressed audio; audio deletable while keeping the tab (NFR-09).
 - Accessibility: WCAG 2.2 AA, full keyboard operation, dark mode (NFR-10).
 - Mic capture with browser echo cancellation, noise suppression and auto gain turned off.
-- Analysis runs off the UI thread; the detection engine is a separate module with an automated accuracy test suite in CI (NFR-12). Stack and layers: `stack.md`.
+- Analysis runs off the UI thread; the detection engine is a separate module with an automated accuracy test suite in CI (NFR-12). Stack, versions, layers and cross-module invariants: `ARCHITECTURE-SPINE.md` (AD-1 – AD-19); look and behaviour: `DESIGN.md` and `EXPERIENCE.md`.
 - The tab is always rendered from a structured note list; edits change data, not text.
-- Where the user stories and this spec disagree, this spec (from the requirements) wins; raise the conflict rather than guess.
+- Precedence on conflict: this spec, then `ARCHITECTURE-SPINE.md`, then the user stories; `DESIGN.md` and `EXPERIENCE.md` win over any mockup. Raise conflicts rather than guess.
 
 ## Non-goals
 
