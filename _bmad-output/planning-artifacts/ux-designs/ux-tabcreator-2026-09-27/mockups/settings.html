@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings Screen Mock</title>
+<style>
+/* ==========================================================================
+   KEY SCREEN — Settings screen (#/settings) + Keyboard shortcuts dialog
+   + Unsupported browser screen
+   Governing spine sections (check these when the spine changes):
+   DESIGN.md
+     - frontmatter tokens: colors (+ -dark pairs), typography (ui, ui-small,
+       heading, numeric), rounded, spacing, components (button-primary,
+       button-secondary, button-pressed, banner-error, dialog, focus-ring)
+     - Components: Form controls (slider + end labels + numeric value, number
+       fields), Pressed / selected (theme segmented control), Banners
+       (banner-error), Dialog, Analysis settings panel (panel look reused for
+       Settings sections), Focus ring
+     - Layout & Spacing (content-max 1100, gutter 16, one column, top bar)
+     - Elevation & Depth (only dialogs cast a shadow)
+   EXPERIENCE.md
+     - Information Architecture: Settings row; overlays "Keyboard shortcuts
+       dialog" and "Unsupported screen"
+     - Component Patterns: Banner (errors: no Dismiss), Confirm dialog rules
+       (focus trap / restore) applied to the shortcuts dialog
+     - State Patterns: Engine failed to load, Storage may be cleared,
+       Unsupported browser
+     - Interaction Primitives (full shortcut table -> dialog content)
+     - Accessibility Floor: Theme System / Light / Dark
+     - Voice and Tone
+   Stories: US-0.2 (engine version, engine failed + Reload), US-4.6 (defaults
+     for new takes, same controls as the panel), US-7.3 (storage status),
+     US-8.2 (theme toggle, shortcuts dialog), US-8.3 (unsupported screen)
+   Base CSS copied from mockups/tab.html; additions marked "ADDED".
+   ========================================================================== */
+
+/* ---- DESIGN.md colour tokens, verbatim --------------------------------- */
+:root {
+  --color-background: #FAFAF7;       --color-background-dark: #141311;
+  --color-surface: #FFFFFF;          --color-surface-dark: #1D1B18;
+  --color-text: #1C1B19;             --color-text-dark: #ECE9E3;
+  --color-text-muted: #5E5A54;       --color-text-muted-dark: #A8A39A;
+  --color-border: #8C877E;           --color-border-dark: #6E6960;
+  --color-primary: #1F5FAD;          --color-primary-dark: #7FB0F0;
+  --color-on-primary: #FFFFFF;       --color-on-primary-dark: #0B1B2E;
+  --color-record: #B3261E;           --color-record-dark: #F2766B;
+  --color-on-record: #FFFFFF;        --color-on-record-dark: #2A0B08;
+  --color-check-bg: #FCE8B2;         --color-check-bg-dark: #4A3A12;
+  --color-check-line: #8A5A00;       --color-check-line-dark: #E3B34C;
+  --color-refit: #6A3FB5;            --color-refit-dark: #B99BF2;
+  --color-meter-ok: #2E7D32;         --color-meter-ok-dark: #5CC06A;
+  --color-meter-warn: #B26A00;       --color-meter-warn-dark: #E3B34C;
+  --color-meter-hot: #C62828;        --color-meter-hot-dark: #F2766B;
+  --color-success: #2E7D32;          --color-success-dark: #5CC06A;
+  --color-warning: #8A5A00;          --color-warning-dark: #E3B34C;
+  --color-danger: #B3261E;           --color-danger-dark: #F2766B;
+
+  --font-ui: system-ui, "Segoe UI", -apple-system, sans-serif;
+  --font-mono: ui-monospace, Consolas, Menlo, "Cascadia Mono", monospace;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 10px; --r-full: 9999px;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s6: 24px; --s8: 32px; --s12: 48px;
+  --gutter: 16px; --content-max: 1100px; --focus-ring: 2px;
+}
+
+/* Theme scoping: both themes on one page, independent of prefers-color-scheme */
+.t-light {
+  --bg: var(--color-background); --surface: var(--color-surface);
+  --text: var(--color-text); --muted: var(--color-text-muted);
+  --border: var(--color-border); --primary: var(--color-primary);
+  --on-primary: var(--color-on-primary); --record: var(--color-record);
+  --on-record: var(--color-on-record); --check-bg: var(--color-check-bg);
+  --check-line: var(--color-check-line); --refit: var(--color-refit);
+  --success: var(--color-success); --warning: var(--color-warning);
+  --danger: var(--color-danger);
+  --chrome-bg: #DEDCD7; --chrome-tab: #F3F2EF; --chrome-url: #FFFFFF; --chrome-ink: #3A3833;
+  color-scheme: light;
+}
+.t-dark {
+  --bg: var(--color-background-dark); --surface: var(--color-surface-dark);
+  --text: var(--color-text-dark); --muted: var(--color-text-muted-dark);
+  --border: var(--color-border-dark); --primary: var(--color-primary-dark);
+  --on-primary: var(--color-on-primary-dark); --record: var(--color-record-dark);
+  --on-record: var(--color-on-record-dark); --check-bg: var(--color-check-bg-dark);
+  --check-line: var(--color-check-line-dark); --refit: var(--color-refit-dark);
+  --success: var(--color-success-dark); --warning: var(--color-warning-dark);
+  --danger: var(--color-danger-dark);
+  --chrome-bg: #2B2A27; --chrome-tab: #3A3834; --chrome-url: #22211E; --chrome-ink: #D8D5CF;
+  color-scheme: dark;
+}
+
+/* ---- Presentation page (not product UI) -------------------------------- */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: #E2E0DB; color: #1C1B19;
+  font: 15px/1.5 var(--font-ui);
+  overflow-x: hidden;
+}
+.page { max-width: 1240px; margin: 0 auto; padding: 32px 16px 64px; }
+.page > header h1 { font-size: 24px; margin: 0 0 4px; }
+.page > header p { margin: 0; color: #4A4741; max-width: 72ch; }
+.section { margin-top: 48px; }
+.section > h2 { font-size: 18px; margin: 0 0 4px; }
+.section > p.cap { margin: 0 0 12px; color: #4A4741; font-size: 14px; max-width: 90ch; }
+.scroller { max-width: 100%; overflow-x: auto; padding-bottom: 8px; }
+.alt-grid { display: grid; gap: 32px; }
+.alt-grid h3 { font-size: 15px; margin: 0 0 4px; }
+.alt-grid p.cap { margin: 0 0 10px; color: #4A4741; font-size: 14px; }
+
+/* ---- Browser frame ----------------------------------------------------- */
+.browser {
+  width: 1132px;                  /* 1100 content + 2 x 16 gutter */
+  border-radius: 10px; overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 8px 24px rgba(0,0,0,.12);
+  background: var(--bg);
+}
+.chrome { background: var(--chrome-bg); color: var(--chrome-ink); font: 12px/1 var(--font-ui); padding: 8px 12px 0; }
+.chrome-row { display: flex; align-items: flex-end; gap: 12px; }
+.dots { display: flex; gap: 6px; padding-bottom: 10px; }
+.dots i { width: 11px; height: 11px; border-radius: 50%; background: currentColor; opacity: .35; }
+.btab { background: var(--chrome-tab); border-radius: 8px 8px 0 0; padding: 8px 40px 8px 12px; display: flex; gap: 8px; align-items: center; }
+.btab b { font-weight: 500; }
+.btab .fav { width: 12px; height: 12px; border-radius: 3px; background: var(--primary); }
+.urlbar { color: var(--chrome-ink); background: var(--chrome-tab); padding: 6px 12px 8px; }
+.urlbar span { display: block; background: var(--chrome-url); border-radius: 999px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; }
+.urlbar em { font-style: normal; opacity: .6; }
+
+/* ---- App: top bar ------------------------------------------------------ */
+.app { background: var(--bg); color: var(--text); font: 400 15px/1.5 var(--font-ui); }
+.topbar { background: var(--surface); border-bottom: 1px solid var(--border); height: 52px; }
+.topbar .in { max-width: var(--content-max); margin: 0 auto; padding: 0 var(--gutter); height: 100%; display: flex; align-items: center; gap: var(--s6); }
+.appname { font-weight: 600; font-size: 15px; }
+.nav { display: flex; gap: var(--s1); }
+.nav a { color: var(--text); text-decoration: none; padding: 6px 10px; border-radius: var(--r-md); }
+.nav a[aria-current="page"] { color: var(--primary); box-shadow: inset 0 -2px 0 var(--primary); }
+/* Buttons (button-secondary / button-primary) */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 10px; border-radius: var(--r-md);
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  font: 400 15px/1 var(--font-ui); cursor: pointer; white-space: nowrap;
+}
+.title .edit { width: 16px; height: 16px; color: var(--muted); margin-left: 8px; vertical-align: middle; }
+.btn svg { width: 16px; height: 16px; flex: none; }
+.btn[disabled] { opacity: .4; cursor: not-allowed; }
+.btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); font-weight: 500; }
+.btn .kbd { font: 500 12px/1 var(--font-mono); color: var(--muted); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 2px 5px; }
+/* pressed / selected: one style for toggles and the speed control */
+.btn[aria-pressed="true"], .seg button[aria-pressed="true"] { background: color-mix(in srgb, var(--primary) 14%, var(--surface)); border-color: var(--primary); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--primary); }
+.playback { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s3); flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; background: var(--surface); }
+.seg button { height: 34px; padding: 0 12px; border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--text); font: 500 15px/1 var(--font-mono); cursor: pointer; }
+.seg button:first-child { border-left: 0; }
+/* Banner (warning) */
+.banner {
+  display: flex; align-items: center; gap: var(--s3);
+  background: var(--check-bg); color: var(--text);
+  border-left: 4px solid var(--warning); border-radius: var(--r-md);
+  padding: var(--s3) var(--s4); margin-bottom: var(--s4);
+}
+.banner svg { width: 18px; height: 18px; color: var(--warning); flex: none; }
+.banner a { color: var(--primary); font-weight: 500; white-space: nowrap; margin-left: auto; }
+.banner .dismiss { background: none; border: 0; color: var(--muted); font: 400 13px/1 var(--font-ui); cursor: pointer; padding: 4px 6px; border-radius: var(--r-sm); }
+
+/* Progress bar */
+.progress { margin-top: var(--s6); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s4); }
+.progress .row { display: flex; align-items: center; gap: var(--s4); }
+.progress .label { font: 400 13px/1.4 var(--font-ui); color: var(--muted); margin-bottom: var(--s2); }
+.bar { flex: 1; height: 6px; background: var(--border); border-radius: var(--r-full); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--primary); }
+.pct { font: 500 15px/1.3 var(--font-mono); min-width: 4ch; text-align: right; }
+
+/* Analysis settings panel (inline, not a dialog) */
+.settings { margin-top: var(--s3); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s4); }
+.settings h2 { font: 600 15px/1.5 var(--font-ui); margin: 0 0 var(--s3); }
+.fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s6); }
+.field label { display: block; font: 400 15px/1.5 var(--font-ui); margin-bottom: var(--s1); }
+.slider { display: flex; align-items: center; gap: var(--s2); }
+.slider .end { font: 400 13px/1.4 var(--font-ui); color: var(--muted); }
+.slider input[type=range] { width: 220px; accent-color: var(--primary); }
+.slider output { font: 500 15px/1.3 var(--font-mono); min-width: 4ch; }
+.numfield { display: flex; align-items: center; gap: var(--s2); }
+.numfield input {
+  height: 36px; width: 84px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text); font: 500 15px/1 var(--font-mono);
+}
+.numfield .unit { color: var(--muted); font-size: 13px; }
+.crop { position: relative; max-height: 330px; overflow: hidden; }
+.crop::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 48px; background: linear-gradient(transparent, var(--bg)); }
+/* ---- App: Tab screen content ------------------------------------------- */
+.content { max-width: var(--content-max); margin: 0 auto; padding: var(--s6) var(--gutter) var(--s8); }
+
+/* ==== ADDED for Settings (everything above is copied from tab.html) ===== */
+.nav a[aria-current="page"] { font-weight: 600; }
+
+/* Screen heading (typography.heading) */
+.content > h1 { font: 600 20px/1.3 var(--font-ui); margin: 0; }
+
+/* Settings sections: the Analysis settings panel look (surface, hairline, s4) */
+.settings + .settings { margin-top: var(--s3); }
+.settings .hint { font: 400 13px/1.4 var(--font-ui); color: var(--muted); margin: calc(-1 * var(--s2)) 0 var(--s3); }
+.settings .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s6); }
+.content > h1 + .settings { margin-top: var(--s4); }
+
+/* Text segmented control (same .seg + pressed style; UI font, not mono) */
+.seg.txt button { font: 400 15px/1 var(--font-ui); padding: 0 14px; }
+.seg.txt button[aria-pressed="true"] { font-weight: 600; }
+
+/* Status with icon (colour always paired with icon + text) */
+.stat { display: inline-flex; align-items: center; gap: var(--s2); }
+.stat svg { width: 18px; height: 18px; flex: none; }
+.stat.ok svg { color: var(--success); }
+.stat.warn svg { color: var(--warning); }
+.engine { font: 500 15px/1.3 var(--font-mono); }
+.engine.na { font-family: var(--font-ui); font-weight: 400; color: var(--muted); }
+
+/* banner-error: surface fill, danger edge, icon, one sentence, one action */
+.banner.error { background: var(--surface); border-left-color: var(--danger); border-top: 1px solid var(--border); border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.banner.error svg { color: var(--danger); }
+.banner .act { margin-left: auto; }
+
+/* Dialog (components.dialog): centred, max 480, rounded.lg, soft shadow */
+.app.has-dialog { position: relative; }
+.scrim { position: absolute; inset: 0; background: rgba(20,19,17,.45); display: flex; align-items: flex-start; justify-content: center; padding: 56px var(--gutter); }
+.dialog {
+  width: 100%; max-width: 480px; background: var(--surface); color: var(--text);
+  border-radius: var(--r-lg); box-shadow: 0 2px 6px rgba(0,0,0,.18), 0 16px 40px rgba(0,0,0,.22);
+  padding: var(--s6);
+}
+.dialog h2 { font: 600 20px/1.3 var(--font-ui); margin: 0 0 var(--s4); }
+.dialog .actions { display: flex; justify-content: flex-end; gap: var(--s2); margin-top: var(--s4); }
+.keys { width: 100%; border-collapse: collapse; font: 400 13px/1.4 var(--font-ui); }
+.keys caption { text-align: left; font: 600 13px/1.4 var(--font-ui); color: var(--muted); padding: var(--s3) 0 var(--s1); }
+.keys:first-of-type caption { padding-top: 0; }
+.keys th, .keys td { text-align: left; vertical-align: top; padding: 5px 0; border-top: 1px solid color-mix(in srgb, var(--border) 45%, var(--surface)); }
+.keys th { width: 46%; font-weight: 400; padding-right: var(--s3); }
+.keys .kbd, .kbd { font: 500 12px/1 var(--font-mono); color: var(--text); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 2px 5px; background: var(--bg); display: inline-block; margin: 0 2px 2px 0; }
+.keys .or { color: var(--muted); }
+.dialog .note { font: 400 13px/1.4 var(--font-ui); color: var(--muted); margin: var(--s3) 0 0; }
+
+/* Unsupported screen: replaces the app; no top bar */
+.unsupported { min-height: 420px; display: flex; align-items: center; justify-content: center; padding: var(--s12) var(--gutter); text-align: center; }
+.unsupported .appname { display: block; color: var(--muted); font-weight: 600; margin-bottom: var(--s3); }
+.unsupported h1 { font: 600 20px/1.3 var(--font-ui); margin: 0; }
+
+/* grid items default to min-width:auto and would widen the page to the 1132px frame */
+.alt-grid > div { min-width: 0; }
+.app.has-dialog { min-height: 1060px; }
+</style>
+</head>
+<body>
+
+<!-- Icon sprite (inline, offline) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3 2 20h20z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.5M12 17.2v.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-error" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5v5.5M12 16.2v.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M8 14h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<main class="page">
+  <header>
+    <h1>TabCreator — Settings screen (key screen)</h1>
+    <p>1:1 static mock of <code>#/settings</code>, plus the Keyboard shortcuts dialog (<code>?</code>) and the Unsupported browser screen. Settings changes save automatically (no Save button). Sections reuse the Analysis settings panel look from <code>tab.html</code>.</p>
+  </header>
+
+  <!-- ===================================================== 1. LIGHT -->
+  <section class="section">
+    <h2>1 · Light theme — defaults, theme System, storage protected</h2>
+    <p class="cap">Defaults for new takes use the same controls as the Tab screen's Analysis settings panel (US-4.6 defaults: 0.50, 40 ms, 24) without a Re-analyse button. Theme is a segmented control with System pressed. Storage status pairs its colour with an icon; the engine version is in the numeric face.</p>
+    <div class="scroller"><div class="t-light">
+<div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/settings</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings" aria-current="page">Settings</a></div>
+</div></nav><div class="content">
+<h1>Settings</h1>
+<section class="settings" aria-labelledby="l-def">
+  <h2 id="l-def">Defaults for new takes</h2>
+  <p class="hint">New takes start with these values. Each take keeps its own copy in its Analysis settings.</p>
+  <div class="fields">
+    <div class="field">
+      <label for="l-sens">Sensitivity</label>
+      <div class="slider">
+        <span class="end">Fewer notes</span>
+        <input id="l-sens" type="range" min="0" max="1" step="0.05" value="0.5">
+        <span class="end">More notes</span>
+        <output for="l-sens">0.50</output>
+      </div>
+    </div>
+    <div class="field">
+      <label for="l-min">Minimum note length</label>
+      <div class="numfield"><input id="l-min" type="number" min="20" max="100" value="40"><span class="unit">ms</span></div>
+    </div>
+    <div class="field">
+      <label for="l-fret">Highest fret</label>
+      <div class="numfield"><input id="l-fret" type="number" min="12" max="24" value="24"></div>
+    </div>
+  </div>
+</section>
+<section class="settings" aria-labelledby="l-app">
+  <h2 id="l-app">Appearance</h2>
+  <div class="row"><span id="l-th">Theme</span><div class="seg txt" role="group" aria-labelledby="l-th"><button type="button" aria-pressed="true">System</button><button type="button" aria-pressed="false">Light</button><button type="button" aria-pressed="false">Dark</button></div></div>
+</section>
+<section class="settings" aria-labelledby="l-sto">
+  <h2 id="l-sto">Storage</h2>
+  <div class="row"><span class="stat ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Storage: protected</span></div>
+</section>
+<section class="settings" aria-labelledby="l-abt">
+  <h2 id="l-abt">About</h2>
+  <div class="row"><span class="engine">Engine v1.0.0</span><button class="btn" type="button" aria-haspopup="dialog"><svg aria-hidden="true"><use href="#i-keyboard"/></svg>Keyboard shortcuts <span class="kbd">?</span></button></div>
+</section>
+</div>
+</div>
+</div>
+</div></div>
+  </section>
+
+  <!-- ===================================================== 2. DARK -->
+  <section class="section">
+    <h2>2 · Dark theme — Dark selected, storage may be cleared</h2>
+    <p class="cap">Every token swapped for its <code>-dark</code> pair. Dark is pressed. Persistent storage was refused, so the status reads "Storage: may be cleared by the browser" with a warning icon.</p>
+    <div class="scroller"><div class="t-dark">
+<div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/settings</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings" aria-current="page">Settings</a></div>
+</div></nav><div class="content">
+<h1>Settings</h1>
+<section class="settings" aria-labelledby="d-def">
+  <h2 id="d-def">Defaults for new takes</h2>
+  <p class="hint">New takes start with these values. Each take keeps its own copy in its Analysis settings.</p>
+  <div class="fields">
+    <div class="field">
+      <label for="d-sens">Sensitivity</label>
+      <div class="slider">
+        <span class="end">Fewer notes</span>
+        <input id="d-sens" type="range" min="0" max="1" step="0.05" value="0.5">
+        <span class="end">More notes</span>
+        <output for="d-sens">0.50</output>
+      </div>
+    </div>
+    <div class="field">
+      <label for="d-min">Minimum note length</label>
+      <div class="numfield"><input id="d-min" type="number" min="20" max="100" value="40"><span class="unit">ms</span></div>
+    </div>
+    <div class="field">
+      <label for="d-fret">Highest fret</label>
+      <div class="numfield"><input id="d-fret" type="number" min="12" max="24" value="24"></div>
+    </div>
+  </div>
+</section>
+<section class="settings" aria-labelledby="d-app">
+  <h2 id="d-app">Appearance</h2>
+  <div class="row"><span id="d-th">Theme</span><div class="seg txt" role="group" aria-labelledby="d-th"><button type="button" aria-pressed="false">System</button><button type="button" aria-pressed="false">Light</button><button type="button" aria-pressed="true">Dark</button></div></div>
+</section>
+<section class="settings" aria-labelledby="d-sto">
+  <h2 id="d-sto">Storage</h2>
+  <div class="row"><span class="stat warn"><svg aria-hidden="true"><use href="#i-warn"/></svg>Storage: may be cleared by the browser</span></div>
+</section>
+<section class="settings" aria-labelledby="d-abt">
+  <h2 id="d-abt">About</h2>
+  <div class="row"><span class="engine">Engine v1.0.0</span><button class="btn" type="button" aria-haspopup="dialog"><svg aria-hidden="true"><use href="#i-keyboard"/></svg>Keyboard shortcuts <span class="kbd">?</span></button></div>
+</section>
+</div>
+</div>
+</div>
+</div></div>
+  </section>
+
+  <!-- ===================================================== 3. ALTERNATES -->
+  <section class="section">
+    <h2>3 · Alternate states (light)</h2>
+    <p class="cap">Same frame width and content as frame 1 unless noted.</p>
+    <div class="alt-grid">
+
+      <div>
+        <h3>(a) Keyboard shortcuts dialog</h3>
+        <p class="cap">Opened with <code>?</code> or the Settings button. Lists every shortcut from Interaction Primitives, grouped by where it works. Focus is trapped while open; Close (or <code>Esc</code>) returns focus to the element that opened it. Only dialogs cast a shadow.</p>
+        <div class="scroller"><div class="t-light">
+<div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/settings</span></div>
+<div class="app has-dialog">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings" aria-current="page">Settings</a></div>
+</div></nav><div class="content">
+<h1>Settings</h1>
+<section class="settings" aria-labelledby="a-def">
+  <h2 id="a-def">Defaults for new takes</h2>
+  <p class="hint">New takes start with these values. Each take keeps its own copy in its Analysis settings.</p>
+  <div class="fields">
+    <div class="field">
+      <label for="a-sens">Sensitivity</label>
+      <div class="slider">
+        <span class="end">Fewer notes</span>
+        <input id="a-sens" type="range" min="0" max="1" step="0.05" value="0.5">
+        <span class="end">More notes</span>
+        <output for="a-sens">0.50</output>
+      </div>
+    </div>
+    <div class="field">
+      <label for="a-min">Minimum note length</label>
+      <div class="numfield"><input id="a-min" type="number" min="20" max="100" value="40"><span class="unit">ms</span></div>
+    </div>
+    <div class="field">
+      <label for="a-fret">Highest fret</label>
+      <div class="numfield"><input id="a-fret" type="number" min="12" max="24" value="24"></div>
+    </div>
+  </div>
+</section>
+<section class="settings" aria-labelledby="a-app">
+  <h2 id="a-app">Appearance</h2>
+  <div class="row"><span id="a-th">Theme</span><div class="seg txt" role="group" aria-labelledby="a-th"><button type="button" aria-pressed="true">System</button><button type="button" aria-pressed="false">Light</button><button type="button" aria-pressed="false">Dark</button></div></div>
+</section>
+<section class="settings" aria-labelledby="a-sto">
+  <h2 id="a-sto">Storage</h2>
+  <div class="row"><span class="stat ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Storage: protected</span></div>
+</section>
+<section class="settings" aria-labelledby="a-abt">
+  <h2 id="a-abt">About</h2>
+  <div class="row"><span class="engine">Engine v1.0.0</span><button class="btn" type="button" aria-haspopup="dialog"><svg aria-hidden="true"><use href="#i-keyboard"/></svg>Keyboard shortcuts <span class="kbd">?</span></button></div>
+</section>
+</div><div class="scrim">
+<div class="dialog" role="dialog" aria-modal="true" aria-labelledby="ks-h">
+  <h2 id="ks-h">Keyboard shortcuts</h2>
+<table class="keys"><caption>Global</caption><tbody>
+<tr><th scope="row"><kbd class="kbd">?</kbd></th><td>Keyboard shortcuts dialog</td></tr>
+<tr><th scope="row"><kbd class="kbd">Esc</kbd></th><td>Cancel count-in, clear note selection, close dialog/popover/panel</td></tr>
+</tbody></table>
+<table class="keys"><caption>Record</caption><tbody>
+<tr><th scope="row"><kbd class="kbd">Space</kbd></th><td>Record / stop</td></tr>
+</tbody></table>
+<table class="keys"><caption>Tab</caption><tbody>
+<tr><th scope="row"><kbd class="kbd">Space</kbd></th><td>Play / pause</td></tr>
+<tr><th scope="row"><kbd class="kbd">←</kbd><span class="or">/ </span><kbd class="kbd">→</kbd></th><td>Previous / next note</td></tr>
+<tr><th scope="row"><kbd class="kbd">↑</kbd><span class="or">/ </span><kbd class="kbd">↓</kbd></th><td>Move note to thinner / thicker string, same pitch (skips unplayable strings)</td></tr>
+<tr><th scope="row"><kbd class="kbd">0</kbd><span class="or">– </span><kbd class="kbd">9</kbd></th><td>Set fret; two digits within 400 ms make one number</td></tr>
+<tr><th scope="row"><kbd class="kbd">Delete</kbd><span class="or">/ </span><kbd class="kbd">Backspace</kbd></th><td>Delete note</td></tr>
+<tr><th scope="row"><kbd class="kbd">I</kbd></th><td>Insert note after selection</td></tr>
+<tr><th scope="row"><kbd class="kbd">Enter</kbd></th><td>Confirm selected note (clears flag, locks it)</td></tr>
+<tr><th scope="row"><kbd class="kbd">N</kbd></th><td>Next note to check</td></tr>
+<tr><th scope="row"><kbd class="kbd">P</kbd></th><td>Seek playback to selected note</td></tr>
+<tr><th scope="row"><kbd class="kbd">Ctrl/⌘+Z</kbd></th><td>Undo</td></tr>
+<tr><th scope="row"><kbd class="kbd">Ctrl/⌘+Shift+Z</kbd><span class="or">, </span><kbd class="kbd">Ctrl+Y</kbd></th><td>Redo</td></tr>
+<tr><th scope="row"><kbd class="kbd">Ctrl/⌘+Shift+C</kbd></th><td>Copy tab</td></tr>
+</tbody></table>
+<table class="keys"><caption>Trim handle</caption><tbody>
+<tr><th scope="row"><kbd class="kbd">←</kbd><span class="or">/ </span><kbd class="kbd">→</kbd></th><td>Nudge 10 ms</td></tr>
+<tr><th scope="row"><kbd class="kbd">Shift+←</kbd><span class="or">/ </span><kbd class="kbd">Shift+→</kbd></th><td>Nudge 100 ms</td></tr>
+</tbody></table>
+  <p class="note">Shortcuts never fire while you are typing in a field.</p>
+  <div class="actions"><button class="btn" type="button">Close</button></div>
+</div>
+</div>
+</div>
+</div>
+</div></div>
+      </div>
+
+      <div>
+        <h3>(b) Engine failed to load</h3>
+        <p class="cap">Error banner above the content: icon, one sentence, one action (Reload). No Dismiss, because errors stay until resolved. Recording and the Library keep working; the engine version cannot be read, so About says so.</p>
+        <div class="scroller"><div class="t-light">
+<div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/settings</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings" aria-current="page">Settings</a></div>
+</div></nav><div class="content">
+<div class="banner error" role="alert">
+  <svg aria-hidden="true"><use href="#i-error"/></svg>
+  <span>The analysis engine failed to load</span>
+  <button class="btn act" type="button">Reload</button>
+</div>
+<h1>Settings</h1>
+<section class="settings" aria-labelledby="b-def">
+  <h2 id="b-def">Defaults for new takes</h2>
+  <p class="hint">New takes start with these values. Each take keeps its own copy in its Analysis settings.</p>
+  <div class="fields">
+    <div class="field">
+      <label for="b-sens">Sensitivity</label>
+      <div class="slider">
+        <span class="end">Fewer notes</span>
+        <input id="b-sens" type="range" min="0" max="1" step="0.05" value="0.5">
+        <span class="end">More notes</span>
+        <output for="b-sens">0.50</output>
+      </div>
+    </div>
+    <div class="field">
+      <label for="b-min">Minimum note length</label>
+      <div class="numfield"><input id="b-min" type="number" min="20" max="100" value="40"><span class="unit">ms</span></div>
+    </div>
+    <div class="field">
+      <label for="b-fret">Highest fret</label>
+      <div class="numfield"><input id="b-fret" type="number" min="12" max="24" value="24"></div>
+    </div>
+  </div>
+</section>
+<section class="settings" aria-labelledby="b-app">
+  <h2 id="b-app">Appearance</h2>
+  <div class="row"><span id="b-th">Theme</span><div class="seg txt" role="group" aria-labelledby="b-th"><button type="button" aria-pressed="true">System</button><button type="button" aria-pressed="false">Light</button><button type="button" aria-pressed="false">Dark</button></div></div>
+</section>
+<section class="settings" aria-labelledby="b-sto">
+  <h2 id="b-sto">Storage</h2>
+  <div class="row"><span class="stat ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Storage: protected</span></div>
+</section>
+<section class="settings" aria-labelledby="b-abt">
+  <h2 id="b-abt">About</h2>
+  <div class="row"><span class="engine na">Engine version unavailable</span><button class="btn" type="button" aria-haspopup="dialog"><svg aria-hidden="true"><use href="#i-keyboard"/></svg>Keyboard shortcuts <span class="kbd">?</span></button></div>
+</section>
+</div>
+</div>
+</div>
+</div></div>
+      </div>
+
+      <div>
+        <h3>(c) Unsupported browser</h3>
+        <p class="cap">Shown at app start when AudioWorklet, OPFS or WebAssembly is missing. It replaces the whole app: no top bar, no partial screens. Detection is by API, never by user agent.</p>
+        <div class="scroller"><div class="t-light">
+<div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/record</span></div>
+<div class="app">
+<div class="unsupported"><div><span class="appname">TabCreator</span><h1>TabCreator needs a recent desktop Chrome</h1></div></div>
+</div>
+</div>
+</div></div>
+      </div>
+
+    </div>
+  </section>
+</main>
+</body>
+</html>

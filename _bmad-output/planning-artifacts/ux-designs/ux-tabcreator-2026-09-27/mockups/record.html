@@ -1,0 +1,651 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Record Screen Mock</title>
+<style>
+/* ==========================================================================
+   KEY SCREEN — Record screen (#/record, default route)
+   Governing spine sections (check these when the spine changes):
+   DESIGN.md
+     - frontmatter tokens: colors (+ -dark pairs; record / on-record,
+       meter-ok / -warn / -hot, warning, danger), typography (ui, ui-small,
+       heading, display, numeric), rounded (full only on Record button),
+       spacing, components (record-button, level-meter, button-primary,
+       button-secondary, button-pressed, banner-warning, banner-error,
+       dialog, focus-ring)
+     - Components: Record button, Level meter, Pressed / selected, Banners,
+       Form controls (microphone select, count-in toggle + BPM field),
+       Focus ring
+     - Colors (red = live mic only; meter zones always paired with text)
+     - Typography (display = recording timer; numeric = timers, dBFS, BPM)
+     - Layout & Spacing (content-max 1100, gutter 16, one column, top bar)
+   EXPERIENCE.md
+     - Information Architecture: Record row; overlay "Mic setup card"
+     - Component Patterns: Record button, Level meter, Microphone select,
+       Count-in controls, Banner
+     - State Patterns: First visit mic not yet allowed, Mic denied,
+       Bluetooth / low-rate input, Too loud / too quiet, Recording near
+       limit, Recovered take
+     - Voice and Tone; Interaction Primitives (Space, Esc)
+     - Key Flows: Flow 1 steps 1-3, Flow 3 steps 2-3
+   Stories: US-1.1 (permission), US-1.2 (mic select, Bluetooth warning),
+     US-1.3 (level meter), US-3.1 (record/stop, 5:00 cap),
+     US-3.2 (recovery banner), US-3.3 (count-in)
+   Base shell, tokens, chrome, top bar, buttons, pressed style, banner,
+   legend and icon sprite copied from mockups/tab.html; Tab-only rules
+   (tab system, note states, progress, analysis panel, playback) omitted.
+   Meter geometry: x = (dBFS + 60) / 60 → −12 dBFS = 80 %, −3 dBFS = 95 %.
+   ========================================================================== */
+
+/* ---- DESIGN.md colour tokens, verbatim --------------------------------- */
+:root {
+  --color-background: #FAFAF7;       --color-background-dark: #141311;
+  --color-surface: #FFFFFF;          --color-surface-dark: #1D1B18;
+  --color-text: #1C1B19;             --color-text-dark: #ECE9E3;
+  --color-text-muted: #5E5A54;       --color-text-muted-dark: #A8A39A;
+  --color-border: #8C877E;           --color-border-dark: #6E6960;
+  --color-primary: #1F5FAD;          --color-primary-dark: #7FB0F0;
+  --color-on-primary: #FFFFFF;       --color-on-primary-dark: #0B1B2E;
+  --color-record: #B3261E;           --color-record-dark: #F2766B;
+  --color-on-record: #FFFFFF;        --color-on-record-dark: #2A0B08;
+  --color-check-bg: #FCE8B2;         --color-check-bg-dark: #4A3A12;
+  --color-check-line: #8A5A00;       --color-check-line-dark: #E3B34C;
+  --color-refit: #6A3FB5;            --color-refit-dark: #B99BF2;
+  --color-meter-ok: #2E7D32;         --color-meter-ok-dark: #5CC06A;
+  --color-meter-warn: #B26A00;       --color-meter-warn-dark: #E3B34C;
+  --color-meter-hot: #C62828;        --color-meter-hot-dark: #F2766B;
+  --color-success: #2E7D32;          --color-success-dark: #5CC06A;
+  --color-warning: #8A5A00;          --color-warning-dark: #E3B34C;
+  --color-danger: #B3261E;           --color-danger-dark: #F2766B;
+
+  --font-ui: system-ui, "Segoe UI", -apple-system, sans-serif;
+  --font-mono: ui-monospace, Consolas, Menlo, "Cascadia Mono", monospace;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 10px; --r-full: 9999px;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s6: 24px; --s8: 32px; --s12: 48px;
+  --gutter: 16px; --content-max: 1100px; --focus-ring: 2px;
+}
+
+/* Theme scoping: both themes on one page, independent of prefers-color-scheme */
+.t-light {
+  --bg: var(--color-background); --surface: var(--color-surface);
+  --text: var(--color-text); --muted: var(--color-text-muted);
+  --border: var(--color-border); --primary: var(--color-primary);
+  --on-primary: var(--color-on-primary); --record: var(--color-record);
+  --on-record: var(--color-on-record); --check-bg: var(--color-check-bg);
+  --check-line: var(--color-check-line); --refit: var(--color-refit);
+  --success: var(--color-success); --warning: var(--color-warning);
+  --danger: var(--color-danger);
+  --meter-ok: var(--color-meter-ok); --meter-warn: var(--color-meter-warn); --meter-hot: var(--color-meter-hot);
+  --chrome-bg: #DEDCD7; --chrome-tab: #F3F2EF; --chrome-url: #FFFFFF; --chrome-ink: #3A3833;
+  color-scheme: light;
+}
+.t-dark {
+  --bg: var(--color-background-dark); --surface: var(--color-surface-dark);
+  --text: var(--color-text-dark); --muted: var(--color-text-muted-dark);
+  --border: var(--color-border-dark); --primary: var(--color-primary-dark);
+  --on-primary: var(--color-on-primary-dark); --record: var(--color-record-dark);
+  --on-record: var(--color-on-record-dark); --check-bg: var(--color-check-bg-dark);
+  --check-line: var(--color-check-line-dark); --refit: var(--color-refit-dark);
+  --success: var(--color-success-dark); --warning: var(--color-warning-dark);
+  --danger: var(--color-danger-dark);
+  --meter-ok: var(--color-meter-ok-dark); --meter-warn: var(--color-meter-warn-dark); --meter-hot: var(--color-meter-hot-dark);
+  --chrome-bg: #2B2A27; --chrome-tab: #3A3834; --chrome-url: #22211E; --chrome-ink: #D8D5CF;
+  color-scheme: dark;
+}
+
+/* ---- Presentation page (not product UI) -------------------------------- */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: #E2E0DB; color: #1C1B19;
+  font: 15px/1.5 var(--font-ui);
+  overflow-x: hidden;
+}
+.page { max-width: 1240px; margin: 0 auto; padding: 32px 16px 64px; }
+.page > header h1 { font-size: 24px; margin: 0 0 4px; }
+.page > header p { margin: 0; color: #4A4741; max-width: 72ch; }
+.section { margin-top: 48px; }
+.section > h2 { font-size: 18px; margin: 0 0 4px; }
+.section > p.cap { margin: 0 0 12px; color: #4A4741; font-size: 14px; max-width: 90ch; }
+.scroller { max-width: 100%; overflow-x: auto; padding-bottom: 8px; }
+.alt-grid { display: grid; gap: 32px; grid-template-columns: minmax(0, 1fr); }
+.alt-grid h3 { font-size: 15px; margin: 0 0 4px; }
+.alt-grid p.cap { margin: 0 0 10px; color: #4A4741; font-size: 14px; max-width: 90ch; }
+
+/* ---- Browser frame ----------------------------------------------------- */
+.browser {
+  width: 1132px;                  /* 1100 content + 2 x 16 gutter */
+  border-radius: 10px; overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 8px 24px rgba(0,0,0,.12);
+  background: var(--bg);
+}
+.chrome { background: var(--chrome-bg); color: var(--chrome-ink); font: 12px/1 var(--font-ui); padding: 8px 12px 0; }
+.chrome-row { display: flex; align-items: flex-end; gap: 12px; }
+.dots { display: flex; gap: 6px; padding-bottom: 10px; }
+.dots i { width: 11px; height: 11px; border-radius: 50%; background: currentColor; opacity: .35; }
+.btab { background: var(--chrome-tab); border-radius: 8px 8px 0 0; padding: 8px 40px 8px 12px; display: flex; gap: 8px; align-items: center; }
+.btab b { font-weight: 500; }
+.btab .fav { width: 12px; height: 12px; border-radius: 3px; background: var(--primary); }
+.urlbar { color: var(--chrome-ink); background: var(--chrome-tab); padding: 6px 12px 8px; }
+.urlbar span { display: block; background: var(--chrome-url); border-radius: 999px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; }
+.urlbar em { font-style: normal; opacity: .6; }
+
+/* ---- App: top bar ------------------------------------------------------ */
+.app { background: var(--bg); color: var(--text); font: 400 15px/1.5 var(--font-ui); }
+.topbar { background: var(--surface); border-bottom: 1px solid var(--border); height: 52px; }
+.topbar .in { max-width: var(--content-max); margin: 0 auto; padding: 0 var(--gutter); height: 100%; display: flex; align-items: center; gap: var(--s6); }
+.appname { font-weight: 600; font-size: 15px; }
+.nav { display: flex; gap: var(--s1); }
+.nav a { color: var(--text); text-decoration: none; padding: 6px 10px; border-radius: var(--r-md); }
+.nav a[aria-current="page"] { color: var(--primary); box-shadow: inset 0 -2px 0 var(--primary); }
+
+/* ---- App: content column ----------------------------------------------- */
+.content { max-width: var(--content-max); margin: 0 auto; padding: var(--s6) var(--gutter) var(--s8); }
+
+/* Buttons (button-secondary / button-primary) — from tab.html */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 10px; border-radius: var(--r-md);
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  font: 400 15px/1 var(--font-ui); cursor: pointer; white-space: nowrap;
+}
+.btn svg { width: 16px; height: 16px; flex: none; }
+.btn[disabled] { opacity: .4; cursor: not-allowed; }
+.btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); font-weight: 500; }
+.kbd { font: 500 12px/1 var(--font-mono); color: var(--muted); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 2px 5px; }
+/* pressed / selected: one style for toggles (here: Count-in) */
+.btn[aria-pressed="true"] { background: color-mix(in srgb, var(--primary) 14%, var(--surface)); border-color: var(--primary); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--primary); }
+.tick { display: none; }
+.link { color: var(--primary); font-weight: 500; }
+
+/* Banner (warning) — from tab.html */
+.banner {
+  display: flex; align-items: center; gap: var(--s3);
+  background: var(--check-bg); color: var(--text);
+  border-left: 4px solid var(--warning); border-radius: var(--r-md);
+  padding: var(--s3) var(--s4); margin-bottom: var(--s4);
+}
+.banner svg { width: 18px; height: 18px; color: var(--warning); flex: none; }
+.banner a { color: var(--primary); font-weight: 500; white-space: nowrap; margin-left: auto; }
+.banner .dismiss { background: none; border: 0; color: var(--muted); font: 400 13px/1 var(--font-ui); cursor: pointer; padding: 4px 6px; border-radius: var(--r-sm); margin-left: auto; }
+.banner .actions { display: flex; gap: var(--s2); margin-left: auto; flex: none; }
+.banner .num { font-family: var(--font-mono); font-weight: 500; }
+
+.crop { position: relative; max-height: 330px; overflow: hidden; }
+.crop::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 48px; background: linear-gradient(transparent, var(--bg)); }
+
+/* ---- Record screen (new for this screen) -------------------------------- */
+.rec { max-width: 640px; margin: 0 auto; }
+.rec-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s4); }
+.rec-head h1 { font: 600 20px/1.3 var(--font-ui); margin: 0; }
+
+/* Input panel: microphone select + level meter (surface + hairline, as panels) */
+.panel { margin-top: var(--s4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s4); }
+.field label, .field .lbl { display: block; font: 400 15px/1.5 var(--font-ui); margin-bottom: var(--s1); }
+.select {
+  width: 100%; height: 36px; padding: 0 32px 0 10px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text); font: 400 15px/1 var(--font-ui);
+}
+.select[disabled] { opacity: .4; cursor: not-allowed; }
+
+/* Level meter: 12 px bar, −60…0 dBFS, RMS fill by zone, 1.5 s peak-hold tick in text */
+.meter { margin-top: var(--s4); }
+.meter .lblrow { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: var(--s1); }
+.meter .unit { font: 400 13px/1.4 var(--font-ui); color: var(--muted); }
+.track { position: relative; height: 12px; background: var(--border); border-radius: var(--r-sm); }
+.fill {
+  position: absolute; inset: 0; border-radius: var(--r-sm);
+  background: linear-gradient(to right, var(--meter-ok) 0 80%, var(--meter-warn) 80% 95%, var(--meter-hot) 95% 100%);
+}
+.peak { position: absolute; top: -3px; width: 2px; height: 18px; background: var(--text); border-radius: 1px; margin-left: -1px; }
+.scale { position: relative; height: 18px; margin-top: 4px; font: 500 12px/1.4 var(--font-mono); color: var(--muted); }
+.scale span { position: absolute; transform: translateX(-50%); }
+.scale span:first-child { transform: none; }
+.scale span:last-child { transform: translateX(-100%); }
+.warnline { display: flex; align-items: center; gap: var(--s2); margin-top: var(--s2); color: var(--warning); font-weight: 500; min-height: 24px; }
+.warnline svg { width: 18px; height: 18px; flex: none; }
+.warnline.empty { visibility: hidden; }
+
+/* Count-in controls: toggle (pressed style) + BPM number field */
+.countin { margin-top: var(--s4); display: flex; align-items: center; flex-wrap: wrap; gap: var(--s4); }
+.numfield { display: flex; align-items: center; gap: var(--s2); }
+.numfield label { font: 400 15px/1.5 var(--font-ui); }
+.numfield input {
+  height: 36px; width: 84px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text); font: 500 15px/1 var(--font-mono);
+}
+.numfield input[disabled] { opacity: .4; }
+.numfield .unit { color: var(--muted); font-size: 13px; }
+
+/* Record hero: timer (display + numeric digits), 88 px Record button, label */
+.hero { margin-top: var(--s8); display: flex; flex-direction: column; align-items: center; text-align: center; }
+.state { font: 400 13px/1.4 var(--font-ui); color: var(--muted); min-height: 18px; display: flex; align-items: center; gap: 6px; }
+.state.live { color: var(--record); font-weight: 600; }
+.state .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--record); }
+.timer { font: 600 56px/1 var(--font-mono); letter-spacing: -1px; margin: var(--s2) 0 var(--s6); font-variant-numeric: tabular-nums; }
+.timer.idle { color: var(--muted); }
+.beat { font: 600 96px/1 var(--font-mono); margin: var(--s2) 0 var(--s4); }
+.recbtn {
+  display: inline-flex; flex-direction: column; align-items: center; gap: var(--s2);
+  background: none; border: 0; padding: 4px; color: var(--text); font: 600 15px/1.2 var(--font-ui); cursor: pointer; border-radius: var(--r-lg);
+}
+.recbtn .disc { width: 88px; height: 88px; border-radius: var(--r-full); background: var(--record); display: grid; place-items: center; }
+.recbtn .disc i { width: 30px; height: 30px; border-radius: 50%; background: var(--on-record); }
+.recbtn[aria-pressed="true"] .disc i { width: 28px; height: 28px; border-radius: 5px; }
+.recbtn.focus { outline: var(--focus-ring) solid var(--primary); outline-offset: 2px; }
+.hint { margin-top: var(--s2); font: 400 13px/1.4 var(--font-ui); color: var(--muted); }
+.limit { margin-top: var(--s3); display: inline-flex; align-items: center; gap: var(--s2); color: var(--warning); font-weight: 600; }
+.limit svg { width: 18px; height: 18px; }
+
+/* Mic setup card (dialog token: surface, rounded-lg, max 480) */
+.setup { max-width: 480px; margin: var(--s8) auto 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--s6); }
+.setup .ico { width: 32px; height: 32px; color: var(--primary); }
+.setup h2 { font: 600 20px/1.3 var(--font-ui); margin: var(--s3) 0 var(--s2); }
+.setup p { margin: 0 0 var(--s4); }
+.setup ol { margin: 0 0 var(--s4); padding-left: 22px; }
+.setup ol li { margin: 2px 0; }
+/* error variant: banner-error edge (danger + icon + text) */
+.setup.error { border-left: 4px solid var(--danger); }
+.setup.error .ico { color: var(--danger); }
+.setup .actions { display: flex; gap: var(--s2); }
+
+/* ---- Legend (from tab.html) --------------------------------------------- */
+.legend {
+  margin-top: 12px; width: 1132px; max-width: 100%;
+  display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px 16px; font: 13px/1.4 var(--font-ui);
+}
+.legend .item { display: inline-flex; align-items: center; }
+.legend b { font-weight: 600; margin-right: 4px; }
+.legend .muted { color: var(--muted); }
+.legend .zone { display: inline-block; width: 28px; height: 12px; border-radius: var(--r-sm); margin-right: 8px; }
+.legend .pk { display: inline-block; width: 2px; height: 16px; background: var(--text); margin: 0 12px 0 6px; }
+</style>
+</head>
+<body>
+
+<!-- Icon sprite (inline, offline) — tab.html set trimmed to what Record uses, plus mic -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3 2 20h20z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.5M12 17.2v.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-mic-off" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7M4 4l16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<main class="page">
+  <header>
+    <h1>TabCreator — Record screen (key screen)</h1>
+    <p>1:1 static mock of <code>#/record</code>, the default route, during Flow 1 (capture a riff): two inputs available, count-in on at 90 BPM. Meter positions use −60…0 dBFS mapped linearly across the bar.</p>
+  </header>
+
+  <!-- ===================================================== 1. LIGHT IDLE -->
+  <section class="section">
+    <h2>1 · Light theme — idle, ready to record</h2>
+    <p class="cap">Flow 1 steps 1–3. Built-in mic selected; RMS −20 dBFS with the peak-hold tick at −14 dBFS, all green, no warning (the warning line keeps its space so the button never jumps). Count-in toggle on (pressed style) at 90 BPM. Timer reads 0:00; the Record button is the only large control.</p>
+    <div class="scroller"><div class="t-light">
+      <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/record</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record" aria-current="page">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content"><div class="rec">
+  <div class="rec-head">
+    <h1>Record</h1>
+    <a class="link" href="#/tuner">Tune first</a>
+  </div>
+  <div class="panel">
+    <div class="field">
+      <label for="mic1">Microphone</label>
+      <select class="select" id="mic1">
+        <option selected>MacBook Pro Microphone (Built-in)</option>
+        <option>USB Audio CODEC</option>
+      </select>
+    </div>
+    <div class="meter">
+      <div class="lblrow"><span class="lbl" id="lvl1">Input level</span><span class="unit">dBFS</span></div>
+      <div class="track" role="meter" aria-labelledby="lvl1" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-20" aria-valuetext="−20 dBFS">
+        <i class="fill" style="clip-path: inset(0 33.3% 0 0)"></i>
+        <i class="peak" style="left:76.7%"></i>
+      </div>
+      <div class="scale" aria-hidden="true"><span style="left:0">−60</span><span style="left:20%">−48</span><span style="left:40%">−36</span><span style="left:60%">−24</span><span style="left:80%">−12</span><span style="left:95%">−3</span><span style="left:100%">0</span></div>
+      <div class="warnline empty" aria-live="polite"></div>
+    </div>
+  </div>
+  <div class="countin">
+    <button class="btn" type="button" aria-pressed="true">Count-in<svg class="tick" aria-hidden="true"><use href="#i-check"/></svg></button>
+    <div class="numfield"><label for="bpm1">Tempo</label><input id="bpm1" type="number" min="40" max="240" value="90"><span class="unit">BPM</span></div>
+  </div>
+  <div class="hero">
+    <div class="state" aria-hidden="true"></div>
+    <div class="timer idle" role="timer" aria-label="Elapsed time 0:00">0:00</div>
+    <button class="recbtn" type="button" aria-pressed="false"><span class="disc" aria-hidden="true"><i></i></span>Record</button>
+    <div class="hint"><span class="kbd">Space</span> to record</div>
+  </div>
+</div></div>
+</div>
+      </div>
+      <div class="legend t-light" aria-label="Level meter legend">
+        <span class="item"><span class="zone" style="background:var(--meter-ok)"></span><b>Green</b><span class="muted">below −12 dBFS</span></span>
+        <span class="item"><span class="zone" style="background:var(--meter-warn)"></span><b>Amber</b><span class="muted">−12 to −3 dBFS</span></span>
+        <span class="item"><span class="zone" style="background:var(--meter-hot)"></span><b>Red</b><span class="muted">above −3 dBFS</span></span>
+        <span class="item"><span class="pk"></span><b>Peak hold</b><span class="muted">1.5 s tick in ink</span></span>
+        <span class="item"><b>Zone meaning</b><span class="muted">always repeated as text + icon under the meter</span></span>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ===================================================== 2. DARK RECORDING -->
+  <section class="section">
+    <h2>2 · Dark theme — recording in progress, too loud</h2>
+    <p class="cap">0:42 into a take. Button shows the white rounded square and "Stop" (<code>aria-pressed="true"</code>); red is used only on the button and the live indicator. RMS −6 dBFS in the amber zone, peak-hold at −0.8 dBFS, so the "Too loud" warning shows as icon + text under the meter. Microphone select and count-in controls are disabled while recording.</p>
+    <div class="scroller"><div class="t-dark">
+      <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/record</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record" aria-current="page">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content"><div class="rec">
+  <div class="rec-head">
+    <h1>Record</h1>
+    <a class="link" href="#/tuner">Tune first</a>
+  </div>
+  <div class="panel">
+    <div class="field">
+      <label for="mic2">Microphone</label>
+      <select class="select" id="mic2" disabled title="Can't change the microphone while recording">
+        <option selected>MacBook Pro Microphone (Built-in)</option>
+        <option>USB Audio CODEC</option>
+      </select>
+    </div>
+    <div class="meter">
+      <div class="lblrow"><span class="lbl" id="lvl2">Input level</span><span class="unit">dBFS</span></div>
+      <div class="track" role="meter" aria-labelledby="lvl2" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-6" aria-valuetext="−6 dBFS, too loud">
+        <i class="fill" style="clip-path: inset(0 10% 0 0)"></i>
+        <i class="peak" style="left:98.7%"></i>
+      </div>
+      <div class="scale" aria-hidden="true"><span style="left:0">−60</span><span style="left:20%">−48</span><span style="left:40%">−36</span><span style="left:60%">−24</span><span style="left:80%">−12</span><span style="left:95%">−3</span><span style="left:100%">0</span></div>
+      <div class="warnline" aria-live="polite"><svg aria-hidden="true"><use href="#i-warn"/></svg>Too loud — move back or lower the input</div>
+    </div>
+  </div>
+  <div class="countin">
+    <button class="btn" type="button" aria-pressed="true" disabled>Count-in<svg class="tick" aria-hidden="true"><use href="#i-check"/></svg></button>
+    <div class="numfield"><label for="bpm2">Tempo</label><input id="bpm2" type="number" value="90" disabled><span class="unit">BPM</span></div>
+  </div>
+  <div class="hero">
+    <div class="state live"><span class="dot" aria-hidden="true"></span>Recording</div>
+    <div class="timer" role="timer" aria-label="Elapsed time 0:42">0:42</div>
+    <button class="recbtn" type="button" aria-pressed="true"><span class="disc" aria-hidden="true"><i></i></span>Stop</button>
+    <div class="hint"><span class="kbd">Space</span> to stop</div>
+  </div>
+</div></div>
+</div>
+      </div>
+      <div class="legend t-dark" aria-label="Level meter legend">
+        <span class="item"><span class="zone" style="background:var(--meter-ok)"></span><b>Green</b><span class="muted">below −12 dBFS</span></span>
+        <span class="item"><span class="zone" style="background:var(--meter-warn)"></span><b>Amber</b><span class="muted">−12 to −3 dBFS</span></span>
+        <span class="item"><span class="zone" style="background:var(--meter-hot)"></span><b>Red</b><span class="muted">above −3 dBFS</span></span>
+        <span class="item"><span class="pk"></span><b>Peak hold</b><span class="muted">1.5 s tick in ink</span></span>
+        <span class="item"><b>"Too loud"</b><span class="muted">peak ≥ −1 dBFS; clears after 2 s without clipping</span></span>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ===================================================== 3. ALTERNATES -->
+  <section class="section">
+    <h2>3 · Alternate states (light, cropped)</h2>
+    <p class="cap">Same frame width; each panel is cropped below the part that changes.</p>
+    <div class="alt-grid">
+
+      <!-- (a) Count-in -->
+      <div>
+        <h3>(a) Count-in in progress</h3>
+        <p class="cap">Beat 2 of the 4-3-2-1 count at 90 BPM: the large beat number replaces the timer while the clicks play. Pressing Record again or <code>Esc</code> cancels and creates no take. Microphone and meter above are unchanged and omitted from this frame.</p>
+        <div class="scroller"><div class="t-light">
+          <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/record</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record" aria-current="page">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content"><div class="rec">
+  <div class="countin" style="margin-top:0">
+    <button class="btn" type="button" aria-pressed="true" disabled>Count-in<svg class="tick" aria-hidden="true"><use href="#i-check"/></svg></button>
+    <div class="numfield"><label for="bpm3">Tempo</label><input id="bpm3" type="number" value="90" disabled><span class="unit">BPM</span></div>
+  </div>
+  <div class="hero" style="margin-top:var(--s6)">
+    <div class="state">Count-in · <span style="font-family:var(--font-mono)">90</span> BPM</div>
+    <div class="beat" aria-live="assertive" aria-label="Count-in, 3">3</div>
+    <button class="recbtn" type="button" aria-pressed="false" aria-label="Cancel count-in"><span class="disc" aria-hidden="true"><i></i></span>Cancel</button>
+    <div class="hint"><span class="kbd">Esc</span> to cancel</div>
+  </div>
+</div></div>
+</div>
+          </div>
+        </div></div>
+      </div>
+
+      <!-- (b) Mic setup card -->
+      <div>
+        <h3>(b) First visit — Mic setup card</h3>
+        <p class="cap">Shown before any browser prompt; only "Allow microphone" triggers the permission request. Meter, select, count-in and Record are not shown until access is granted.</p>
+        <div class="scroller"><div class="t-light">
+          <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/record</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record" aria-current="page">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content"><div class="rec">
+  <div class="rec-head"><h1>Record</h1></div>
+  <section class="setup" aria-labelledby="setup-h">
+    <svg class="ico" aria-hidden="true"><use href="#i-mic"/></svg>
+    <h2 id="setup-h">TabCreator needs your microphone</h2>
+    <p>Audio is analysed on this computer and never uploaded.</p>
+    <button class="btn primary" type="button">Allow microphone</button>
+  </section>
+</div></div>
+</div>
+          </div>
+        </div></div>
+      </div>
+
+      <!-- (c) Mic denied -->
+      <div>
+        <h3>(c) Microphone denied</h3>
+        <p class="cap">The setup card returns with the <code>denied</code> message, steps for Chrome's site settings and "Try again", which re-requests access without a page reload. Error edge + icon + text (banner-error treatment), no Dismiss.</p>
+        <div class="scroller"><div class="t-light">
+          <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/record</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record" aria-current="page">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content"><div class="rec">
+  <div class="rec-head"><h1>Record</h1></div>
+  <section class="setup error" role="alert" aria-labelledby="denied-h">
+    <svg class="ico" aria-hidden="true"><use href="#i-mic-off"/></svg>
+    <h2 id="denied-h">Microphone access is blocked</h2>
+    <p>Chrome is blocking the microphone for this site. To allow it:</p>
+    <ol>
+      <li>Click the site settings icon at the left end of the address bar.</li>
+      <li>Turn on Microphone.</li>
+      <li>Come back here and choose Try again.</li>
+    </ol>
+    <div class="actions"><button class="btn primary" type="button">Try again</button></div>
+  </section>
+</div></div>
+</div>
+          </div>
+        </div></div>
+      </div>
+
+      <!-- (d) Recovered take -->
+      <div>
+        <h3>(d) Recovered take</h3>
+        <p class="cap">Flow 3 step 2: after the browser tab closed mid-take, a banner above the content offers Open (analyse as usual) or Discard (removes the take and its recovery file). No Dismiss.</p>
+        <div class="scroller"><div class="t-light">
+          <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/record</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record" aria-current="page">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content crop" style="max-height:300px"><div class="rec">
+  <div class="banner" role="status">
+    <svg aria-hidden="true"><use href="#i-warn"/></svg>
+    <span>An unfinished take from 9:14 pm was recovered (<span class="num">3:02</span>)</span>
+    <div class="actions"><button class="btn" type="button">Open</button><button class="btn" type="button">Discard</button></div>
+  </div>
+  <div class="rec-head">
+    <h1>Record</h1>
+    <a class="link" href="#/tuner">Tune first</a>
+  </div>
+  <div class="panel">
+    <div class="field">
+      <label for="mic4">Microphone</label>
+      <select class="select" id="mic4">
+        <option selected>MacBook Pro Microphone (Built-in)</option>
+        <option>USB Audio CODEC</option>
+      </select>
+    </div>
+    <div class="meter">
+      <div class="lblrow"><span class="lbl" id="lvl4">Input level</span><span class="unit">dBFS</span></div>
+      <div class="track" role="meter" aria-labelledby="lvl4" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-38" aria-valuetext="−38 dBFS">
+        <i class="fill" style="clip-path: inset(0 63.3% 0 0)"></i>
+        <i class="peak" style="left:46.7%"></i>
+      </div>
+    </div>
+  </div>
+</div></div>
+</div>
+          </div>
+        </div></div>
+      </div>
+
+      <!-- (e) Bluetooth warning -->
+      <div>
+        <h3>(e) Bluetooth / low-rate input warning</h3>
+        <p class="cap">The selected input's label matches the Bluetooth-headset pattern. Warning banner with Dismiss (hidden for this session; returns on the next visit while the headset is still selected).</p>
+        <div class="scroller"><div class="t-light">
+          <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/record</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record" aria-current="page">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content crop" style="max-height:300px"><div class="rec">
+  <div class="banner" role="status">
+    <svg aria-hidden="true"><use href="#i-warn"/></svg>
+    <span>This microphone may be a Bluetooth headset in call mode — accuracy will be poor. Use the built-in or a wired mic.</span>
+    <button class="dismiss" type="button" aria-label="Dismiss Bluetooth warning for this session">Dismiss</button>
+  </div>
+  <div class="rec-head">
+    <h1>Record</h1>
+    <a class="link" href="#/tuner">Tune first</a>
+  </div>
+  <div class="panel">
+    <div class="field">
+      <label for="mic5">Microphone</label>
+      <select class="select" id="mic5">
+        <option>MacBook Pro Microphone (Built-in)</option>
+        <option selected>AirPods Pro (Hands-Free)</option>
+      </select>
+    </div>
+    <div class="meter">
+      <div class="lblrow"><span class="lbl" id="lvl5">Input level</span><span class="unit">dBFS</span></div>
+      <div class="track" role="meter" aria-labelledby="lvl5" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-24" aria-valuetext="−24 dBFS">
+        <i class="fill" style="clip-path: inset(0 40% 0 0)"></i>
+        <i class="peak" style="left:70%"></i>
+      </div>
+    </div>
+  </div>
+</div></div>
+</div>
+          </div>
+        </div></div>
+      </div>
+
+      <!-- (f) 30 seconds left -->
+      <div>
+        <h3>(f) Recording near the limit</h3>
+        <p class="cap">At 4:30 "30 seconds left" appears under the timer (icon + text, announced once); at 5:00 recording stops with "Maximum length reached" and analysis runs as normal. Microphone and meter above are omitted from this frame.</p>
+        <div class="scroller"><div class="t-light">
+          <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/record</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record" aria-current="page">Record</a><a href="#/library">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content"><div class="rec">
+  <div class="countin" style="margin-top:0">
+    <button class="btn" type="button" aria-pressed="true" disabled>Count-in<svg class="tick" aria-hidden="true"><use href="#i-check"/></svg></button>
+    <div class="numfield"><label for="bpm6">Tempo</label><input id="bpm6" type="number" value="90" disabled><span class="unit">BPM</span></div>
+  </div>
+  <div class="hero" style="margin-top:var(--s6)">
+    <div class="state live"><span class="dot" aria-hidden="true"></span>Recording</div>
+    <div class="timer" role="timer" aria-label="Elapsed time 4:30" style="margin-bottom:0">4:30</div>
+    <div class="limit" role="status"><svg aria-hidden="true"><use href="#i-warn"/></svg>30 seconds left</div>
+    <div style="height:var(--s6)"></div>
+    <button class="recbtn" type="button" aria-pressed="true"><span class="disc" aria-hidden="true"><i></i></span>Stop</button>
+    <div class="hint"><span class="kbd">Space</span> to stop</div>
+  </div>
+</div></div>
+</div>
+          </div>
+        </div></div>
+      </div>
+
+    </div>
+  </section>
+</main>
+</body>
+</html>

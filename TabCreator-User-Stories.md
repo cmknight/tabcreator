@@ -2,15 +2,17 @@
 
 Sep 26, 2026 · Chris Knight
 
-These 32 stories implement every requirement in TabCreator — Requirements, grouped into nine epics and ordered so each can be built and tested on top of the ones before it.
+These 33 stories implement every requirement in TabCreator — Requirements, grouped into nine epics and ordered so each can be built and tested on top of the ones before it.
 
 ## How to use this document
 
 Implement stories in ID order; each lists its dependencies, the files to touch, exact behaviour, acceptance criteria and required tests. A story is done only when every acceptance box can be ticked and the Definition of Done below holds. Where a story and the requirements disagree, the requirements win — raise it rather than guessing.
 
+**Architecture:** `_bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md` (AD-1 – AD-19) binds every story. Where it overrides a story below, the spine wins; exact versions are in its Stack table.
+
 **Tech stack (fixed)**
 
-- App: Vite + React 18 + TypeScript (`strict: true`), CSS Modules, no UI framework. `vite-plugin-pwa` for the service worker. `idb` for IndexedDB. `fflate` for zip.
+- App: Vite + React 19 + TypeScript (`strict: true`), CSS Modules, no UI framework. `vite-plugin-pwa` for the service worker. `idb` for IndexedDB. `fflate` for zip.
 - Engine: Rust stable, `wasm-bindgen`, `wasm-pack build --target web`, `rustfft`. No other runtime crates without a note in the PR.
 - Tests: Vitest (unit, jsdom), `cargo test` (engine), Playwright (e2e on Chromium — desktop Chrome is the only target browser), `@axe-core/playwright`.
 - Tooling: pnpm, ESLint + Prettier, `rustfmt` + `clippy -D warnings`, GitHub Actions.
@@ -22,11 +24,12 @@ Implement stories in ID order; each lists its dependencies, the files to touch, 
 tabcreator/
   app/
     src/
-      audio/      mic.ts, level-meter.ts, tuner.ts, recorder.ts, recorder-worklet.ts, metronome.ts, fake-mic.ts
-      engine/     engine-worker.ts, engine-client.ts
-      model/      types.ts, midi.ts, tab-render.ts, edit-history.ts, phrase.ts
-      storage/    db.ts, audio-store.ts, opfs-worker.ts, backup.ts
-      ui/         screens/ (Setup, Tuner, Record, Tab, Library, Settings), components/
+      audio/      mic.ts, level-meter.ts, tuner.ts, recorder.ts, recorder-worklet.ts, metronome.ts, decode.ts, fake-mic.ts
+      engine/     engine-worker.ts, engine-client.ts, pkg/  (nothing else — spine AD-1)
+      model/      types.ts, errors.ts, audio-format.ts, log.ts, midi.ts, tab-render.ts, edit-history.ts, phrase.ts
+      session/    take-session.ts, recording-session.ts, library-session.ts, settings-session.ts, analysis.ts, instance-lock.ts, app-reload.ts
+      storage/    db.ts, events.ts, prefs.ts, audio-store.ts, opfs-worker.ts, backup.ts
+      ui/         screens/ (Setup, Tuner, Record, Tab, Library, Settings), components/, a11y/ (announcer, shortcuts, overlays), platform.ts, strings.ts, theme.css
       App.tsx, main.tsx
     tests/e2e/    *.spec.ts
   engine/
@@ -99,7 +102,9 @@ engine_version(): string                                                  // e.g
 | app → worker | `{type:'analyze', reqId, pcm (transferred), sampleRate, settings, skipStartMs}` (`skipStartMs` = 100 after a count-in, else 0) |
 | app → worker | `{type:'mapFrets', reqId, notes:{midi,startMs,endMs}[], locks:{index,string,fret}[], maxFret}` |
 | worker → app | `{type:'progress', reqId, fraction}` at most every 100 ms |
-| worker → app | `{type:'result', reqId, payload}` or `{type:'error', reqId, message}` |
+| worker → app | `{type:'result', reqId, payload}` or `{type:'error', reqId, code, message}` (`code` `engine-unavailable` or `analysis-failed`; an init failure is sent once with `reqId: null`) |
+
+Every request also carries `takeId`; `mapFrets` requests run ahead of queued `analyze` requests, and `cancel(takeId)` only affects that take (spine AD-8). The `analyze` message carries `trimStartMs`, `trimEndMs` and `skipStartMs` inside `EngineAnalyzeInput`; the engine trims and returns times relative to the untrimmed start (spine AD-7).
 
 **Definition of Done (every story)**
 
@@ -123,7 +128,7 @@ Epics 0–6 deliver the core record → analyze → edit loop; Epics 7–8 make 
 | 5 Fret mapping | Pick a playable string and fret per note | US-5.1 – US-5.2 | FR-08, NFR-03 |
 | 6 Tab view and editor | Show, correct and play back the tab | US-6.1 – US-6.5 | FR-08 – FR-13, FR-20, FR-22, NFR-05 |
 | 7 Library and export | Keep, find and share takes | US-7.1 – US-7.3 | FR-14, FR-15, FR-20, FR-21, FR-22, NFR-09 |
-| 8 Offline, accessibility, quality | Works offline, for everyone, in desktop Chrome | US-8.1 – US-8.4 | FR-22, NFR-01 – NFR-10 |
+| 8 Offline, accessibility, quality | Works offline, for everyone, in desktop Chrome | US-8.1 – US-8.5 | FR-22, NFR-01 – NFR-10 |
 
 ## Epic 0 — Project foundation
 
@@ -190,7 +195,8 @@ Priority: Must · Covers: NFR-06, NFR-09 · Depends on: US-0.1
 
 **Implementation notes**
 
-- `db.ts`: IndexedDB `tabcreator`, version 1, stores `takes` (key `id`, index `createdAt`) and `tabs` (key `takeId`). API: `listTakes()`, `getTake(id)`, `putTake(take)`, `deleteTake(id)` (also deletes its tab and audio), `getTab(takeId)`, `putTab(tab)`. Every write sets `updatedAt`.
+- `db.ts`: IndexedDB `tabcreator`, version 1, stores `takes` (key `id`, index `createdAt`) and `tabs` (key `takeId`). API (spine AD-14 – AD-16): `listTakes()`, `getTake(id)`, `getTab(takeId)`, `createTake(take)`, `patchTake(id, patch, writer)`, `putTab(tab)`, `commitAnalysis(takeId, tab, takePatch)`, `importTakes(records)`, `deleteTake(id)` (Take and Tab in one transaction, then audio). There is no public `putTake`. Writes to a missing take reject with `take-not-found`; every write except `importTakes` sets `updatedAt`, and every committed write emits a typed event from `events.ts` (spine AD-5).
+- `prefs.ts` is the only code touching `localStorage`: one key `tabcreator.prefs.v1` with a typed, versioned `Prefs` (spine AD-2).
 - `audio-store.ts` over the Origin Private File System: `audio/{takeId}.{ext}` for compressed audio, `raw/{takeId}.f32` for raw PCM during recording. API: `writeCompressed(id, blob)`, `readCompressed(id): Blob|null`, `deleteAudio(id)`, `openRawWriter(id)` returning `{append(Float32Array), close()}`, `readRaw(id): Float32Array`, `deleteRaw(id)`, `listRaw(): string[]`.
 - Raw writes happen in `opfs-worker.ts` with `createSyncAccessHandle`, so they are durable per append.
 - `migrate()` runs on startup; version bumps add a numbered migration function.
@@ -246,7 +252,7 @@ Priority: Must · Covers: FR-01, FR-22, NFR-06 · Depends on: US-0.1
 - `mic.ts` exports `requestMic(deviceId?: string): Promise<MediaStream>` using constraints `{audio: {deviceId: deviceId ? {exact: deviceId} : undefined, echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1}}`.
 - It maps errors to a typed result: `NotAllowedError` → `denied`, `NotFoundError` → `no-device`, `NotReadableError` → `in-use`, anything else → `unknown`.
 - First visit to Record or Tuner shows a Setup card before any browser prompt: heading "TabCreator needs your microphone", text "Audio is analysed on this computer and never uploaded.", button "Allow microphone". Only the button triggers `getUserMedia`.
-- Store `micGranted=true` in `localStorage` after success so later visits skip the card; if the permission is later revoked, show the card again.
+- Store `micGranted=true` in prefs after success so later visits skip the card; if the permission is later revoked, show the card again.
 - Each error shows a specific message with recovery steps and a "Try again" button that works without reloading the page (for `denied`: how to re-enable in Chrome's site settings).
 - If the track ends mid-session (permission revoked or device lost), stop any recording cleanly, keeping the audio captured so far, and show the Setup card with "Microphone access was lost" (FR-22).
 
@@ -273,7 +279,7 @@ Priority: Should · Covers: FR-19, FR-23 · Depends on: US-1.1
 **Implementation notes**
 
 - After permission, call `enumerateDevices()` and list `audioinput` devices in a `<select>` on the Record and Tuner screens (label "Microphone"). Hide it when only one device exists.
-- Persist the chosen `deviceId` in `localStorage` (`micDeviceId`); fall back to the default device if it is missing.
+- Persist the chosen `deviceId` in prefs (`micDeviceId`); fall back to the default device if it is missing.
 - Listen to `devicechange`; refresh the list and, if the active device disappears, switch to default and show a toast "Microphone disconnected — switched to <label>".
 - Changing the device stops the old stream's tracks before opening the new one. Disabled while recording.
 - If the active device disappears during a recording, stop the recording cleanly (as a normal stop, keeping everything captured) and show "Microphone disconnected — recording stopped and saved".
@@ -392,8 +398,8 @@ Priority: Must · Covers: NFR-11 · Depends on: US-3.1
 
 - While recording, append each 1-second raw chunk to `raw/{takeId}.f32` through `openRawWriter` (durable per append), in addition to MediaRecorder.
 - Delete the raw file only after compressed audio is written and analysis has saved a Tab.
-- On app start, find takes with `status:'recording'`, or raw files with no `analyzed` take. For each, show a banner on the Record screen: "An unfinished take from <time> was recovered (m:ss)" with "Open" and "Discard".
-- "Open" rebuilds the take from raw PCM: encode compressed audio with `MediaRecorder` fed from an `AudioBufferSourceNode` (or keep raw as WAV if encoding fails), set `status:'recorded'`, then analyse as usual.
+- After the instance lock is held (US-8.5), scan for unfinished takes: a take is unfinished if and only if `status:'recording'`. A `recorded` take with a raw file is not unfinished — `take-session` resumes its analysis when opened, with no banner. A raw file with no Take, or an unfinished take with under 0.5 s of raw audio, is deleted silently. For each unfinished take, show a banner on the Record screen: "An unfinished take from <time> was recovered (m:ss)" with "Open" and "Discard".
+- "Open" rebuilds the take from raw PCM: encode compressed audio with `MediaRecorder` fed from an `AudioBufferSourceNode` (or keep raw as WAV if encoding fails) — never overwriting existing compressed audio — set `status:'recorded'`, then open `#/tab/:takeId`, where `take-session` analyses it.
 - Register `beforeunload` while recording to show the browser's leave-page warning.
 
 **Acceptance criteria**
@@ -416,7 +422,7 @@ Priority: Should · Covers: FR-05, FR-20 · Depends on: US-3.1
 
 **Implementation notes**
 
-- Record screen controls: "Count-in" toggle (default off) and tempo field 40–240 BPM (default 100), both persisted in `localStorage`.
+- Record screen controls: "Count-in" toggle (default off) and tempo field 40–240 BPM (default 100), both persisted in prefs.
 - `metronome.ts` schedules 4 clicks on the AudioContext clock: 30 ms sine bursts, 1500 Hz on beat 1, 1000 Hz on beats 2–4, −12 dBFS. A large beat number (4-3-2-1) is shown visually as well.
 - Capture starts at the scheduled time of the fifth beat so the clicks are not in the take, so take time 0 is the downbeat of bar 1. No metronome plays during the recording.
 - Esc or clicking Record again during the count-in cancels it.
@@ -574,10 +580,10 @@ Priority: Must · Covers: FR-06, FR-22, FR-24, NFR-04 · Depends on: US-3.1, US-
 
 **Implementation notes**
 
-- `analyzeTake(takeId)` in `app/src/engine/analyze.ts`: get PCM (raw chunks in memory for a fresh take; otherwise decode compressed audio with `decodeAudioData` and mix to mono) → `engineClient.analyze` (with `skipStartMs` 100 when the take has `countInBpm`) → save `warnings` on the take → `engineClient.mapFrets` → build `Note`s (new ids, `locked:false`, `lowConfidence` per US-4.4) → `putTab` → set take `status:'analyzed'`, `analysisVersion = engine_version()` → delete raw file.
+- `analyzeTake(takeId)` in `app/src/session/analysis.ts`, called only by `take-session.ensureAnalysed()`, which starts it when the opened take is `recorded` and no analysis for it is in flight (spine AD-15). Get PCM (`storage.readRaw` while the raw file exists; otherwise `audio/decode.ts` decodes compressed audio and mixes to mono; always pass the buffer's actual sample rate) → `engineClient.analyze` (with `skipStartMs` 100 when the take has `countInBpm`) → save `warnings` on the take → `engineClient.mapFrets` → build `Note`s (new ids, `locked:false`, `lowConfidence` per US-4.4) → `putTab` → set take `status:'analyzed'`, `analysisVersion = engine_version()` → delete raw file.
 - Tab screen shows a progress bar while analysing: weight preprocessing 10%, pitch 60%, onsets 15%, notes 5%, fret mapping 10%. A "Cancel" button terminates the worker (and restarts it) and leaves the take `recorded` with a "Analyse" button.
 - Zero notes: show "No notes found" with tips (check level, play single notes, raise sensitivity) and a link to the settings panel (US-4.6).
-- Errors: "Analysis failed: <message>" with "Retry".
+- Errors: "Analysis failed — try again" with "Retry"; the technical message goes to logs only (spine AD-10).
 - Tuning warnings (FR-24, no automatic correction): when |`tuningOffsetCents`| ≥ 40, show "Your guitar seems about <n> cents <flat|sharp> — tune up and record again for accurate tab" with a link to the tuner; when `belowRangeNotes` > 0, show "Looks like drop tuning — not supported in v1". Warnings stay on the take until re-analysis clears them.
 - Storage full while saving the tab (`storage-full`): "Storage is full — delete takes or their audio in the Library, or back up and clear" with a link to the Library; the analysis result is kept in memory so Retry can save it (FR-22).
 - Opening `#/tab/{id}` for a `recorded` (not analysed) take starts analysis automatically.
@@ -604,7 +610,7 @@ Priority: Should (sensitivity, FR-16) / Could (re-analysis, FR-17) · Covers: FR
 **Implementation notes**
 
 - Tab screen "Analysis settings" panel: Sensitivity slider 0–1, step 0.05, labelled "Fewer notes" ↔ "More notes" (default 0.5); Minimum note length 20–100 ms (default 40); Highest fret 12–24 (default 24). "Re-analyse" button. Settings save to the take.
-- Defaults for new takes come from Settings screen values (same controls), stored in `localStorage`.
+- Defaults for new takes come from Settings screen values (same controls), stored in prefs (`analysisDefaults`) and copied into `Take.settings` when the take is created.
 - Re-analysis keeps locked notes: for each locked note, remove new notes whose start is within 50 ms of it, then insert the locked note. It also drops any new note starting within 50 ms of an entry in `Tab.deletedStartMs`. Then run fret mapping with locks (US-5.2).
 - If the tab has any locked notes, confirm first in an in-app dialog: "Re-analysing replaces notes you haven't edited. Your edited notes are kept."
 
@@ -726,7 +732,7 @@ Priority: Must (view, FR-09) / Should (highlights, FR-13; bar-line toggle, FR-20
 - Overlay each note cell with a `<button>` absolutely positioned over its characters (from `TabLayout.cells`), `aria-label` e.g. "Note 12: B string, fret 3, D4, at 4.25 seconds".
 - Low-confidence notes: dotted underline plus amber background, and "?" in the aria label ("…, check this note"). A "Next to check" button (shortcut `N`) jumps to the next flagged note.
 - A note stops being flagged once the user edits or explicitly confirms it (press `Enter` on the note: sets `lowConfidence=false` and `locked=true`, undoable).
-- "Bar lines" toggle (only when the take has `countInBpm`; default on, stored in `localStorage`): hiding removes bar lines from the view and from copy/download. The tooltip says "Approximate — from the count-in tempo; drifts if your tempo drifts."
+- "Bar lines" toggle (only when the take has `countInBpm`; default on, stored in prefs): hiding removes bar lines from the view and from copy/download. The tooltip says "Approximate — from the count-in tempo; drifts if your tempo drifts."
 - If every note is flagged, show a banner: "Every note is uncertain — check the input level and room noise, then re-analyse" (FR-22).
 
 **Acceptance criteria**
@@ -921,7 +927,7 @@ Priority: Must · Covers: NFR-06, NFR-07 · Depends on: US-0.1, US-0.2
 
 - [ ] After one online visit, with the network disabled, a reload loads the app and a full record → analyse → edit → export flow works.
 - [ ] Chrome offers "Install"; the installed app opens standalone.
-- [ ] Lighthouse PWA checks report installable with no errors.
+- [ ] A Playwright check confirms the app is installable (valid manifest, registered service worker, `beforeinstallprompt` fires); Lighthouse no longer has a PWA category.
 
 **Tests**
 
@@ -938,7 +944,7 @@ Priority: Must · Covers: NFR-10 · Depends on: US-6.3, US-7.1
 - Every control reachable by Tab in a logical order; visible 2 px focus ring; skip link "Skip to tab". No keyboard traps (dialogs trap focus only while open and restore it on close).
 - Screen readers: tab area has `role="application"` with instructions in `aria-describedby`; a visually hidden, toggleable "Note list view" (`<ol>` of the same labels as US-6.2) for reading the whole tab; live region announces edits ("Moved to G string, fret 7") and analysis progress every 25%.
 - A "Keyboard shortcuts" dialog (`?` key) lists every shortcut from this document.
-- Dark mode: dark token values under `prefers-color-scheme: dark`, plus a Settings toggle (System / Light / Dark) stored in `localStorage`. Contrast ≥ 4.5:1 for text and ≥ 3:1 for UI parts in both themes, including the confidence highlight and meter colours.
+- Dark mode: dark token values under `prefers-color-scheme: dark`, plus a Settings toggle (System / Light / Dark) stored in prefs. Contrast ≥ 4.5:1 for text and ≥ 3:1 for UI parts in both themes, including the confidence highlight and meter colours.
 - Respect `prefers-reduced-motion` (no smooth scrolling or meter animation easing).
 
 **Acceptance criteria**
@@ -964,7 +970,7 @@ Priority: Must · Covers: NFR-04, NFR-05, NFR-08, FR-22 · Depends on: US-4.5, U
 - `tools/benchmark.ts` (Playwright, Chromium): analyse 60 s of `c_major_scale_pos1` looped, 5 runs, report median time; fail CI if the median > 2.0 s on the GitHub `ubuntu-latest` runner scaled by a calibration factor stored in `benchmark.config.json` (calibrate once against the reference laptop).
 - Editor budget: measure edit → paint on a 500-note tab with the Performance API; fail if p95 > 100 ms.
 - Bundle budget: initial JS ≤ 200 KB gzipped, `.wasm` ≤ 1 MB gzipped; fail CI if exceeded.
-- Detect unsupported browsers (no AudioWorklet, no OPFS, no WebAssembly) and show "TabCreator needs a recent desktop Chrome". Do not block by user agent: any browser with the required APIs is allowed.
+- Detect unsupported browsers (no AudioWorklet, no OPFS, no WebAssembly, no Web Locks) and show "TabCreator needs a recent desktop Chrome". Do not block by user agent: any browser with the required APIs is allowed.
 
 **Acceptance criteria**
 
@@ -997,6 +1003,32 @@ Priority: Must · Covers: NFR-01, NFR-02, NFR-03 · Depends on: US-4.4, US-5.1
 **Tests**
 
 - The benchmark itself; a meta-test that feeds known-wrong outputs to the metric functions and checks the scores.
+
+### US-8.5 Single active instance
+
+**As a** guitarist **I want** TabCreator to run in only one browser tab at a time **so that** two tabs never record at once or overwrite each other's edits.
+
+Priority: Must · Covers: NFR-11, FR-22 · Depends on: US-0.3, US-3.2
+
+**Implementation notes**
+
+- `session/instance-lock.ts` requests the Web Lock `tabcreator-instance` at start, before any storage write or recovery scan (spine AD-6).
+- If another tab holds it, show a full-screen "TabCreator is open in another tab" with a "Use here" button.
+- "Use here" asks the holder over `BroadcastChannel('tabcreator-instance')` to release, waits up to 3 s, then requests the lock with `steal: true`.
+- The releasing tab stops any recording and persists it without analysing (`stopReason: 'instance-lost'`), cancels its engine requests, flushes all stores, closes its IndexedDB connection, releases the lock and shows the same full-screen message. After losing the lock, its storage writes reject with `instance-taken`.
+- IndexedDB `versionchange` in any tab flushes, closes the connection and shows the same screen; a `blocked` upgrade shows "Close other TabCreator tabs to finish updating".
+
+**Acceptance criteria**
+
+- [ ] Opening a second tab shows "TabCreator is open in another tab"; the first tab keeps working.
+- [ ] "Use here" during a recording in the first tab keeps that recording (status `recorded`, audio playable) and moves the app to the second tab within 3 s.
+- [ ] After handover the first tab makes no storage writes.
+- [ ] The recovery banner never offers a take that another tab is still recording.
+
+**Tests**
+
+- Playwright with two pages in one context: lock, handover during recording, no writes after handover, recovery not offered for a live take.
+- Vitest: lock state machine with mocked `navigator.locks` and `BroadcastChannel`.
 
 ## Traceability
 
@@ -1039,5 +1071,5 @@ Every requirement is covered by at least one story.
 | NFR-08 Browsers | US-0.1, US-8.3 |
 | NFR-09 Storage size | US-3.1, US-7.1, US-7.3 |
 | NFR-10 Accessibility | US-8.2 |
-| NFR-11 No lost recordings | US-3.2 |
+| NFR-11 No lost recordings | US-3.2, US-8.5 |
 | NFR-12 Tested engine module | US-0.2, US-0.4, US-8.4 |

@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library Screen Mock</title>
+<style>
+/* ==========================================================================
+   KEY SCREEN — Library screen (#/library)
+   Governing spine sections (check these when the spine changes):
+   DESIGN.md
+     - frontmatter tokens: colors (+ -dark pairs), typography (ui, ui-small,
+       heading, tab, numeric), rounded, spacing, components (button-primary,
+       button-secondary, banner-warning, banner-error, toast, dialog,
+       focus-ring)
+     - Components: Library row, Backup / Restore, Form controls (search box),
+       Banners, Toast, Dialog, Progress bar, Focus ring
+     - Layout & Spacing (content-max 1100, gutter 16, one column, top bar)
+     - Elevation & Depth (only dialogs and toasts cast a shadow)
+     - Colors (primary = act/select/focus; danger always with icon + text)
+   EXPERIENCE.md
+     - Information Architecture: Library row; overlay "Confirm dialog"
+     - Component Patterns: Library row, Search, Backup / Restore, Banner,
+       Toast, Confirm dialog
+     - State Patterns: Empty library, No search matches, Storage full,
+       Storage may be cleared, Audio deleted
+     - Voice and Tone ("23 takes · 41 MB used"); Accessibility Floor
+     - Key Flows: Flow 4 (backup / restore)
+   Stories: US-7.1 (take library), US-7.3 (durable storage and backup)
+   Base shell (tokens, theme scoping, presentation page, browser frame, top
+   bar, buttons, pressed style, banner, progress, empty, crop, legend) is
+   copied from mockups/tab.html; Library additions follow the marker below.
+   ========================================================================== */
+
+/* ---- DESIGN.md colour tokens, verbatim --------------------------------- */
+:root {
+  --color-background: #FAFAF7;       --color-background-dark: #141311;
+  --color-surface: #FFFFFF;          --color-surface-dark: #1D1B18;
+  --color-text: #1C1B19;             --color-text-dark: #ECE9E3;
+  --color-text-muted: #5E5A54;       --color-text-muted-dark: #A8A39A;
+  --color-border: #8C877E;           --color-border-dark: #6E6960;
+  --color-primary: #1F5FAD;          --color-primary-dark: #7FB0F0;
+  --color-on-primary: #FFFFFF;       --color-on-primary-dark: #0B1B2E;
+  --color-record: #B3261E;           --color-record-dark: #F2766B;
+  --color-on-record: #FFFFFF;        --color-on-record-dark: #2A0B08;
+  --color-check-bg: #FCE8B2;         --color-check-bg-dark: #4A3A12;
+  --color-check-line: #8A5A00;       --color-check-line-dark: #E3B34C;
+  --color-refit: #6A3FB5;            --color-refit-dark: #B99BF2;
+  --color-meter-ok: #2E7D32;         --color-meter-ok-dark: #5CC06A;
+  --color-meter-warn: #B26A00;       --color-meter-warn-dark: #E3B34C;
+  --color-meter-hot: #C62828;        --color-meter-hot-dark: #F2766B;
+  --color-success: #2E7D32;          --color-success-dark: #5CC06A;
+  --color-warning: #8A5A00;          --color-warning-dark: #E3B34C;
+  --color-danger: #B3261E;           --color-danger-dark: #F2766B;
+
+  --font-ui: system-ui, "Segoe UI", -apple-system, sans-serif;
+  --font-mono: ui-monospace, Consolas, Menlo, "Cascadia Mono", monospace;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 10px; --r-full: 9999px;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s6: 24px; --s8: 32px; --s12: 48px;
+  --gutter: 16px; --content-max: 1100px; --focus-ring: 2px;
+}
+
+/* Theme scoping: both themes on one page, independent of prefers-color-scheme */
+.t-light {
+  --bg: var(--color-background); --surface: var(--color-surface);
+  --text: var(--color-text); --muted: var(--color-text-muted);
+  --border: var(--color-border); --primary: var(--color-primary);
+  --on-primary: var(--color-on-primary); --record: var(--color-record);
+  --on-record: var(--color-on-record); --check-bg: var(--color-check-bg);
+  --check-line: var(--color-check-line); --refit: var(--color-refit);
+  --success: var(--color-success); --warning: var(--color-warning);
+  --danger: var(--color-danger);
+  --chrome-bg: #DEDCD7; --chrome-tab: #F3F2EF; --chrome-url: #FFFFFF; --chrome-ink: #3A3833;
+  color-scheme: light;
+}
+.t-dark {
+  --bg: var(--color-background-dark); --surface: var(--color-surface-dark);
+  --text: var(--color-text-dark); --muted: var(--color-text-muted-dark);
+  --border: var(--color-border-dark); --primary: var(--color-primary-dark);
+  --on-primary: var(--color-on-primary-dark); --record: var(--color-record-dark);
+  --on-record: var(--color-on-record-dark); --check-bg: var(--color-check-bg-dark);
+  --check-line: var(--color-check-line-dark); --refit: var(--color-refit-dark);
+  --success: var(--color-success-dark); --warning: var(--color-warning-dark);
+  --danger: var(--color-danger-dark);
+  --chrome-bg: #2B2A27; --chrome-tab: #3A3834; --chrome-url: #22211E; --chrome-ink: #D8D5CF;
+  color-scheme: dark;
+}
+
+/* ---- Presentation page (not product UI) -------------------------------- */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: #E2E0DB; color: #1C1B19;
+  font: 15px/1.5 var(--font-ui);
+  overflow-x: hidden;
+}
+.page { max-width: 1240px; margin: 0 auto; padding: 32px 16px 64px; }
+.page > header h1 { font-size: 24px; margin: 0 0 4px; }
+.page > header p { margin: 0; color: #4A4741; max-width: 72ch; }
+.section { margin-top: 48px; }
+.section > h2 { font-size: 18px; margin: 0 0 4px; }
+.section > p.cap { margin: 0 0 12px; color: #4A4741; font-size: 14px; max-width: 90ch; }
+.scroller { max-width: 100%; overflow-x: auto; padding-bottom: 8px; }
+.alt-grid { display: grid; gap: 32px; }
+.alt-grid h3 { font-size: 15px; margin: 0 0 4px; }
+.alt-grid p.cap { margin: 0 0 10px; color: #4A4741; font-size: 14px; }
+
+/* ---- Browser frame ----------------------------------------------------- */
+.browser {
+  width: 1132px;                  /* 1100 content + 2 x 16 gutter */
+  border-radius: 10px; overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 8px 24px rgba(0,0,0,.12);
+  background: var(--bg);
+}
+.chrome { background: var(--chrome-bg); color: var(--chrome-ink); font: 12px/1 var(--font-ui); padding: 8px 12px 0; }
+.chrome-row { display: flex; align-items: flex-end; gap: 12px; }
+.dots { display: flex; gap: 6px; padding-bottom: 10px; }
+.dots i { width: 11px; height: 11px; border-radius: 50%; background: currentColor; opacity: .35; }
+.btab { background: var(--chrome-tab); border-radius: 8px 8px 0 0; padding: 8px 40px 8px 12px; display: flex; gap: 8px; align-items: center; }
+.btab b { font-weight: 500; }
+.btab .fav { width: 12px; height: 12px; border-radius: 3px; background: var(--primary); }
+.urlbar { color: var(--chrome-ink); background: var(--chrome-tab); padding: 6px 12px 8px; }
+.urlbar span { display: block; background: var(--chrome-url); border-radius: 999px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; }
+.urlbar em { font-style: normal; opacity: .6; }
+
+/* ---- App: top bar ------------------------------------------------------ */
+.app { background: var(--bg); color: var(--text); font: 400 15px/1.5 var(--font-ui); }
+.topbar { background: var(--surface); border-bottom: 1px solid var(--border); height: 52px; }
+.topbar .in { max-width: var(--content-max); margin: 0 auto; padding: 0 var(--gutter); height: 100%; display: flex; align-items: center; gap: var(--s6); }
+.appname { font-weight: 600; font-size: 15px; }
+.nav { display: flex; gap: var(--s1); }
+.nav a { color: var(--text); text-decoration: none; padding: 6px 10px; border-radius: var(--r-md); }
+.nav a[aria-current="page"] { color: var(--primary); box-shadow: inset 0 -2px 0 var(--primary); }
+
+.content { max-width: var(--content-max); margin: 0 auto; padding: var(--s6) var(--gutter) var(--s8); }
+.title h1 { font: 600 20px/1.3 var(--font-ui); margin: 0; }
+.meta { font: 400 13px/1.4 var(--font-ui); color: var(--muted); margin-top: var(--s1); }
+.meta .num { font-family: var(--font-mono); }
+
+/* Buttons (button-secondary / button-primary) */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 10px; border-radius: var(--r-md);
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  font: 400 15px/1 var(--font-ui); cursor: pointer; white-space: nowrap;
+}
+.title .edit { width: 16px; height: 16px; color: var(--muted); margin-left: 8px; vertical-align: middle; }
+.btn svg { width: 16px; height: 16px; flex: none; }
+.btn[disabled] { opacity: .4; cursor: not-allowed; }
+.btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); font-weight: 500; }
+.btn .kbd { font: 500 12px/1 var(--font-mono); color: var(--muted); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 2px 5px; }
+/* pressed / selected: one style for toggles and the speed control */
+.btn[aria-pressed="true"], .seg button[aria-pressed="true"] { background: color-mix(in srgb, var(--primary) 14%, var(--surface)); border-color: var(--primary); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--primary); }
+
+/* Banner (warning) */
+.banner {
+  display: flex; align-items: center; gap: var(--s3);
+  background: var(--check-bg); color: var(--text);
+  border-left: 4px solid var(--warning); border-radius: var(--r-md);
+  padding: var(--s3) var(--s4); margin-bottom: var(--s4);
+}
+.banner svg { width: 18px; height: 18px; color: var(--warning); flex: none; }
+.banner a { color: var(--primary); font-weight: 500; white-space: nowrap; margin-left: auto; }
+.banner .dismiss { background: none; border: 0; color: var(--muted); font: 400 13px/1 var(--font-ui); cursor: pointer; padding: 4px 6px; border-radius: var(--r-sm); }
+
+/* Progress bar */
+.progress { margin-top: var(--s6); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s4); }
+.progress .row { display: flex; align-items: center; gap: var(--s4); }
+.progress .label { font: 400 13px/1.4 var(--font-ui); color: var(--muted); margin-bottom: var(--s2); }
+.bar { flex: 1; height: 6px; background: var(--border); border-radius: var(--r-full); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--primary); }
+.pct { font: 500 15px/1.3 var(--font-mono); min-width: 4ch; text-align: right; }
+
+/* No notes found */
+.empty { margin-top: var(--s6); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s6); }
+.empty h2 { font: 600 20px/1.3 var(--font-ui); margin: 0 0 var(--s2); }
+.empty ul { margin: 0; padding-left: 20px; }
+.empty li { margin: 2px 0; }
+.empty a, .link { color: var(--primary); }
+
+.crop { position: relative; max-height: 330px; overflow: hidden; }
+.crop::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 48px; background: linear-gradient(transparent, var(--bg)); }
+
+/* ---- Legend ------------------------------------------------------------ */
+.legend {
+  margin-top: 12px; width: 1132px; max-width: 100%;
+  display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px 16px; font: 13px/1.4 var(--font-ui);
+}
+.legend .sw { font: 16px/1.35 var(--font-mono); padding: 0 1px; margin-right: 8px; display: inline-block; }
+.legend .item { display: inline-flex; align-items: center; }
+.legend b { font-weight: 600; margin-right: 4px; }
+.legend .muted { color: var(--muted); }
+
+/* ======================= Library additions ============================== */
+/* Fixed-height app viewport so the storage footer pins to the window bottom */
+.vp { height: 790px; display: flex; flex-direction: column; }
+.vp .scrollarea { flex: 1; overflow: hidden; position: relative; }
+.vp.short { height: 460px; }
+
+.libhead { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); flex-wrap: wrap; }
+.libhead h1 { font: 600 20px/1.3 var(--font-ui); margin: 0; }
+.libtools { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin-top: var(--s4); }
+.libtools .grow { flex: 1; }
+
+/* Search box — Form controls spec: ui font, surface, 1px border, r-sm, 36px */
+.search { position: relative; width: 340px; }
+.search svg { position: absolute; left: 10px; top: 10px; width: 16px; height: 16px; color: var(--muted); }
+.search input {
+  width: 100%; height: 36px; padding: 0 10px 0 34px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--text); font: 400 15px/1 var(--font-ui);
+}
+.search input::placeholder { color: var(--muted); }
+.search input:disabled { opacity: .4; }
+
+/* Library row */
+.list { list-style: none; margin: var(--s4) 0 0; padding: 0;
+        background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); }
+.lrow { position: relative; display: flex; align-items: flex-start; gap: var(--s3);
+       padding: var(--s3) var(--s4); border-top: 1px solid var(--border); }
+.lrow:first-child { border-top: 0; }
+.lrow .main { flex: 1; min-width: 0; color: var(--text); text-decoration: none; display: block; }
+.lrow .t { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.lrow .t b { font: 600 15px/1.5 var(--font-ui); }
+.lrow .m { font: 400 13px/1.4 var(--font-ui); color: var(--muted); margin-top: 2px; }
+.lrow .m .num { font-family: var(--font-mono); }
+.lrow .pv { font: 400 13px/1.35 var(--font-mono); color: var(--text); margin-top: var(--s1);
+           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lrow .pv.none { color: var(--muted); }
+.lrow.menu-open { background: color-mix(in srgb, var(--primary) 6%, var(--surface)); }
+
+/* Status badge: rounded-full outline pill, text-muted; Analysed in success */
+.badge { display: inline-flex; align-items: center; gap: 4px; font: 500 12px/1 var(--font-ui);
+         color: var(--muted); border: 1px solid currentColor; border-radius: var(--r-full); padding: 3px 8px; }
+.badge svg { width: 12px; height: 12px; }
+.badge.ok { color: var(--success); }
+
+/* Row menu (trigger + menu). Visual spec not in DESIGN.md — see caption. */
+.kebab { width: 36px; padding: 0; justify-content: center; }
+.kebab[aria-expanded="true"] { background: color-mix(in srgb, var(--primary) 14%, var(--surface)); border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
+.menu { position: absolute; right: var(--s4); top: 52px; z-index: 5; min-width: 220px;
+        list-style: none; margin: 0; padding: var(--s1);
+        background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md);
+        box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+.menu button { display: flex; align-items: center; gap: var(--s2); width: 100%; height: 36px; padding: 0 var(--s3);
+               border: 0; background: none; color: var(--text); font: 400 15px/1 var(--font-ui);
+               border-radius: var(--r-sm); text-align: left; cursor: pointer; }
+.menu button svg { width: 16px; height: 16px; flex: none; }
+.menu .sep { height: 1px; background: var(--border); margin: var(--s1) 0; }
+.menu .danger { color: var(--danger); }
+.focus { outline: var(--focus-ring) solid var(--primary); outline-offset: 2px; }
+.menu button.focus { outline-offset: -2px; }
+
+/* Storage footer */
+.libfoot { border-top: 1px solid var(--border); background: var(--surface); }
+.libfoot .in { max-width: var(--content-max); margin: 0 auto; padding: var(--s2) var(--gutter);
+               font: 400 13px/1.4 var(--font-ui); color: var(--muted); }
+.libfoot .num { font-family: var(--font-mono); }
+
+/* Banner (error variant) — banner-error: surface fill, danger left edge */
+.banner.error { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--danger); }
+.banner.error svg { color: var(--danger); }
+.banner .act { margin-left: auto; }
+.banner .act + .dismiss { margin-left: 0; }
+
+/* Progress (inline under the header) */
+.progress.inline { margin-top: var(--s4); }
+
+/* Empty / no-match block reuses .empty from tab.html */
+.empty .acts { margin-top: var(--s4); display: flex; gap: var(--s2); }
+.empty p { margin: 0; color: var(--muted); }
+.btn.primary .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+
+/* Confirm dialog — dialog: surface, r-lg, max 480px, soft shadow */
+.overlay-host { position: relative; }
+.scrim { position: absolute; inset: 0; background: rgba(20,19,17,.45); z-index: 9;
+         display: flex; align-items: flex-start; justify-content: center; padding-top: 120px; }
+.dialog { width: 480px; max-width: calc(100% - 32px); background: var(--surface); color: var(--text);
+          border-radius: var(--r-lg); padding: var(--s6); box-shadow: 0 2px 4px rgba(0,0,0,.14), 0 16px 40px rgba(0,0,0,.22); }
+.dialog h2 { font: 600 20px/1.3 var(--font-ui); margin: 0 0 var(--s2); }
+.dialog p { margin: 0; }
+.dialog .acts { display: flex; justify-content: flex-end; gap: var(--s2); margin-top: var(--s6); }
+.btn.danger { color: var(--danger); border-color: var(--danger); font-weight: 500; }
+
+/* Toast — inverted, bottom-centre */
+.toast-host { position: absolute; left: 0; right: 0; bottom: 56px; display: flex; justify-content: center; z-index: 8; }
+.toast { display: inline-flex; align-items: center; gap: var(--s3); background: var(--text); color: var(--surface);
+         border-radius: var(--r-md); padding: 10px var(--s4); font: 400 15px/1.4 var(--font-ui);
+         box-shadow: 0 2px 4px rgba(0,0,0,.14), 0 8px 24px rgba(0,0,0,.18); }
+
+/* Presentation: keep grid items from growing to the frame width on phones */
+.alt-grid > div { min-width: 0; }
+.cap code { overflow-wrap: anywhere; }
+.notes-list { margin: 8px 0 0; padding-left: 20px; color: #4A4741; font-size: 14px; max-width: 90ch; }
+
+</style>
+</head>
+<body>
+
+<!-- Icon sprite (inline, offline) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15.5 15.5 21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="19" cy="12" r="2" fill="currentColor"/></symbol>
+    <symbol id="i-backup" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M4 20h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-restore" viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5M4 20h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-delete" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M16 9l5 6M21 9l-5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3 2 20h20z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.5M12 17.2v.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-error" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5v5.5M12 16.2v.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<main class="page">
+  <header>
+    <h1>TabCreator — Library screen (key screen)</h1>
+    <p>1:1 static mock of <code>#/library</code>: 23 takes, newest first, with search, row menu, backup / restore and the storage footer. Row content follows US-7.1; backup, restore and the storage notice follow US-7.3 and Flow 4.</p>
+  </header>
+
+  <section class="section">
+    <h2>1 · Light theme — library with a row menu open</h2>
+    <p class="cap">Newest first. Seven of 23 takes fit the window; the storage footer stays at the bottom. The row menu of "Blues lick in A" is open with keyboard focus on Rename. Each row: title, status badge, date/time · duration · note count · audio size, then the first 12 notes as string|fret pairs in the tab font.</p>
+    <div class="scroller"><div class="t-light">
+  <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/library</span></div>
+<div class="app vp overlay-host">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library" aria-current="page">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="scrollarea"><div class="content">
+<div class="libhead"><h1>Library</h1></div>
+<div class="libtools">
+  <div class="search" role="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input type="search" aria-label="Search takes" placeholder="Search takes"></div>
+  <span class="grow"></span>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-backup"/></svg>Back up library</button>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-restore"/></svg>Restore from backup</button>
+</div><ul class="list" aria-label="Takes, newest first">
+  <li class="lrow">
+    <a class="main" href="#/tab/c41d">
+      <div class="t"><b>Take 2026-09-28 11:05</b><span class="badge">Recording</span></div>
+      <div class="m">Mon 28 Sep 2026, 11:05 · <span class="num">0:42</span></div>
+      <div class="pv none">—</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-28 11:05"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/b9e0">
+      <div class="t"><b>Take 2026-09-28 10:52</b><span class="badge">Not analysed</span></div>
+      <div class="m">Mon 28 Sep 2026, 10:52 · <span class="num">3:02</span> · 2.9 MB</div>
+      <div class="pv none">—</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-28 10:52"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/7f3c9a2e">
+      <div class="t"><b>Take 2026-09-27 21:14</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 21:14 · <span class="num">0:13</span> · <span class="num">38</span> notes · 0.2 MB</div>
+      <div class="pv">E|5 E|8 A|5 A|7 D|5 D|7 G|5 G|7 B|5 B|8 e|5 e|8 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-27 21:14"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow menu-open">
+    <a class="main" href="#/tab/a18b">
+      <div class="t"><b>Blues lick in A</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 20:41 · <span class="num">0:24</span> · <span class="num">64</span> notes · 0.4 MB</div>
+      <div class="pv">G|5 G|7 G|8 G|7 G|5 D|7 D|5 A|7 A|6 A|5 E|8 E|5 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="true" aria-label="More actions for Blues lick in A"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+    <ul class="menu" role="menu" aria-label="Actions for Blues lick in A">
+      <li role="none"><button role="menuitem" type="button" class="focus"><svg aria-hidden="true"><use href="#i-pencil"/></svg>Rename</button></li>
+      <li role="none"><button role="menuitem" type="button"><svg aria-hidden="true"><use href="#i-mute"/></svg>Delete audio only</button></li>
+      <li role="none" class="sep"></li>
+      <li role="none"><button role="menuitem" type="button" class="danger"><svg aria-hidden="true"><use href="#i-delete"/></svg>Delete take</button></li>
+    </ul>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/5d27">
+      <div class="t"><b>Sweep idea</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 22:03 · <span class="num">0:09</span> · <span class="num">45</span> notes · Audio deleted</div>
+      <div class="pv">A|12 D|14 G|14 B|13 e|12 e|17 e|12 B|13 G|14 D|14 A|12 A|15 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Sweep idea"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/e602">
+      <div class="t"><b>Take 2026-09-26 21:37</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 21:37 · <span class="num">1:30</span> · <span class="num">212</span> notes · 1.4 MB</div>
+      <div class="pv">A|7 D|5 D|7 G|4 G|6 G|7 B|5 B|7 G|7 B|5 e|5 e|7 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-26 21:37"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/3c90">
+      <div class="t"><b>Take 2026-09-25 19:12</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Fri 25 Sep 2026, 19:12 · <span class="num">0:31</span> · <span class="num">52</span> notes · 0.5 MB</div>
+      <div class="pv">E|0 E|3 A|0 A|2 D|0 D|2 G|0 G|2 B|0 B|1 e|0 e|3 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-25 19:12"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+</ul>
+</div></div>
+<footer class="libfoot"><div class="in"><span class="num">23</span> takes · <span class="num">41</span> MB used</div></footer>
+
+</div>
+  </div>
+</div></div>
+    <div class="t-light"><div class="legend" aria-label="Status badge legend">
+  <span class="item"><span class="badge ok" style="margin-right:8px"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span><span class="muted">success colour + tick</span></span>
+  <span class="item"><span class="badge" style="margin-right:8px">Not analysed</span><span class="muted">muted outline pill</span></span>
+  <span class="item"><span class="badge" style="margin-right:8px">Recording</span><span class="muted">muted outline pill (see open question)</span></span>
+  <span class="item"><b>Audio deleted</b><span class="muted">replaces the audio size; tab stays editable</span></span>
+</div></div>
+  </section>
+  <section class="section">
+    <h2>2 · Dark theme — search "blues"</h2>
+    <p class="cap">Every token swapped for its <code>-dark</code> pair. Search filters titles as you type, ignoring case and accents: "blues" leaves one row. The footer still reports the whole library.</p>
+    <div class="scroller"><div class="t-dark">
+  <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/library</span></div>
+<div class="app vp overlay-host">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library" aria-current="page">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="scrollarea"><div class="content">
+<div class="libhead"><h1>Library</h1></div>
+<div class="libtools">
+  <div class="search" role="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input type="search" aria-label="Search takes" placeholder="Search takes" value="blues"></div>
+  <span class="grow"></span>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-backup"/></svg>Back up library</button>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-restore"/></svg>Restore from backup</button>
+</div><ul class="list" aria-label="Takes, newest first">
+  <li class="lrow">
+    <a class="main" href="#/tab/a18b">
+      <div class="t"><b>Blues lick in A</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 20:41 · <span class="num">0:24</span> · <span class="num">64</span> notes · 0.4 MB</div>
+      <div class="pv">G|5 G|7 G|8 G|7 G|5 D|7 D|5 A|7 A|6 A|5 E|8 E|5 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Blues lick in A"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+</ul>
+</div></div>
+<footer class="libfoot"><div class="in"><span class="num">23</span> takes · <span class="num">41</span> MB used</div></footer>
+
+</div>
+  </div>
+</div></div>
+  </section>
+  <section class="section">
+    <h2>3 · Alternate states (light, cropped)</h2>
+    <p class="cap">Same frame width; windows are shortened to the part that changes.</p>
+    <div class="alt-grid">
+      <div>
+        <h3>(a) Empty library</h3>
+        <p class="cap">First visit to Library: "No takes yet" and a Record button that goes to <code>#/record</code>. Search and Back up library are disabled (nothing to act on); Restore from backup stays available, since a fresh profile is exactly when it is needed. No storage footer.</p>
+        <div class="scroller"><div class="t-light">
+  <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/library</span></div>
+<div class="app vp short overlay-host">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library" aria-current="page">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="scrollarea"><div class="content">
+<div class="libhead"><h1>Library</h1></div>
+<div class="libtools">
+  <div class="search" role="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input type="search" aria-label="Search takes" placeholder="Search takes" disabled></div>
+  <span class="grow"></span>
+  <button class="btn" type="button" disabled title="No takes to back up"><svg aria-hidden="true"><use href="#i-backup"/></svg>Back up library</button>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-restore"/></svg>Restore from backup</button>
+</div>
+<div class="empty" role="status">
+  <h2>No takes yet</h2>
+  <div class="acts"><a class="btn primary" href="#/record" style="text-decoration:none"><span class="dot" aria-hidden="true"></span>Record</a></div>
+</div>
+</div></div>
+
+
+</div>
+  </div>
+</div></div>
+      </div>
+      <div>
+        <h3>(b) No search matches</h3>
+        <p class="cap">Search for "sweep solo" matches no title. Clear search empties the box and restores the full list.</p>
+        <div class="scroller"><div class="t-light">
+  <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/library</span></div>
+<div class="app vp short overlay-host">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library" aria-current="page">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="scrollarea"><div class="content">
+<div class="libhead"><h1>Library</h1></div>
+<div class="libtools">
+  <div class="search" role="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input type="search" aria-label="Search takes" placeholder="Search takes" value="sweep solo"></div>
+  <span class="grow"></span>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-backup"/></svg>Back up library</button>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-restore"/></svg>Restore from backup</button>
+</div>
+<div class="empty" role="status">
+  <h2>No takes match "sweep solo"</h2>
+  <div class="acts"><button class="btn" type="button">Clear search</button></div>
+</div>
+</div></div>
+<footer class="libfoot"><div class="in"><span class="num">23</span> takes · <span class="num">41</span> MB used</div></footer>
+
+</div>
+  </div>
+</div></div>
+      </div>
+      <div>
+        <h3>(c) Confirm dialog — Delete take</h3>
+        <p class="cap">In-app dialog (never <code>window.confirm</code>) naming the take and the consequence. Cancel is first in tab order and holds focus on open; Delete take is not the default button. Focus is trapped until it closes, then returns to the row's menu button.</p>
+        <div class="scroller"><div class="t-light">
+  <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/library</span></div>
+<div class="app vp short overlay-host">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library" aria-current="page">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="scrollarea"><div class="content">
+<div class="libhead"><h1>Library</h1></div>
+<div class="libtools">
+  <div class="search" role="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input type="search" aria-label="Search takes" placeholder="Search takes"></div>
+  <span class="grow"></span>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-backup"/></svg>Back up library</button>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-restore"/></svg>Restore from backup</button>
+</div><ul class="list" aria-label="Takes, newest first">
+  <li class="lrow">
+    <a class="main" href="#/tab/c41d">
+      <div class="t"><b>Take 2026-09-28 11:05</b><span class="badge">Recording</span></div>
+      <div class="m">Mon 28 Sep 2026, 11:05 · <span class="num">0:42</span></div>
+      <div class="pv none">—</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-28 11:05"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/b9e0">
+      <div class="t"><b>Take 2026-09-28 10:52</b><span class="badge">Not analysed</span></div>
+      <div class="m">Mon 28 Sep 2026, 10:52 · <span class="num">3:02</span> · 2.9 MB</div>
+      <div class="pv none">—</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-28 10:52"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/7f3c9a2e">
+      <div class="t"><b>Take 2026-09-27 21:14</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 21:14 · <span class="num">0:13</span> · <span class="num">38</span> notes · 0.2 MB</div>
+      <div class="pv">E|5 E|8 A|5 A|7 D|5 D|7 G|5 G|7 B|5 B|8 e|5 e|8 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-27 21:14"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/a18b">
+      <div class="t"><b>Blues lick in A</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 20:41 · <span class="num">0:24</span> · <span class="num">64</span> notes · 0.4 MB</div>
+      <div class="pv">G|5 G|7 G|8 G|7 G|5 D|7 D|5 A|7 A|6 A|5 E|8 E|5 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Blues lick in A"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/5d27">
+      <div class="t"><b>Sweep idea</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 22:03 · <span class="num">0:09</span> · <span class="num">45</span> notes · Audio deleted</div>
+      <div class="pv">A|12 D|14 G|14 B|13 e|12 e|17 e|12 B|13 G|14 D|14 A|12 A|15 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Sweep idea"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/e602">
+      <div class="t"><b>Take 2026-09-26 21:37</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 21:37 · <span class="num">1:30</span> · <span class="num">212</span> notes · 1.4 MB</div>
+      <div class="pv">A|7 D|5 D|7 G|4 G|6 G|7 B|5 B|7 G|7 B|5 e|5 e|7 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-26 21:37"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/3c90">
+      <div class="t"><b>Take 2026-09-25 19:12</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Fri 25 Sep 2026, 19:12 · <span class="num">0:31</span> · <span class="num">52</span> notes · 0.5 MB</div>
+      <div class="pv">E|0 E|3 A|0 A|2 D|0 D|2 G|0 G|2 B|0 B|1 e|0 e|3 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-25 19:12"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+</ul>
+</div></div>
+<footer class="libfoot"><div class="in"><span class="num">23</span> takes · <span class="num">41</span> MB used</div></footer>
+<div class="scrim">
+  <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dl-h" aria-describedby="dl-b">
+    <h2 id="dl-h">Delete "Blues lick in A"?</h2>
+    <p id="dl-b">Its tab and recording are removed from this computer. This can't be undone.</p>
+    <div class="acts">
+      <button class="btn focus" type="button">Cancel</button>
+      <button class="btn danger" type="button"><svg aria-hidden="true"><use href="#i-delete"/></svg>Delete take</button>
+    </div>
+  </div>
+</div>
+</div>
+  </div>
+</div></div>
+      </div>
+      <div>
+        <h3>(d) One-time storage notice</h3>
+        <p class="cap">Shown once in Library when <code>navigator.storage.persist()</code> is refused. Warning banner above the content: one sentence, one action (Back up library), Dismiss.</p>
+        <div class="scroller"><div class="t-light">
+  <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/library</span></div>
+<div class="app vp short overlay-host">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library" aria-current="page">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="scrollarea"><div class="content">
+<div class="banner" role="status">
+  <svg aria-hidden="true"><use href="#i-warn"/></svg>
+  <span>Your browser may clear these takes when space runs low. Back them up regularly.</span>
+  <a href="#backup" class="act">Back up library</a>
+  <button class="dismiss" type="button" aria-label="Dismiss storage notice">Dismiss</button>
+</div><div class="libhead"><h1>Library</h1></div>
+<div class="libtools">
+  <div class="search" role="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input type="search" aria-label="Search takes" placeholder="Search takes"></div>
+  <span class="grow"></span>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-backup"/></svg>Back up library</button>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-restore"/></svg>Restore from backup</button>
+</div><ul class="list" aria-label="Takes, newest first">
+  <li class="lrow">
+    <a class="main" href="#/tab/7f3c9a2e">
+      <div class="t"><b>Take 2026-09-27 21:14</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 21:14 · <span class="num">0:13</span> · <span class="num">38</span> notes · 0.2 MB</div>
+      <div class="pv">E|5 E|8 A|5 A|7 D|5 D|7 G|5 G|7 B|5 B|8 e|5 e|8 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-27 21:14"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/a18b">
+      <div class="t"><b>Blues lick in A</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 20:41 · <span class="num">0:24</span> · <span class="num">64</span> notes · 0.4 MB</div>
+      <div class="pv">G|5 G|7 G|8 G|7 G|5 D|7 D|5 A|7 A|6 A|5 E|8 E|5 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Blues lick in A"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/5d27">
+      <div class="t"><b>Sweep idea</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 22:03 · <span class="num">0:09</span> · <span class="num">45</span> notes · Audio deleted</div>
+      <div class="pv">A|12 D|14 G|14 B|13 e|12 e|17 e|12 B|13 G|14 D|14 A|12 A|15 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Sweep idea"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/e602">
+      <div class="t"><b>Take 2026-09-26 21:37</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 21:37 · <span class="num">1:30</span> · <span class="num">212</span> notes · 1.4 MB</div>
+      <div class="pv">A|7 D|5 D|7 G|4 G|6 G|7 B|5 B|7 G|7 B|5 e|5 e|7 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-26 21:37"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/3c90">
+      <div class="t"><b>Take 2026-09-25 19:12</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Fri 25 Sep 2026, 19:12 · <span class="num">0:31</span> · <span class="num">52</span> notes · 0.5 MB</div>
+      <div class="pv">E|0 E|3 A|0 A|2 D|0 D|2 G|0 G|2 B|0 B|1 e|0 e|3 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-25 19:12"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+</ul>
+</div></div>
+<footer class="libfoot"><div class="in"><span class="num">23</span> takes · <span class="num">41</span> MB used</div></footer>
+
+</div>
+  </div>
+</div></div>
+      </div>
+      <div>
+        <h3>(e) Storage full</h3>
+        <p class="cap">A save failed with <code>storage-full</code>. Error banner at the top of Library: danger edge and icon, no Dismiss; it stays until a save succeeds. No action link, because the recovery actions are the row menus and Back up library already on this screen.</p>
+        <div class="scroller"><div class="t-light">
+  <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/library</span></div>
+<div class="app vp short overlay-host">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library" aria-current="page">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="scrollarea"><div class="content">
+<div class="banner error" role="alert">
+  <svg aria-hidden="true"><use href="#i-error"/></svg>
+  <span>Storage is full — delete takes or their audio, or back up and clear</span>
+</div><div class="libhead"><h1>Library</h1></div>
+<div class="libtools">
+  <div class="search" role="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input type="search" aria-label="Search takes" placeholder="Search takes"></div>
+  <span class="grow"></span>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-backup"/></svg>Back up library</button>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-restore"/></svg>Restore from backup</button>
+</div><ul class="list" aria-label="Takes, newest first">
+  <li class="lrow">
+    <a class="main" href="#/tab/7f3c9a2e">
+      <div class="t"><b>Take 2026-09-27 21:14</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 21:14 · <span class="num">0:13</span> · <span class="num">38</span> notes · 0.2 MB</div>
+      <div class="pv">E|5 E|8 A|5 A|7 D|5 D|7 G|5 G|7 B|5 B|8 e|5 e|8 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-27 21:14"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/a18b">
+      <div class="t"><b>Blues lick in A</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 20:41 · <span class="num">0:24</span> · <span class="num">64</span> notes · 0.4 MB</div>
+      <div class="pv">G|5 G|7 G|8 G|7 G|5 D|7 D|5 A|7 A|6 A|5 E|8 E|5 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Blues lick in A"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/5d27">
+      <div class="t"><b>Sweep idea</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 22:03 · <span class="num">0:09</span> · <span class="num">45</span> notes · Audio deleted</div>
+      <div class="pv">A|12 D|14 G|14 B|13 e|12 e|17 e|12 B|13 G|14 D|14 A|12 A|15 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Sweep idea"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/e602">
+      <div class="t"><b>Take 2026-09-26 21:37</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 21:37 · <span class="num">1:30</span> · <span class="num">212</span> notes · 1.4 MB</div>
+      <div class="pv">A|7 D|5 D|7 G|4 G|6 G|7 B|5 B|7 G|7 B|5 e|5 e|7 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-26 21:37"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/3c90">
+      <div class="t"><b>Take 2026-09-25 19:12</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Fri 25 Sep 2026, 19:12 · <span class="num">0:31</span> · <span class="num">52</span> notes · 0.5 MB</div>
+      <div class="pv">E|0 E|3 A|0 A|2 D|0 D|2 G|0 G|2 B|0 B|1 e|0 e|3 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-25 19:12"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+</ul>
+</div></div>
+<footer class="libfoot"><div class="in"><span class="num">23</span> takes · <span class="num">41</span> MB used</div></footer>
+
+</div>
+  </div>
+</div></div>
+      </div>
+      <div>
+        <h3>(f·1) Backup in progress</h3>
+        <p class="cap">Flow 4 step 1: the .zip builds in a worker while the list stays usable. Progress bar under the header; Back up library is disabled until it finishes, then <code>tabcreator-backup-20260928.zip</code> downloads.</p>
+        <div class="scroller"><div class="t-light">
+  <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/library</span></div>
+<div class="app vp short overlay-host">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library" aria-current="page">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="scrollarea"><div class="content">
+<div class="libhead"><h1>Library</h1></div>
+<div class="libtools">
+  <div class="search" role="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input type="search" aria-label="Search takes" placeholder="Search takes"></div>
+  <span class="grow"></span>
+  <button class="btn" type="button" disabled title="Backing up…"><svg aria-hidden="true"><use href="#i-backup"/></svg>Back up library</button>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-restore"/></svg>Restore from backup</button>
+</div>
+<div class="progress inline" role="group" aria-label="Backup progress">
+  <div class="label" id="bk-l">Backing up…</div>
+  <div class="row">
+    <div class="bar" role="progressbar" aria-labelledby="bk-l" aria-valuemin="0" aria-valuemax="100" aria-valuenow="46"><i style="width:46%"></i></div>
+    <span class="pct">46%</span>
+  </div>
+</div><ul class="list" aria-label="Takes, newest first">
+  <li class="lrow">
+    <a class="main" href="#/tab/7f3c9a2e">
+      <div class="t"><b>Take 2026-09-27 21:14</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 21:14 · <span class="num">0:13</span> · <span class="num">38</span> notes · 0.2 MB</div>
+      <div class="pv">E|5 E|8 A|5 A|7 D|5 D|7 G|5 G|7 B|5 B|8 e|5 e|8 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-27 21:14"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/a18b">
+      <div class="t"><b>Blues lick in A</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 20:41 · <span class="num">0:24</span> · <span class="num">64</span> notes · 0.4 MB</div>
+      <div class="pv">G|5 G|7 G|8 G|7 G|5 D|7 D|5 A|7 A|6 A|5 E|8 E|5 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Blues lick in A"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/5d27">
+      <div class="t"><b>Sweep idea</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 22:03 · <span class="num">0:09</span> · <span class="num">45</span> notes · Audio deleted</div>
+      <div class="pv">A|12 D|14 G|14 B|13 e|12 e|17 e|12 B|13 G|14 D|14 A|12 A|15 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Sweep idea"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/e602">
+      <div class="t"><b>Take 2026-09-26 21:37</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 21:37 · <span class="num">1:30</span> · <span class="num">212</span> notes · 1.4 MB</div>
+      <div class="pv">A|7 D|5 D|7 G|4 G|6 G|7 B|5 B|7 G|7 B|5 e|5 e|7 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-26 21:37"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/3c90">
+      <div class="t"><b>Take 2026-09-25 19:12</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Fri 25 Sep 2026, 19:12 · <span class="num">0:31</span> · <span class="num">52</span> notes · 0.5 MB</div>
+      <div class="pv">E|0 E|3 A|0 A|2 D|0 D|2 G|0 G|2 B|0 B|1 e|0 e|3 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-25 19:12"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+</ul>
+</div></div>
+<footer class="libfoot"><div class="in"><span class="num">23</span> takes · <span class="num">41</span> MB used</div></footer>
+
+</div>
+  </div>
+</div></div>
+      </div>
+      <div>
+        <h3>(f·2) Restore finished</h3>
+        <p class="cap">Restore imported the takes not already present; the summary appears as a toast above the footer (auto-dismiss 4 s) and the new takes are in the list. A malformed file would instead change nothing and show an error (not a toast).</p>
+        <div class="scroller"><div class="t-light">
+  <div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/library</span></div>
+<div class="app vp short overlay-host">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library" aria-current="page">Library</a><a href="#/tuner">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="scrollarea"><div class="content">
+<div class="libhead"><h1>Library</h1></div>
+<div class="libtools">
+  <div class="search" role="search"><svg aria-hidden="true"><use href="#i-search"/></svg><input type="search" aria-label="Search takes" placeholder="Search takes"></div>
+  <span class="grow"></span>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-backup"/></svg>Back up library</button>
+  <button class="btn" type="button"><svg aria-hidden="true"><use href="#i-restore"/></svg>Restore from backup</button>
+</div><ul class="list" aria-label="Takes, newest first">
+  <li class="lrow">
+    <a class="main" href="#/tab/c41d">
+      <div class="t"><b>Take 2026-09-28 11:05</b><span class="badge">Recording</span></div>
+      <div class="m">Mon 28 Sep 2026, 11:05 · <span class="num">0:42</span></div>
+      <div class="pv none">—</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-28 11:05"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/b9e0">
+      <div class="t"><b>Take 2026-09-28 10:52</b><span class="badge">Not analysed</span></div>
+      <div class="m">Mon 28 Sep 2026, 10:52 · <span class="num">3:02</span> · 2.9 MB</div>
+      <div class="pv none">—</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-28 10:52"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/7f3c9a2e">
+      <div class="t"><b>Take 2026-09-27 21:14</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 21:14 · <span class="num">0:13</span> · <span class="num">38</span> notes · 0.2 MB</div>
+      <div class="pv">E|5 E|8 A|5 A|7 D|5 D|7 G|5 G|7 B|5 B|8 e|5 e|8 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-27 21:14"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/a18b">
+      <div class="t"><b>Blues lick in A</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sun 27 Sep 2026, 20:41 · <span class="num">0:24</span> · <span class="num">64</span> notes · 0.4 MB</div>
+      <div class="pv">G|5 G|7 G|8 G|7 G|5 D|7 D|5 A|7 A|6 A|5 E|8 E|5 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Blues lick in A"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/5d27">
+      <div class="t"><b>Sweep idea</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 22:03 · <span class="num">0:09</span> · <span class="num">45</span> notes · Audio deleted</div>
+      <div class="pv">A|12 D|14 G|14 B|13 e|12 e|17 e|12 B|13 G|14 D|14 A|12 A|15 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Sweep idea"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/e602">
+      <div class="t"><b>Take 2026-09-26 21:37</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Sat 26 Sep 2026, 21:37 · <span class="num">1:30</span> · <span class="num">212</span> notes · 1.4 MB</div>
+      <div class="pv">A|7 D|5 D|7 G|4 G|6 G|7 B|5 B|7 G|7 B|5 e|5 e|7 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-26 21:37"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+  <li class="lrow">
+    <a class="main" href="#/tab/3c90">
+      <div class="t"><b>Take 2026-09-25 19:12</b><span class="badge ok"><svg aria-hidden="true"><use href="#i-check"/></svg>Analysed</span></div>
+      <div class="m">Fri 25 Sep 2026, 19:12 · <span class="num">0:31</span> · <span class="num">52</span> notes · 0.5 MB</div>
+      <div class="pv">E|0 E|3 A|0 A|2 D|0 D|2 G|0 G|2 B|0 B|1 e|0 e|3 …</div>
+    </a>
+    <button class="btn kebab" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More actions for Take 2026-09-25 19:12"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+  </li>
+</ul>
+</div></div>
+<footer class="libfoot"><div class="in"><span class="num">23</span> takes · <span class="num">41</span> MB used</div></footer>
+<div class="toast-host"><div class="toast" role="status">Imported 12 takes, skipped 3 already in your library</div></div>
+</div>
+  </div>
+</div></div>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

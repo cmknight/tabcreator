@@ -91,7 +91,7 @@ Priority in brackets (MoSCoW: Must ships in v1, Should if time allows, Could is 
   - **success:** axe reports no serious or critical violations on every screen in both themes; full record → edit → export flow completes keyboard-only; tab is readable by screen readers as a note list.
 - **CAP-22** [Must] (NFR-08)
   - **intent:** A player on a browser lacking a required API is told it is unsupported and which browsers are.
-  - **success:** The unsupported screen appears when AudioWorklet, OPFS or WebAssembly is missing (simulated in test).
+  - **success:** The unsupported screen appears when AudioWorklet, OPFS, WebAssembly or Web Locks is missing (simulated in test).
 - **CAP-23** [Must] (NFR-12)
   - **intent:** Detection accuracy, fret-choice accuracy, analysis speed, editor latency and bundle size are measured on every change.
   - **success:** Human recordings count toward the CI gate once there are ≥ 20 of them (one player is enough); CI publishes an accuracy report per pull request and fails when any threshold is missed or any accuracy metric drops > 1 point from `main`; deliberately breaking octave correction fails CI.

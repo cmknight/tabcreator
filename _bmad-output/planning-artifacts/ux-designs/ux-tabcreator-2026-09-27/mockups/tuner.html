@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tuner Screen Mock</title>
+<style>
+/* ==========================================================================
+   KEY SCREEN — Tuner screen (#/tuner)
+   Base shell, tokens, theme scoping, browser frame, top bar, buttons, pressed
+   style, crop, legend and icon-sprite approach copied verbatim from
+   mockups/tab.html; only the "Tuner screen additions" block below is new.
+   Governing spine sections (check these when the spine changes):
+   DESIGN.md
+     - frontmatter tokens: colors (+ -dark pairs, incl. meter-ok/-warn/-hot,
+       success, warning), typography (display, numeric, heading, ui, ui-small),
+       rounded (full = string chips only), components (button-primary,
+       button-secondary, level-meter, focus-ring)
+     - Colors (primary = tuner needle; in-tune state uses success, not blue)
+     - Typography (display = tuner string name; numeric = cents, dBFS)
+     - Shapes (rounded.full only on Record button and tuner string chips)
+     - Components: Tuner, Level meter, Form controls (microphone select)
+     - Layout & Spacing (content-max 1100, gutter 16, one column, top bar)
+   EXPERIENCE.md
+     - Information Architecture: Tuner row (order: string name, needle, cents,
+       six string chips, level meter, microphone select, "Done — go to Record");
+       overlay "Mic setup card"
+     - Component Patterns: Tuner display, Level meter, Microphone select
+     - State Patterns: First visit, mic not yet allowed; Too loud / too quiet
+     - Voice and Tone; Accessibility Floor (no colour-only signals)
+     - Key Flows: Flow 1 step 2
+   Stories: US-2.1 (tuner), US-1.3 (level meter, "Too quiet" copy),
+     US-1.2 (microphone select), US-1.1 (setup card copy)
+   ========================================================================== */
+
+/* ---- DESIGN.md colour tokens, verbatim --------------------------------- */
+:root {
+  --color-background: #FAFAF7;       --color-background-dark: #141311;
+  --color-surface: #FFFFFF;          --color-surface-dark: #1D1B18;
+  --color-text: #1C1B19;             --color-text-dark: #ECE9E3;
+  --color-text-muted: #5E5A54;       --color-text-muted-dark: #A8A39A;
+  --color-border: #8C877E;           --color-border-dark: #6E6960;
+  --color-primary: #1F5FAD;          --color-primary-dark: #7FB0F0;
+  --color-on-primary: #FFFFFF;       --color-on-primary-dark: #0B1B2E;
+  --color-record: #B3261E;           --color-record-dark: #F2766B;
+  --color-on-record: #FFFFFF;        --color-on-record-dark: #2A0B08;
+  --color-check-bg: #FCE8B2;         --color-check-bg-dark: #4A3A12;
+  --color-check-line: #8A5A00;       --color-check-line-dark: #E3B34C;
+  --color-refit: #6A3FB5;            --color-refit-dark: #B99BF2;
+  --color-meter-ok: #2E7D32;         --color-meter-ok-dark: #5CC06A;
+  --color-meter-warn: #B26A00;       --color-meter-warn-dark: #E3B34C;
+  --color-meter-hot: #C62828;        --color-meter-hot-dark: #F2766B;
+  --color-success: #2E7D32;          --color-success-dark: #5CC06A;
+  --color-warning: #8A5A00;          --color-warning-dark: #E3B34C;
+  --color-danger: #B3261E;           --color-danger-dark: #F2766B;
+
+  --font-ui: system-ui, "Segoe UI", -apple-system, sans-serif;
+  --font-mono: ui-monospace, Consolas, Menlo, "Cascadia Mono", monospace;
+  --r-sm: 4px; --r-md: 6px; --r-lg: 10px; --r-full: 9999px;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s6: 24px; --s8: 32px; --s12: 48px;
+  --gutter: 16px; --content-max: 1100px; --focus-ring: 2px;
+}
+
+/* Theme scoping: both themes on one page, independent of prefers-color-scheme */
+.t-light {
+  --bg: var(--color-background); --surface: var(--color-surface);
+  --text: var(--color-text); --muted: var(--color-text-muted);
+  --border: var(--color-border); --primary: var(--color-primary);
+  --on-primary: var(--color-on-primary); --record: var(--color-record);
+  --on-record: var(--color-on-record); --check-bg: var(--color-check-bg);
+  --check-line: var(--color-check-line); --refit: var(--color-refit);
+  --success: var(--color-success); --warning: var(--color-warning);
+  --danger: var(--color-danger);
+  --chrome-bg: #DEDCD7; --chrome-tab: #F3F2EF; --chrome-url: #FFFFFF; --chrome-ink: #3A3833;
+  color-scheme: light;
+}
+.t-dark {
+  --bg: var(--color-background-dark); --surface: var(--color-surface-dark);
+  --text: var(--color-text-dark); --muted: var(--color-text-muted-dark);
+  --border: var(--color-border-dark); --primary: var(--color-primary-dark);
+  --on-primary: var(--color-on-primary-dark); --record: var(--color-record-dark);
+  --on-record: var(--color-on-record-dark); --check-bg: var(--color-check-bg-dark);
+  --check-line: var(--color-check-line-dark); --refit: var(--color-refit-dark);
+  --success: var(--color-success-dark); --warning: var(--color-warning-dark);
+  --danger: var(--color-danger-dark);
+  --chrome-bg: #2B2A27; --chrome-tab: #3A3834; --chrome-url: #22211E; --chrome-ink: #D8D5CF;
+  color-scheme: dark;
+}
+
+/* ---- Presentation page (not product UI) -------------------------------- */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: #E2E0DB; color: #1C1B19;
+  font: 15px/1.5 var(--font-ui);
+  overflow-x: hidden;
+}
+.page { max-width: 1240px; margin: 0 auto; padding: 32px 16px 64px; }
+.page > header h1 { font-size: 24px; margin: 0 0 4px; }
+.page > header p { margin: 0; color: #4A4741; max-width: 72ch; }
+.section { margin-top: 48px; }
+.section > h2 { font-size: 18px; margin: 0 0 4px; }
+.section > p.cap { margin: 0 0 12px; color: #4A4741; font-size: 14px; max-width: 90ch; }
+.scroller { max-width: 100%; overflow-x: auto; padding-bottom: 8px; }
+.alt-grid { display: grid; gap: 32px; }
+.alt-grid h3 { font-size: 15px; margin: 0 0 4px; }
+.alt-grid p.cap { margin: 0 0 10px; color: #4A4741; font-size: 14px; }
+
+/* ---- Browser frame ----------------------------------------------------- */
+.browser {
+  width: 1132px;                  /* 1100 content + 2 x 16 gutter */
+  border-radius: 10px; overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 8px 24px rgba(0,0,0,.12);
+  background: var(--bg);
+}
+.chrome { background: var(--chrome-bg); color: var(--chrome-ink); font: 12px/1 var(--font-ui); padding: 8px 12px 0; }
+.chrome-row { display: flex; align-items: flex-end; gap: 12px; }
+.dots { display: flex; gap: 6px; padding-bottom: 10px; }
+.dots i { width: 11px; height: 11px; border-radius: 50%; background: currentColor; opacity: .35; }
+.btab { background: var(--chrome-tab); border-radius: 8px 8px 0 0; padding: 8px 40px 8px 12px; display: flex; gap: 8px; align-items: center; }
+.btab b { font-weight: 500; }
+.btab .fav { width: 12px; height: 12px; border-radius: 3px; background: var(--primary); }
+.urlbar { color: var(--chrome-ink); background: var(--chrome-tab); padding: 6px 12px 8px; }
+.urlbar span { display: block; background: var(--chrome-url); border-radius: 999px; padding: 6px 12px; font-family: var(--font-mono); font-size: 12px; }
+.urlbar em { font-style: normal; opacity: .6; }
+
+/* ---- App: top bar ------------------------------------------------------ */
+.app { background: var(--bg); color: var(--text); font: 400 15px/1.5 var(--font-ui); }
+.topbar { background: var(--surface); border-bottom: 1px solid var(--border); height: 52px; }
+.topbar .in { max-width: var(--content-max); margin: 0 auto; padding: 0 var(--gutter); height: 100%; display: flex; align-items: center; gap: var(--s6); }
+.appname { font-weight: 600; font-size: 15px; }
+.nav { display: flex; gap: var(--s1); }
+.nav a { color: var(--text); text-decoration: none; padding: 6px 10px; border-radius: var(--r-md); }
+.nav a[aria-current="page"] { color: var(--primary); box-shadow: inset 0 -2px 0 var(--primary); }
+
+.content { max-width: var(--content-max); margin: 0 auto; padding: var(--s6) var(--gutter) var(--s8); }
+
+/* Buttons (button-secondary / button-primary) */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 10px; border-radius: var(--r-md);
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  font: 400 15px/1 var(--font-ui); cursor: pointer; white-space: nowrap;
+}
+.title .edit { width: 16px; height: 16px; color: var(--muted); margin-left: 8px; vertical-align: middle; }
+.btn svg { width: 16px; height: 16px; flex: none; }
+.btn[disabled] { opacity: .4; cursor: not-allowed; }
+.btn.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); font-weight: 500; }
+.btn .kbd { font: 500 12px/1 var(--font-mono); color: var(--muted); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 2px 5px; }
+/* pressed / selected: one style for toggles and the speed control */
+.btn[aria-pressed="true"], .seg button[aria-pressed="true"] { background: color-mix(in srgb, var(--primary) 14%, var(--surface)); border-color: var(--primary); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--primary); }
+
+/* ---- Tuner screen additions ------------------------------------------- */
+/* presentation fix: grid items must shrink so .scroller (not the page) scrolls at phone width */
+.alt-grid { grid-template-columns: minmax(0, 1fr); }
+.t-light { --meter-ok: var(--color-meter-ok); --meter-warn: var(--color-meter-warn); --meter-hot: var(--color-meter-hot); }
+.t-dark  { --meter-ok: var(--color-meter-ok-dark); --meter-warn: var(--color-meter-warn-dark); --meter-hot: var(--color-meter-hot-dark); }
+.nav a[aria-current="page"] { font-weight: 600; }
+
+.screen-h1 { font: 600 20px/1.3 var(--font-ui); margin: 0; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Tuner display panel (surface + hairline, like other panels) */
+.tuner { margin-top: var(--s4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s8) var(--s6) var(--s6); text-align: center; }
+.strname { font: 600 56px/1 var(--font-ui); margin: 0; }
+.strname.none { color: var(--muted); }
+.hint { margin-top: var(--s2); }
+.readout { margin-top: var(--s3); display: flex; justify-content: center; align-items: baseline; gap: var(--s3); flex-wrap: wrap; min-height: 24px; }
+.cents { font: 500 15px/1.3 var(--font-mono); }
+.dir { font-weight: 600; }
+.intune { color: var(--success); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+.intune svg { width: 18px; height: 18px; align-self: center; }
+
+/* Needle track: -50 ... +50 cents */
+.needle-wrap { max-width: 640px; margin: var(--s6) auto 0; }
+.track { position: relative; height: 44px; }
+.track .line { position: absolute; left: 0; right: 0; top: 21px; height: 2px; background: var(--border); }
+.track .tk { position: absolute; top: 14px; width: 2px; height: 16px; margin-left: -1px; background: var(--border); }
+.track .tk.mid { top: 6px; height: 32px; background: var(--text); }
+.track .needle { position: absolute; top: 0; bottom: 0; width: 4px; margin-left: -2px; background: var(--primary); border-radius: 2px; }
+.scale { position: relative; height: 18px; font: 400 13px/1.4 var(--font-mono); color: var(--muted); }
+.scale span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+
+/* Six string chips — rounded.full, fill when ticked (+ check badge, not colour alone) */
+.chips { list-style: none; margin: var(--s6) 0 0; padding: 0; display: flex; justify-content: center; gap: var(--s3); flex-wrap: wrap; }
+.chip { flex: none; position: relative; width: 44px; height: 44px; border-radius: var(--r-full); border: 2px solid var(--border); background: var(--surface); color: var(--text); display: grid; place-items: center; font: 600 15px/1 var(--font-ui); }
+.chip.done { background: var(--success); border-color: var(--success); color: var(--surface); }
+.chip .badge { display: none; }
+.chip.done .badge { display: grid; place-items: center; position: absolute; right: -5px; top: -5px; width: 18px; height: 18px; border-radius: var(--r-full); background: var(--surface); color: var(--success); border: 2px solid var(--success); }
+.chip.done .badge svg { width: 11px; height: 11px; }
+.allset { margin-top: var(--s4); color: var(--success); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+.allset svg { width: 18px; height: 18px; }
+
+/* Level meter + microphone select row */
+.inputs { margin-top: var(--s6); display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s4) var(--s8); }
+.meter-block { flex: 1 1 360px; }
+.lbl { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: var(--s2); }
+.lbl .num { font: 500 15px/1.3 var(--font-mono); }
+.meter { position: relative; height: 12px; border-radius: var(--r-sm); background: var(--border); overflow: hidden; }
+.meter .fill { position: absolute; left: 0; top: 0; bottom: 0; }
+.meter .fill.ok { background: var(--meter-ok); }
+.meter .peak { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); }
+.meter-scale { position: relative; height: 18px; margin-top: 2px; font: 400 13px/1.4 var(--font-mono); color: var(--muted); }
+.meter-scale span { position: absolute; transform: translateX(-50%); }
+.meter-scale span:first-child { transform: none; }
+.meter-scale span:last-child { transform: translateX(-100%); }
+.mwarn { display: flex; align-items: center; gap: 6px; margin-top: var(--s2); color: var(--warning); font-weight: 600; }
+.mwarn svg { width: 18px; height: 18px; flex: none; }
+.mic-block label { display: block; margin-bottom: var(--s2); }
+.mic-block select { height: 36px; min-width: 300px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--text); font: 400 15px/1 var(--font-ui); }
+.done-row { margin-top: var(--s6); padding-top: var(--s4); border-top: 1px solid var(--border); }
+
+/* Mic setup card (first visit) */
+.setup { margin-top: var(--s4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: var(--s6); max-width: 560px; }
+.setup .ic { width: 28px; height: 28px; color: var(--primary); }
+.setup h2 { font: 600 20px/1.3 var(--font-ui); margin: var(--s2) 0 var(--s2); }
+.setup p { margin: 0 0 var(--s4); }
+
+.crop { position: relative; max-height: 330px; overflow: hidden; }
+.crop::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 48px; background: linear-gradient(transparent, var(--bg)); }
+
+/* ---- Legend ------------------------------------------------------------ */
+.legend {
+  margin-top: 12px; width: 1132px; max-width: 100%;
+  display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: center;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px 16px; font: 13px/1.4 var(--font-ui);
+}
+.legend .sw { font: 16px/1.35 var(--font-mono); padding: 0 1px; margin-right: 8px; display: inline-block; }
+.legend .item { display: inline-flex; align-items: center; }
+.legend b { font-weight: 600; margin-right: 4px; }
+.legend .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+
+<!-- Icon sprite (inline, offline) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3 2 20h20z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4.5M12 17.2v.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<main class="page">
+  <header>
+    <h1>TabCreator — Tuner screen (key screen)</h1>
+    <p>1:1 static mock of <code>#/tuner</code> during Flow 1 step 2: Chris clicked "Tune first" on Record and is working through the six strings. Order follows the IA row: string name, needle, cents, six string chips, level meter, microphone select, "Done — go to Record".</p>
+  </header>
+
+  <!-- ===================================================== 1. LIGHT -->
+  <section class="section">
+    <h2>1 · Light theme — A string, 12 cents sharp</h2>
+    <p class="cap">Live pitch on the A string reads +12 cents: large string name, needle right of centre, signed cents in monospace and a direction word. Low E and D are already ticked; the meter sits healthily in the green zone with the peak-hold tick just above the fill.</p>
+    <div class="scroller"><div class="t-light">
+<div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/tuner</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library">Library</a><a href="#/tuner" aria-current="page">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content">
+<h1 class="screen-h1">Tuner</h1>
+<section class="tuner" aria-label="Tuner">
+  <p class="strname" aria-live="polite">A</p>
+  <div class="needle-wrap">
+    <div class="track" role="img" aria-label="Tuning needle, −50 to +50 cents: +12 cents"><span class="line"></span><span class="tk" style="left:0%"></span><span class="tk" style="left:25%"></span><span class="tk mid" style="left:50%"></span><span class="tk" style="left:75%"></span><span class="tk" style="left:100%"></span><span class="needle" style="left:62%"></span></div>
+    <div class="scale" aria-hidden="true"><span style="left:0%">−50</span><span style="left:25%">−25</span><span style="left:50%">0</span><span style="left:75%">+25</span><span style="left:100%">+50</span></div>
+  </div>
+  <div class="readout"><span class="cents">+12 cents</span><span class="dir">♯ Sharp — tune down</span></div>
+  <ul class="chips" aria-label="Strings tuned this session">
+    <li class="chip done" aria-label="Low E string, in tune"><span aria-hidden="true">E</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip" aria-label="A string, not yet tuned"><span aria-hidden="true">A</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip done" aria-label="D string, in tune"><span aria-hidden="true">D</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip" aria-label="G string, not yet tuned"><span aria-hidden="true">G</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip" aria-label="B string, not yet tuned"><span aria-hidden="true">B</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip" aria-label="High E string, not yet tuned"><span aria-hidden="true">E</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+  </ul>
+</section>
+<div class="inputs">
+  <div class="meter-block">
+    <div class="lbl"><span id="lvl1">Input level</span><span class="num">−22 dBFS</span></div>
+    <div class="meter" role="meter" aria-labelledby="lvl1" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-22"><span class="fill ok" style="width:63.3%"></span><span class="peak" style="left:73.3%"></span></div>
+    <div class="meter-scale" aria-hidden="true"><span style="left:0">−60</span><span style="left:80.0%">−12</span><span style="left:100%">0</span></div>
+  </div>
+  <div class="mic-block">
+    <label for="mic1">Microphone</label>
+    <select id="mic1"><option selected>USB Audio CODEC</option><option>Default — Built-in Microphone</option></select>
+  </div>
+</div>
+<div class="done-row"><button class="btn primary" type="button">Done — go to Record</button></div>
+</div>
+</div>
+</div>
+<div class="legend" aria-label="Tuner legend">
+  <span class="item"><span class="chip done" style="width:26px;height:26px;font-size:12px;margin-right:8px" aria-hidden="true">E<span class="badge"><svg><use href="#i-check"/></svg></span></span><b>Ticked string</b><span class="muted">filled + check; stays ticked for the session</span></span>
+  <span class="item"><span class="chip" style="width:26px;height:26px;font-size:12px;margin-right:8px" aria-hidden="true">E</span><b>Not yet tuned</b><span class="muted">outline only</span></span>
+  <span class="item"><b>Needle</b><span class="muted">primary; −50 … +50 cents; updates every 50 ms, settles within 300 ms</span></span>
+  <span class="item"><b>In tune</b><span class="muted">success check + text after 500 ms inside ±3 cents</span></span>
+</div>
+    </div></div>
+  </section>
+
+  <!-- ===================================================== 2. DARK -->
+  <section class="section">
+    <h2>2 · Dark theme — G string in tune</h2>
+    <p class="cap">Every token swapped for its <code>-dark</code> pair. G has held inside ±3 cents for 500 ms: needle centred, &quot;0 cents&quot;, green check + &quot;In tune&quot; in <code>success</code>. Five chips ticked; only high E remains.</p>
+    <div class="scroller"><div class="t-dark">
+<div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/tuner</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library">Library</a><a href="#/tuner" aria-current="page">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content">
+<h1 class="screen-h1">Tuner</h1>
+<section class="tuner" aria-label="Tuner">
+  <p class="strname" aria-live="polite">G</p>
+  <div class="needle-wrap">
+    <div class="track" role="img" aria-label="Tuning needle, −50 to +50 cents: 0 cents"><span class="line"></span><span class="tk" style="left:0%"></span><span class="tk" style="left:25%"></span><span class="tk mid" style="left:50%"></span><span class="tk" style="left:75%"></span><span class="tk" style="left:100%"></span><span class="needle" style="left:50%"></span></div>
+    <div class="scale" aria-hidden="true"><span style="left:0%">−50</span><span style="left:25%">−25</span><span style="left:50%">0</span><span style="left:75%">+25</span><span style="left:100%">+50</span></div>
+  </div>
+  <div class="readout"><span class="cents">0 cents</span><span class="intune" role="status"><svg aria-hidden="true"><use href="#i-check"/></svg>In tune</span></div>
+  <ul class="chips" aria-label="Strings tuned this session">
+    <li class="chip done" aria-label="Low E string, in tune"><span aria-hidden="true">E</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip done" aria-label="A string, in tune"><span aria-hidden="true">A</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip done" aria-label="D string, in tune"><span aria-hidden="true">D</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip done" aria-label="G string, in tune"><span aria-hidden="true">G</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip done" aria-label="B string, in tune"><span aria-hidden="true">B</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip" aria-label="High E string, not yet tuned"><span aria-hidden="true">E</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+  </ul>
+</section>
+<div class="inputs">
+  <div class="meter-block">
+    <div class="lbl"><span id="lvl2">Input level</span><span class="num">−20 dBFS</span></div>
+    <div class="meter" role="meter" aria-labelledby="lvl2" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-20"><span class="fill ok" style="width:66.7%"></span><span class="peak" style="left:76.7%"></span></div>
+    <div class="meter-scale" aria-hidden="true"><span style="left:0">−60</span><span style="left:80.0%">−12</span><span style="left:100%">0</span></div>
+  </div>
+  <div class="mic-block">
+    <label for="mic2">Microphone</label>
+    <select id="mic2"><option selected>USB Audio CODEC</option><option>Default — Built-in Microphone</option></select>
+  </div>
+</div>
+<div class="done-row"><button class="btn primary" type="button">Done — go to Record</button></div>
+</div>
+</div>
+</div>
+<div class="legend" aria-label="Tuner legend">
+  <span class="item"><span class="chip done" style="width:26px;height:26px;font-size:12px;margin-right:8px" aria-hidden="true">E<span class="badge"><svg><use href="#i-check"/></svg></span></span><b>Ticked string</b><span class="muted">filled + check; stays ticked for the session</span></span>
+  <span class="item"><span class="chip" style="width:26px;height:26px;font-size:12px;margin-right:8px" aria-hidden="true">E</span><b>Not yet tuned</b><span class="muted">outline only</span></span>
+  <span class="item"><b>Needle</b><span class="muted">primary; −50 … +50 cents; updates every 50 ms, settles within 300 ms</span></span>
+  <span class="item"><b>In tune</b><span class="muted">success check + text after 500 ms inside ±3 cents</span></span>
+</div>
+    </div></div>
+  </section>
+
+  <!-- ===================================================== 3. ALTERNATES -->
+  <section class="section">
+    <h2>3 · Alternate states (light, cropped)</h2>
+    <p class="cap">Same frame width; each panel shows the part that changes.</p>
+    <div class="alt-grid">
+      <div>
+        <h3>(a) No signal / too quiet</h3>
+        <p class="cap">Input under the tuner's threshold for 3 s: no needle, a neutral dash with the instruction in place of the string name, and the meter's &quot;Too quiet&quot; warning (icon + text; the fill is still in the green zone, so the text carries the meaning). Ticked chips are kept.</p>
+        <div class="scroller"><div class="t-light">
+<div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/tuner</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library">Library</a><a href="#/tuner" aria-current="page">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content">
+<h1 class="screen-h1">Tuner</h1>
+<section class="tuner" aria-label="Tuner">
+  <p class="strname none" aria-label="No string detected">—</p>
+  <div class="hint">Play a single open string</div>
+  <div class="needle-wrap">
+    <div class="track" role="img" aria-label="Tuning needle, −50 to +50 cents: No pitch detected"><span class="line"></span><span class="tk" style="left:0%"></span><span class="tk" style="left:25%"></span><span class="tk mid" style="left:50%"></span><span class="tk" style="left:75%"></span><span class="tk" style="left:100%"></span></div>
+    <div class="scale" aria-hidden="true"><span style="left:0%">−50</span><span style="left:25%">−25</span><span style="left:50%">0</span><span style="left:75%">+25</span><span style="left:100%">+50</span></div>
+  </div>
+  <div class="readout"></div>
+  <ul class="chips" aria-label="Strings tuned this session">
+    <li class="chip done" aria-label="Low E string, in tune"><span aria-hidden="true">E</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip" aria-label="A string, not yet tuned"><span aria-hidden="true">A</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip done" aria-label="D string, in tune"><span aria-hidden="true">D</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip" aria-label="G string, not yet tuned"><span aria-hidden="true">G</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip" aria-label="B string, not yet tuned"><span aria-hidden="true">B</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip" aria-label="High E string, not yet tuned"><span aria-hidden="true">E</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+  </ul>
+</section>
+<div class="inputs">
+  <div class="meter-block">
+    <div class="lbl"><span id="lvl3">Input level</span><span class="num">−53 dBFS</span></div>
+    <div class="meter" role="meter" aria-labelledby="lvl3" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-53"><span class="fill ok" style="width:11.7%"></span><span class="peak" style="left:18.3%"></span></div>
+    <div class="meter-scale" aria-hidden="true"><span style="left:0">−60</span><span style="left:80.0%">−12</span><span style="left:100%">0</span></div>
+    <div class="mwarn" role="status"><svg aria-hidden="true"><use href="#i-warn"/></svg>Too quiet — move closer to the guitar</div>
+  </div>
+  <div class="mic-block">
+    <label for="mic3">Microphone</label>
+    <select id="mic3"><option selected>USB Audio CODEC</option><option>Default — Built-in Microphone</option></select>
+  </div>
+</div>
+<div class="done-row"><button class="btn primary" type="button">Done — go to Record</button></div>
+</div>
+</div>
+</div>
+        </div></div>
+      </div>
+      <div>
+        <h3>(b) All six strings ticked</h3>
+        <p class="cap">High E just went in tune (−1 cents is inside ±3). All six chips are filled with checks and a success line confirms it; &quot;Done — go to Record&quot; is the next step.</p>
+        <div class="scroller"><div class="t-light">
+<div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/tuner</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library">Library</a><a href="#/tuner" aria-current="page">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content">
+<h1 class="screen-h1">Tuner</h1>
+<section class="tuner" aria-label="Tuner">
+  <p class="strname" aria-live="polite">E</p>
+  <div class="needle-wrap">
+    <div class="track" role="img" aria-label="Tuning needle, −50 to +50 cents: −1 cents"><span class="line"></span><span class="tk" style="left:0%"></span><span class="tk" style="left:25%"></span><span class="tk mid" style="left:50%"></span><span class="tk" style="left:75%"></span><span class="tk" style="left:100%"></span><span class="needle" style="left:49%"></span></div>
+    <div class="scale" aria-hidden="true"><span style="left:0%">−50</span><span style="left:25%">−25</span><span style="left:50%">0</span><span style="left:75%">+25</span><span style="left:100%">+50</span></div>
+  </div>
+  <div class="readout"><span class="cents">−1 cents</span><span class="intune"><svg aria-hidden="true"><use href="#i-check"/></svg>In tune</span></div>
+  <ul class="chips" aria-label="Strings tuned this session">
+    <li class="chip done" aria-label="Low E string, in tune"><span aria-hidden="true">E</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip done" aria-label="A string, in tune"><span aria-hidden="true">A</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip done" aria-label="D string, in tune"><span aria-hidden="true">D</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip done" aria-label="G string, in tune"><span aria-hidden="true">G</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip done" aria-label="B string, in tune"><span aria-hidden="true">B</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+    <li class="chip done" aria-label="High E string, in tune"><span aria-hidden="true">E</span><span class="badge" aria-hidden="true"><svg><use href="#i-check"/></svg></span></li>
+  </ul>
+  <div><span class="allset" role="status"><svg aria-hidden="true"><use href="#i-check"/></svg>All six strings in tune</span></div>
+</section>
+<div class="inputs">
+  <div class="meter-block">
+    <div class="lbl"><span id="lvl4">Input level</span><span class="num">−24 dBFS</span></div>
+    <div class="meter" role="meter" aria-labelledby="lvl4" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-24"><span class="fill ok" style="width:60.0%"></span><span class="peak" style="left:70.0%"></span></div>
+    <div class="meter-scale" aria-hidden="true"><span style="left:0">−60</span><span style="left:80.0%">−12</span><span style="left:100%">0</span></div>
+  </div>
+  <div class="mic-block">
+    <label for="mic4">Microphone</label>
+    <select id="mic4"><option selected>USB Audio CODEC</option><option>Default — Built-in Microphone</option></select>
+  </div>
+</div>
+<div class="done-row"><button class="btn primary" type="button">Done — go to Record</button></div>
+</div>
+</div>
+</div>
+        </div></div>
+      </div>
+      <div>
+        <h3>(c) Mic setup card (first visit)</h3>
+        <p class="cap">Before any browser prompt, the setup card replaces the tuner. Only &quot;Allow microphone&quot; triggers the permission request; the tuner, meter and select appear after access is granted.</p>
+        <div class="scroller"><div class="t-light">
+<div class="browser">
+<div class="chrome" aria-hidden="true">
+  <div class="chrome-row"><div class="dots"><i></i><i></i><i></i></div>
+  <div class="btab"><span class="fav"></span><b>TabCreator</b></div></div>
+</div>
+<div class="urlbar" aria-hidden="true"><span><em>…/</em>#/tuner</span></div>
+<div class="app">
+<nav class="topbar" aria-label="Main"><div class="in">
+  <span class="appname">TabCreator</span>
+  <div class="nav"><a href="#/record">Record</a><a href="#/library">Library</a><a href="#/tuner" aria-current="page">Tuner</a><a href="#/settings">Settings</a></div>
+</div></nav>
+<div class="content">
+<h1 class="screen-h1">Tuner</h1>
+<section class="setup" aria-labelledby="su-h">
+  <svg class="ic" aria-hidden="true"><use href="#i-mic"/></svg>
+  <h2 id="su-h">TabCreator needs your microphone</h2>
+  <p>Audio is analysed on this computer and never uploaded.</p>
+  <button class="btn primary" type="button">Allow microphone</button>
+</section>
+</div>
+</div>
+</div>
+        </div></div>
+      </div>
+    </div>
+  </section>
+</main>
+</body>
+</html>
