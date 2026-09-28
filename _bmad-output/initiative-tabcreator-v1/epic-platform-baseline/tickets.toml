@@ -1,0 +1,72 @@
+# tickets.toml — Platform baseline's stories in build order. tickets.py reads it.
+
+[[entry]]
+id = 1
+type = "story"
+title = "App shell, shared types, lint rules and CI"
+description = "Creates the pnpm workspace, the five hash routes with placeholder screens, the spine's directory layout with every shared type (stories' shared types, EngineAnalyzeInput, AnalysisResult, Prefs, TAKE_FIELD_OWNERS, AppError codes), theme.css tokens, a strings.ts skeleton, ESLint import rules and stylelint, and the CI workflow with lint, Vitest, vite build, Playwright Chromium and the fakeMic bundle check."
+verify = "The CI workflow passes on a pull request, Playwright navigates all five routes, and a deliberate ui/ to storage/ import fails lint."
+covers = ["R1", "R2", "R3"]
+after = []
+hitl = false
+risk = "medium"
+references = ["_bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-1, AD-10, AD-12, AD-14, Stack, Structural Seed", "TabCreator-User-Stories.md, US-0.1, Shared types, Repository layout"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Engine crate and worker bridge"
+description = "Builds the Rust engine crate with stub analyze, map_frets and engine_version, the module worker, and engine-client with a take-scoped queue, map-frets priority, cancel by take, throttled progress and typed errors, and adds the cargo test, clippy and wasm build steps to CI."
+verify = "Settings shows the engine version, and Vitest with a mocked worker proves request matching, map-frets priority, cancel scoped by take and init-failure errors."
+covers = ["R4", "R3"]
+after = [1]
+hitl = false
+risk = "medium"
+references = ["_bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-7, AD-8, AD-10", "TabCreator-User-Stories.md, US-0.2, Engine contract, Worker protocol"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Storage layer"
+description = "Builds db.ts with createTake, patchTake, commitAnalysis, importTakes, putTab and deleteTake with write fencing and versionchange handling, typed change events, numbered migrations, the OPFS audio store and raw writer, prefs.ts and the audio-format table."
+verify = "Vitest with fake-indexeddb and the dev-only storage test page prove round-trips, take-not-found rejections, events carrying the writer, sample-exact raw audio and a v0 to v1 migration."
+covers = ["R5"]
+after = [1]
+hitl = false
+risk = "high"
+references = ["_bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-2, AD-5, AD-11, AD-14, AD-15, AD-16", "TabCreator-User-Stories.md, US-0.3"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Test fixtures and fake mic"
+description = "Writes the deterministic fixture generator with every fixture the stories list, including the 120 BPM, octave-leap, ringing, vibrato, bend, slide, count-in bleed, detuned and drop-D ones, commits the outputs, and adds the dev-only fake mic."
+verify = "Running the generator twice gives identical files, ?fakeMic=open_strings streams audio above -40 dBFS, and the production bundle contains no fakeMic string."
+covers = ["R6"]
+after = [1]
+hitl = false
+risk = "low"
+references = ["TabCreator-User-Stories.md, US-0.4"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Deploy to GitHub Pages"
+description = "Adds the GitHub Actions deploy job that publishes dist/ to GitHub Pages from main, with the relative base path, the CSP meta tag, no inlined assets and dev-only code stripped; the owner enables Pages with GitHub Actions as the source."
+verify = "A push to main publishes the site, the deployed Settings shows the engine version, and Playwright against the built site finds zero CSP violations and zero non-self requests."
+covers = ["R7"]
+after = [1, 2]
+hitl = true
+risk = "low"
+references = ["_bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-13, AD-19, Structural Seed deployment"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what the build records and deferred review findings of stories 1 to 5 name; scope is set when it starts and takes cleanup only."
+verify = "CI stays green and every item in the sweep's agreed scope is closed or explicitly deferred."
+covers = []
+after = [2, 3, 4, 5]
+hitl = false
+risk = "low"
