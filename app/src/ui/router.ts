@@ -59,11 +59,12 @@ export function useRoute(): Route {
   const fallback = route === null && hash !== DEFAULT_HASH;
   useEffect(() => {
     if (!fallback) return;
-    const url = new URL(window.location.href);
+    const oldURL = window.location.href;
+    const url = new URL(oldURL);
     url.hash = DEFAULT_HASH;
     window.history.replaceState(window.history.state, '', url);
     // replaceState fires no hashchange; notify subscribers so the snapshot catches up.
-    window.dispatchEvent(new Event('hashchange'));
+    window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: url.href }));
   }, [fallback, hash]);
   return route ?? { name: 'record' };
 }

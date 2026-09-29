@@ -13,8 +13,10 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    // Serves the built app (run `pnpm build` first), as CI does.
-    command: `node node_modules/vite/bin/vite.js preview --port ${PORT} --strictPort`,
+    // Builds the app, then serves the production bundle with `vite preview`.
+    // Preview runs through the package bin, not `pnpm exec`: pnpm starts its child in a
+    // separate process group, which Playwright's shutdown would leave running.
+    command: `pnpm exec vite build && node_modules/.bin/vite preview --port ${PORT} --strictPort`,
     url: `http://localhost:${PORT}/`,
     reuseExistingServer: !process.env.CI,
   },

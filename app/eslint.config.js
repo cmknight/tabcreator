@@ -11,8 +11,11 @@ import tseslint from 'typescript-eslint';
  * storage, audio, engine → model; model → nothing app-side.
  */
 const dir = (/** @type {string} */ name) => [`**/${name}`, `**/${name}/**`];
-const adapterForbids = (/** @type {string} */ self) =>
-  ['ui', 'session', 'storage', 'audio', 'engine'].filter((d) => d !== self).flatMap(dir);
+const react = ['react', 'react/**', 'react-dom', 'react-dom/**'];
+const adapterForbids = (/** @type {string} */ self) => [
+  ...['ui', 'session', 'storage', 'audio', 'engine'].filter((d) => d !== self).flatMap(dir),
+  ...react,
+];
 
 export const layers = {
   ui: [...dir('storage'), ...dir('audio'), ...dir('engine')],
@@ -23,20 +26,26 @@ export const layers = {
     ...dir('storage'),
     ...dir('audio'),
     ...dir('engine'),
-    'react',
-    'react/**',
-    'react-dom',
-    'react-dom/**',
+    ...react,
   ],
   storage: adapterForbids('storage'),
   audio: adapterForbids('audio'),
   engine: adapterForbids('engine'),
 };
 
+const SOURCE = '*.{ts,tsx,js,jsx,mjs}';
+
+/**
+ * Files each layer's rules apply to. `src/App.tsx` is UI and gets the ui/ rules;
+ * `src/main.tsx` is the composition root and stays unconstrained.
+ * @type {Record<string, string[]>}
+ */
+const layerFiles = { ui: [`src/ui/**/${SOURCE}`, 'src/App.tsx'] };
+
 /** @type {import('eslint').Linter.Config[]} */
 const layerConfigs = Object.entries(layers).map(([layer, group]) => ({
   name: `tabcreator/layer-${layer}`,
-  files: [`src/${layer}/**/*.{ts,tsx}`],
+  files: layerFiles[layer] ?? [`src/${layer}/**/${SOURCE}`],
   rules: {
     'no-restricted-imports': [
       'error',

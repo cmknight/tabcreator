@@ -3,12 +3,12 @@ title: 'App shell, shared types, lint rules and CI'
 type: 'feature'
 ticket: '1'
 created: '2026-09-28'
-status: 'in-progress'
+status: 'built'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -65,15 +65,15 @@ Greenfield: no source files exist. Create under the repo root (`/home/chris/gith
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] root `package.json`, `pnpm-workspace.yaml`, `.nvmrc`, `.npmrc`, `.gitignore` -- workspace with `packageManager: pnpm@12.6.0`, `engines.node: ">=24.21.0 <25"`, scripts `dev`, `build`, `lint`, `typecheck`, `test`, `e2e`, `format:check` -- one entry point for CI and agents.
-- [ ] `app/package.json`, `vite.config.ts`, `tsconfig.json`, `index.html` -- Vite 8 + React 19 + TS 6.0.3 strict, Vitest jsdom environment, `@vitejs/plugin-react` 6.1.1 -- the app package.
-- [ ] `app/src/ui/router.ts`, `App.tsx`, `main.tsx`, `ui/screens/*.tsx` -- hash router and shell per the I/O matrix; back/forward work through `hashchange` -- R1.
-- [ ] `app/src/model/types.ts`, `app/src/model/errors.ts` -- all shared types and error codes -- R2; later stories only read them.
-- [ ] `app/src/ui/theme.css`, `app/src/ui/strings.ts` -- every DESIGN.md colour token (light + dark), `--font-ui`, `--font-tab`, `--font-numeric`, `--space-*`; strings for app name, nav links and the five screen titles -- R2.
-- [ ] `app/eslint.config.js`, `app/stylelint.config.js`, `.prettierrc` -- flat config with typescript-eslint, react-hooks, and `no-restricted-imports` per directory exactly as spine AD-1's diagram (ui ↛ storage/audio/engine; model ↛ anything app-side; adapters → model only); stylelint forbids hex, named and colour-function literals outside `theme.css` -- R2.
-- [ ] `app/playwright.config.ts`, `app/tests/e2e/navigation.spec.ts` -- Chromium only, `webServer` runs `vite preview` on the built app; navigates all five routes via the nav and checks each `<h1>`, then back/forward -- R1.
-- [ ] `app/src/ui/router.test.ts`, `app/src/lint-rules.test.ts`, `app/src/model/errors.test.ts` -- router matrix; ESLint Node API lints in-memory text at `src/ui/x.ts` importing `../storage/db` and expects `no-restricted-imports`, and at `src/session/x.ts` expects none; AppError keeps `code` and `cause`.
-- [ ] `.github/workflows/ci.yml` -- on push and pull_request: `actions/checkout@v7`, `pnpm/action-setup@v6` (12.6.0), `actions/setup-node@v7` (`node-version-file: .nvmrc`, pnpm cache), `pnpm install --frozen-lockfile`, format check, lint, stylelint, typecheck, `vitest run`, `vite build`, fail if `grep -r fakeMic app/dist` matches, `playwright install --with-deps chromium`, Playwright; upload the Playwright report on failure with `actions/upload-artifact@v7` -- R3.
+- [x] root `package.json`, `pnpm-workspace.yaml`, `.nvmrc`, `.npmrc`, `.gitignore` -- workspace with `packageManager: pnpm@12.6.0`, `engines.node: ">=24.21.0 <25"`, scripts `dev`, `build`, `lint`, `typecheck`, `test`, `e2e`, `format:check` -- one entry point for CI and agents.
+- [x] `app/package.json`, `vite.config.ts`, `tsconfig.json`, `index.html` -- Vite 8 + React 19 + TS 6.0.3 strict, Vitest jsdom environment, `@vitejs/plugin-react` 6.1.1 -- the app package.
+- [x] `app/src/ui/router.ts`, `App.tsx`, `main.tsx`, `ui/screens/*.tsx` -- hash router and shell per the I/O matrix; back/forward work through `hashchange` -- R1.
+- [x] `app/src/model/types.ts`, `app/src/model/errors.ts` -- all shared types and error codes -- R2; later stories only read them.
+- [x] `app/src/ui/theme.css`, `app/src/ui/strings.ts` -- every DESIGN.md colour token (light + dark), `--font-ui`, `--font-tab`, `--font-numeric`, `--space-*`; strings for app name, nav links and the five screen titles -- R2.
+- [x] `app/eslint.config.js`, `app/stylelint.config.js`, `.prettierrc` -- flat config with typescript-eslint, react-hooks, and `no-restricted-imports` per directory exactly as spine AD-1's diagram (ui ↛ storage/audio/engine; model ↛ anything app-side; adapters → model only); stylelint forbids hex, named and colour-function literals outside `theme.css` -- R2.
+- [x] `app/playwright.config.ts`, `app/tests/e2e/navigation.spec.ts` -- Chromium only, `webServer` runs `vite preview` on the built app; navigates all five routes via the nav and checks each `<h1>`, then back/forward -- R1.
+- [x] `app/src/ui/router.test.ts`, `app/src/lint-rules.test.ts`, `app/src/model/errors.test.ts` -- router matrix; ESLint Node API lints in-memory text at `src/ui/x.ts` importing `../storage/db` and expects `no-restricted-imports`, and at `src/session/x.ts` expects none; AppError keeps `code` and `cause`.
+- [x] `.github/workflows/ci.yml` -- on push and pull_request: `actions/checkout@v7`, `pnpm/action-setup@v6` (12.6.0), `actions/setup-node@v7` (`node-version-file: .nvmrc`, pnpm cache), `pnpm install --frozen-lockfile`, format check, lint, stylelint, typecheck, `vitest run`, `vite build`, fail if `grep -r fakeMic app/dist` matches, `playwright install --with-deps chromium`, Playwright; upload the Playwright report on failure with `actions/upload-artifact@v7` -- R3.
 
 **Acceptance Criteria:**
 - Given a fresh clone on Node 24.21.0, when `pnpm install --frozen-lockfile` then every CI step runs, then all pass.
@@ -87,6 +87,34 @@ Greenfield: no source files exist. Create under the repo root (`/home/chris/gith
 ## Plan Change Log
 
 ## Review Triage Log
+
+| # | Lens | Location | Finding | Verdict | Evidence | Route |
+|---|------|----------|---------|---------|----------|-------|
+| 1 | verification-gap, blind | app/src/lint-rules.test.ts | Generated layer tests derive expectations from `layers`, so wrong rules pass | medium | Lens mutated three rules; all 39 tests still passed | patch |
+| 2 | blind, edge | app/eslint.config.js | Files at `src/` root match no layer rule; `App.tsx` (UI) could import storage/audio/engine | medium | Layer configs only match `src/<layer>/**`; `App.tsx` renders screens and is UI by nature; `main.tsx` stays the composition root (AD-12 has it read prefs) | patch |
+| 3 | edge | app/eslint.config.js | Adapters may import React, though AD-1 says adapters depend on model only | low | `adapterForbids` omits `react`/`react-dom`; one-line correction | patch |
+| 4 | edge | app/eslint.config.js | Layer rules skip `.js/.jsx/.mjs` files | low | `files` glob is `*.{ts,tsx}`; direct glob correction | patch |
+| 5 | edge | app/src/lint-rules.test.ts | `URL.pathname` gives an invalid cwd on Windows | low | `/C:/…` pathname; `fileURLToPath` is a direct correction | patch |
+| 6 | blind | app/src/model/types.ts | Comment says `updatedAt` is owned by no writer, but `restore` lists it | low | AD-14: restore writes whole records via `importTakes`; comment needs rewording | patch |
+| 7 | blind | app/playwright.config.ts | `pnpm e2e` serves a stale or missing `dist`; calls vite's internal bin path | low | `webServer` runs preview only; devs running e2e after edits test the old bundle | patch |
+| 8 | blind | app/src/ui/router.ts | Synthetic fallback event is a plain `Event`, not `HashChangeEvent` | low | Other listeners see no `oldURL`/`newURL`; direct constructor swap | patch |
+| 9 | blind | ci.yml / pnpm-lock.yaml | Lockfile missing, frozen install fails | false | `pnpm-lock.yaml` is committed in e6f18f3; it was only excluded from the review diff | reject |
+| 10 | blind, edge | app/src/model/types.ts | `recording-session` cannot write required fields of a new Take | false | AD-14 gives `createTake(take)` for creation; ownership applies to `patchTake` only | reject |
+| 11 | blind, intent | app/stylelint.config.js | Colour literals in TSX/TS not checked | low | Spine AD-12 names stylelint as the enforcement; none exist today; fix is a new ESLint rule | reject |
+| 12 | blind, edge | .github/workflows/ci.yml | `grep` exit 2 on missing `app/dist` passes the fakeMic check | low | Build step precedes and fails first; only an outDir move triggers it; fix adds a guard | reject |
+| 13 | blind | app/src/model/errors.ts / strings.ts | No code→string mapping | false | No screen shows errors in this story; later stories own the copy | reject |
+| 14 | blind | app/src/ui/theme.css | Dark palette duplicated; scrim not redefined for dark | low | Duplication is mandated by AD-12's two selectors; plain CSS cannot share them | reject |
+| 15 | blind | app/src/ui/router.ts | `hash !== DEFAULT_HASH` guard is redundant | low | Harmless; no named harm | reject |
+| 16 | blind | index.html / main.tsx | Duplicate title, no color-scheme meta, favicon 404 fails e2e | false | e2e passes with zero console errors; title values are equal | reject |
+| 17 | blind, intent | package.json / ci.yml | Prettier skips root files; no CI concurrency; engine-strict set twice | low | Cosmetic/CI-efficiency only; restructuring prettier adds scope | reject |
+| 18 | blind | app/src/App.module.css | Sticky header lacks z-index; no skip link | low | No positioned screen content exists yet; a11y work belongs to later UI stories | reject |
+| 19 | edge | app/eslint.config.js | `**/storage` may match unrelated package subpaths | maybe-false | Would need a real dependency with such a subpath; at most low | reject |
+| 20 | edge | app/src/ui/router.ts | Hash change between render and fallback effect gets overwritten | low | Millisecond window; fix adds a guard | reject |
+| 21 | edge | app/src/model/errors.ts | `isAppError` fails after structured clone from a worker | false | No worker exists; story 1.2 defines the worker protocol | reject |
+| 22 | edge | app/src/ui/router.ts | Whitespace-only takeId renders Tab | low | Take ids are UUIDs; storage lookup yields `take-not-found` later; fix adds a branch | reject |
+| 23 | edge | app/stylelint.config.js | CSS system colours (Canvas, CanvasText) pass | low | Legitimate for forced-colors; fix adds a list | reject |
+| 24 | edge | app/tests/e2e/navigation.spec.ts | Tab route reached by `goto`, not nav | false | There is no Tab nav link by design; the route needs a takeId | reject |
+| 25 | intent | app/src/ui/theme.css | DESIGN.md `rounded` tokens not emitted | false | AD-12 limits properties to `--color-/--font-/--space-`; plan task lists only those | reject |
 
 ## Design Notes
 

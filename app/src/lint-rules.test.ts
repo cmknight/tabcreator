@@ -1,11 +1,11 @@
 // @vitest-environment node
+import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import stylelint from 'stylelint';
 import { describe, expect, it } from 'vitest';
-import { layers } from '../eslint.config.js';
 
 // The app package root (this file lives in app/src/).
-const appDir = decodeURIComponent(new URL('..', import.meta.url).pathname);
+const appDir = fileURLToPath(new URL('..', import.meta.url));
 const eslint = new ESLint({ cwd: appDir });
 
 async function restrictedImports(filePath: string, code: string): Promise<number> {
@@ -40,14 +40,39 @@ describe('ESLint layering (spine AD-1)', () => {
     );
   });
 
+  it('rejects model/ importing react-dom', async () => {
+    expect(
+      await restrictedImports('src/model/x.ts', "export { createRoot } from 'react-dom/client';\n"),
+    ).toBe(1);
+  });
+
+  it('rejects an adapter (storage/) importing react', async () => {
+    expect(await restrictedImports('src/storage/x.ts', "export { useState } from 'react';\n")).toBe(
+      1,
+    );
+  });
+
+  it('rejects src/App.tsx importing storage/', async () => {
+    expect(await restrictedImports('src/App.tsx', "export { db } from './storage/db';\n")).toBe(1);
+  });
+
+  // Spine AD-1, written out by hand so a wrong rule in eslint.config.js fails here.
+  const allowed: Record<string, readonly string[]> = {
+    ui: ['session', 'model'],
+    session: ['model', 'storage', 'engine', 'audio'],
+    storage: ['model'],
+    audio: ['model'],
+    engine: ['model'],
+    model: [],
+  };
   const allDirs = ['ui', 'session', 'model', 'storage', 'audio', 'engine'] as const;
-  for (const [layer, group] of Object.entries(layers)) {
+  for (const layer of allDirs) {
     for (const target of allDirs) {
       if (target === layer) continue;
-      const forbidden = group.includes(`**/${target}/**`);
-      it(`${layer}/ ${forbidden ? 'may not' : 'may'} import ${target}/`, async () => {
+      const ok = allowed[layer]?.includes(target) ?? false;
+      it(`${layer}/ ${ok ? 'may' : 'may not'} import ${target}/`, async () => {
         const code = `export { x } from '../${target}/x';\n`;
-        expect(await restrictedImports(`src/${layer}/x.ts`, code)).toBe(forbidden ? 1 : 0);
+        expect(await restrictedImports(`src/${layer}/x.ts`, code)).toBe(ok ? 0 : 1);
       });
     }
   }

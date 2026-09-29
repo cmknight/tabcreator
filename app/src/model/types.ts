@@ -92,8 +92,8 @@ export type TakeWriter = 'recording-session' | 'take-session' | 'library-session
 /**
  * Which writer owns which Take fields (spine AD-14). `patchTake` throws in dev
  * builds when a patch touches a field its writer does not own. `updatedAt` is
- * stamped by `storage/db.ts` on every write and is owned by no writer.
- * `restore` writes whole records through `importTakes` only.
+ * stamped by `storage/db.ts` on every patch and owned by no patch writer.
+ * `restore` writes whole records (including `updatedAt`) through `importTakes` only.
  */
 export const TAKE_FIELD_OWNERS = {
   'recording-session': [
