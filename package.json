@@ -1,0 +1,19 @@
+{
+  "name": "tabcreator",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "scripts": {
+    "dev": "pnpm --filter app dev",
+    "build": "pnpm --filter app build",
+    "lint": "pnpm --filter app lint",
+    "stylelint": "pnpm --filter app stylelint",
+    "typecheck": "pnpm --filter app typecheck",
+    "test": "pnpm --filter app test",
+    "e2e": "pnpm --filter app e2e",
+    "format:check": "pnpm --filter app format:check"
+  }
+}

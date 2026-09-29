@@ -1,0 +1,106 @@
+/*
+ * The only file that defines colours (spine AD-12). Mirrors the
+ * DESIGN.md frontmatter tokens: colors → --color-*, typography → --font-*
+ * (the `font` shorthand), spacing → --space-*. Dark values redefine the same
+ * properties; the -dark suffix never appears here.
+ */
+
+:root {
+  --color-background: #fafaf7;
+  --color-surface: #fff;
+  --color-text: #1c1b19;
+  --color-text-muted: #5e5a54;
+  --color-border: #8c877e;
+  --color-primary: #1f5fad;
+  --color-on-primary: #fff;
+  --color-record: #b3261e;
+  --color-on-record: #fff;
+  --color-check-bg: #fce8b2;
+  --color-check-line: #8a5a00;
+  --color-refit: #6a3fb5;
+  --color-meter-ok: #2e7d32;
+  --color-meter-warn: #b26a00;
+  --color-meter-hot: #c62828;
+  --color-success: #2e7d32;
+  --color-warning: #8a5a00;
+  --color-danger: #b3261e;
+  --color-scrim: rgb(0 0 0 / 45%);
+  --font-ui: 400 15px/1.5 system-ui, 'Segoe UI', -apple-system, sans-serif;
+  --font-ui-small: 400 13px/1.4 system-ui, 'Segoe UI', -apple-system, sans-serif;
+  --font-heading: 600 20px/1.3 system-ui, 'Segoe UI', -apple-system, sans-serif;
+  --font-display: 600 56px/1 system-ui, 'Segoe UI', -apple-system, sans-serif;
+  --font-tab: 400 16px/1.35 ui-monospace, 'Consolas', 'Menlo', 'Cascadia Mono', monospace;
+  --font-numeric: 500 15px/1.3 ui-monospace, 'Consolas', 'Menlo', 'Cascadia Mono', monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-gutter: 16px;
+  --space-content-max: 1100px;
+  --space-focus-ring: 2px;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --color-background: #141311;
+    --color-surface: #1d1b18;
+    --color-text: #ece9e3;
+    --color-text-muted: #a8a39a;
+    --color-border: #6e6960;
+    --color-primary: #7fb0f0;
+    --color-on-primary: #0b1b2e;
+    --color-record: #f2766b;
+    --color-on-record: #2a0b08;
+    --color-check-bg: #4a3a12;
+    --color-check-line: #e3b34c;
+    --color-refit: #b99bf2;
+    --color-meter-ok: #5cc06a;
+    --color-meter-warn: #e3b34c;
+    --color-meter-hot: #f2766b;
+    --color-success: #5cc06a;
+    --color-warning: #e3b34c;
+    --color-danger: #f2766b;
+
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --color-background: #141311;
+  --color-surface: #1d1b18;
+  --color-text: #ece9e3;
+  --color-text-muted: #a8a39a;
+  --color-border: #6e6960;
+  --color-primary: #7fb0f0;
+  --color-on-primary: #0b1b2e;
+  --color-record: #f2766b;
+  --color-on-record: #2a0b08;
+  --color-check-bg: #4a3a12;
+  --color-check-line: #e3b34c;
+  --color-refit: #b99bf2;
+  --color-meter-ok: #5cc06a;
+  --color-meter-warn: #e3b34c;
+  --color-meter-hot: #f2766b;
+  --color-success: #5cc06a;
+  --color-warning: #e3b34c;
+  --color-danger: #f2766b;
+
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background);
+  color: var(--color-text);
+  font: var(--font-ui);
+}
+
+:focus-visible {
+  outline: var(--space-focus-ring) solid var(--color-primary);
+  outline-offset: 2px;
+}

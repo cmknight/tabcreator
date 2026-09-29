@@ -1,0 +1,8 @@
+.screen {
+  padding-block: var(--space-6);
+}
+
+.title {
+  margin: 0;
+  font: var(--font-heading);
+}

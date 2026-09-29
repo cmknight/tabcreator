@@ -1,0 +1,10 @@
+import { strings } from '../strings';
+import styles from './Screen.module.css';
+
+export function Library() {
+  return (
+    <section className={styles.screen}>
+      <h1 className={styles.title}>{strings['library.title']}</h1>
+    </section>
+  );
+}

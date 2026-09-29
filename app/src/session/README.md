@@ -1,0 +1,1 @@
+# session/ — one store per aggregate plus analysis.ts, instance-lock.ts (sole owner of Web Locks and BroadcastChannel) and app-reload.ts (spine AD-2, AD-3); may import model/, storage/, engine/ and audio/.
