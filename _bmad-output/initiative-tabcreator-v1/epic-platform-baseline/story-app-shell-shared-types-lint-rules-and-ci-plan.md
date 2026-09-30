@@ -3,7 +3,7 @@ title: 'App shell, shared types, lint rules and CI'
 type: 'feature'
 ticket: '1'
 created: '2026-09-28'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
