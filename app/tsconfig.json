@@ -19,5 +19,5 @@
     "types": ["vite/client"]
   },
   "include": ["src"],
-  "exclude": ["src/engine/engine-worker.ts", "src/engine/pkg"]
+  "exclude": ["src/engine/engine-worker.ts", "src/storage/opfs-worker.ts", "src/engine/pkg"]
 }

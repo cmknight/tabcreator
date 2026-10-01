@@ -18,6 +18,7 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
+    "idb": "8.0.3",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
@@ -32,6 +33,7 @@
     "@vitejs/plugin-react": "6.1.1",
     "eslint": "10.11.0",
     "eslint-plugin-react-hooks": "7.1.1",
+    "fake-indexeddb": "6.2.5",
     "jsdom": "30.1.1",
     "prettier": "3.9.9",
     "stylelint": "17.15.0",

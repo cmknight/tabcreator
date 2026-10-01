@@ -4,6 +4,6 @@
     "lib": ["ES2023", "WebWorker"],
     "types": []
   },
-  "include": ["src/engine/engine-worker.ts"],
+  "include": ["src/engine/engine-worker.ts", "src/storage/opfs-worker.ts"],
   "exclude": []
 }

@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react';
+import { lazy, Suspense, type ReactNode } from 'react';
 import styles from './App.module.css';
-import { routeToHash, useRoute, type Route } from './ui/router';
+import { routeToHash, useHash, useRoute, type Route } from './ui/router';
 import { Library } from './ui/screens/Library';
 import { Record } from './ui/screens/Record';
 import { Settings } from './ui/screens/Settings';
@@ -30,7 +30,23 @@ function renderScreen(route: Route): ReactNode {
   }
 }
 
+// Dev-only test page (spine: `#/__test/*` routes are gated on import.meta.env.DEV). Production
+// builds replace the condition with `false`, so the page and its route string tree-shake out.
+const StorageTestPage = import.meta.env.DEV ? lazy(() => import('./dev/StorageTestPage')) : null;
+
 export function App() {
+  const hash = useHash();
+  if (import.meta.env.DEV && StorageTestPage && hash === '#/__test/storage') {
+    return (
+      <Suspense fallback={null}>
+        <StorageTestPage />
+      </Suspense>
+    );
+  }
+  return <Shell />;
+}
+
+function Shell() {
   const route = useRoute();
   return (
     <>

@@ -13,6 +13,11 @@ async function restrictedImports(filePath: string, code: string): Promise<number
   return result?.messages.filter((m) => m.ruleId === 'no-restricted-imports').length ?? -1;
 }
 
+async function lintRules(filePath: string, code: string): Promise<(string | null)[]> {
+  const [result] = await eslint.lintText(code, { filePath });
+  return result?.messages.map((m) => m.ruleId) ?? [];
+}
+
 async function stylelintErrors(codeFilename: string, code: string): Promise<string[]> {
   const { results } = await stylelint.lint({ code, codeFilename, cwd: appDir });
   return results.flatMap((r) => r.warnings.map((w) => w.rule));
@@ -54,6 +59,57 @@ describe('ESLint layering (spine AD-1)', () => {
 
   it('rejects src/App.tsx importing storage/', async () => {
     expect(await restrictedImports('src/App.tsx', "export { db } from './storage/db';\n")).toBe(1);
+  });
+
+  it.each(['ui', 'session', 'model', 'storage', 'audio', 'engine'])(
+    'rejects %s/ importing dev/, statically or dynamically',
+    async (layer) => {
+      expect(await restrictedImports(`src/${layer}/x.ts`, "export { p } from '../dev/p';\n")).toBe(
+        1,
+      );
+      expect(
+        await lintRules(`src/${layer}/x.ts`, "export const p = import('../dev/p');\n"),
+      ).toContain('no-restricted-syntax');
+    },
+  );
+
+  it('rejects src/App.tsx importing dev/ statically or without the DEV guard', async () => {
+    expect(
+      await restrictedImports('src/App.tsx', "export { P } from './dev/StorageTestPage';\n"),
+    ).toBe(1);
+    expect(
+      await lintRules('src/App.tsx', "export const P = import('./dev/StorageTestPage');\n"),
+    ).toContain('no-restricted-syntax');
+    expect(
+      await lintRules(
+        'src/App.tsx',
+        "export const P = import.meta.env.PROD ? import('./dev/StorageTestPage') : null;\n",
+      ),
+    ).toContain('no-restricted-syntax');
+  });
+
+  it('rejects src/App.tsx loading dev/ in the alternate branch of the DEV guard', async () => {
+    expect(
+      await lintRules(
+        'src/App.tsx',
+        "export const P = import.meta.env.DEV ? null : import('./dev/StorageTestPage');\n",
+      ),
+    ).toContain('no-restricted-syntax');
+  });
+
+  it('allows src/App.tsx loading dev/ behind import.meta.env.DEV', async () => {
+    expect(
+      await lintRules(
+        'src/App.tsx',
+        "export const P = import.meta.env.DEV ? import('./dev/StorageTestPage') : null;\n",
+      ),
+    ).toEqual([]);
+    expect(
+      await lintRules(
+        'src/App.tsx',
+        "export const P = import.meta.env.DEV ? lazy(() => import('./dev/StorageTestPage')) : null;\n",
+      ),
+    ).toEqual([]);
   });
 
   // Spine AD-1, written out by hand so a wrong rule in eslint.config.js fails here.

@@ -48,13 +48,18 @@ function getHash(): string {
   return window.location.hash;
 }
 
+/** The current `location.hash`, updated on `hashchange`. */
+export function useHash(): string {
+  return useSyncExternalStore(subscribe, getHash);
+}
+
 /**
  * Current route from `location.hash`, updated on `hashchange` (so browser
  * back/forward work). An empty or unknown hash is replaced with `#/record`
  * without adding a history entry.
  */
 export function useRoute(): Route {
-  const hash = useSyncExternalStore(subscribe, getHash);
+  const hash = useHash();
   const route = parseRoute(hash);
   const fallback = route === null && hash !== DEFAULT_HASH;
   useEffect(() => {
