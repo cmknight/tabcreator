@@ -3,14 +3,14 @@ title: 'Deploy to GitHub Pages'
 type: 'feature'
 ticket: '5'
 created: '2026-10-01'
-status: 'in-review'
+status: 'built'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
 review_source: 'auto'
 lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 baseline_revision: '819474b10a3d695257a6e2f790617f21c0ba3f48'
 context: []
 warnings: ['oversized']
@@ -92,7 +92,6 @@ Builds on 1.1–1.4 (`819474b`). `app/vite.config.ts` has `worker.format: 'es'`,
 
 ## Review Triage Log
 
-- Coordinator review: out-of-order deploys, CI tests ran a rebuilt dist, sub-path spec lacked hygiene checks, narrow root-absolute check -- all fixed.
 
 ### 2026-10-01 — Review pass
 - verdicts: 27 findings — high 0, medium 8, low 14, false 5, maybe-false 0
@@ -140,3 +139,24 @@ The live publish needs the owner: Pages source set to "GitHub Actions" (Settings
 
 **Manual checks (if no CLI):**
 - After the owner's first push to `main`: the `deploy` job succeeds, the Pages URL opens, and `#/settings` shows "Engine v0.1.0".
+
+## Auto Run Result
+
+- **Summary:** production builds are now relative-based (`base: './'`), never inline assets, and carry the exact AD-13 CSP meta, injected at build time only. CI uploads the single checked-and-tested `app/dist` and deploys it to GitHub Pages from green `main` pushes, skipping when a newer commit is already the head of `main`. Playwright proves zero CSP violations, zero failed or non-self requests at `/` and under `/tabcreator/`, and the engine version on Settings.
+- **Files changed:**
+  - `app/vite.config.ts`: `base`, `assetsInlineLimit`, the exported `CSP` and the build-only CSP plugin.
+  - `app/tests/e2e/{csp,subpath}.spec.ts`, `hygiene.ts`, `serve-subpath.ts`: CSP and request-hygiene tests, and the sub-path server.
+  - `app/playwright.config.ts`: `subpath` project; in CI the web servers serve the existing `dist`.
+  - `.github/workflows/ci.yml`: CSP and relative-URL checks, Pages artifact upload, `deploy` job with the head-of-main guard.
+  - `README.md`: the Deploy section.
+- **Review:** 27 findings; 4 fixes applied (3 medium entries, 1 low), 1 deferred (meta CSP does not reach workers; Pages cannot send headers), the rest rejected with reasons in the Review Triage Log.
+- **Follow-up review recommended:** true. Three medium entries were patched. Unverified risks: the head-of-main skip and the `deploy-pages` step have never run in Actions.
+- **Verification:**
+  - The full plan command exited 0 (150 Vitest tests, 16 Playwright tests).
+  - `dist/index.html` has the CSP meta once and no root-absolute `src`/`href`.
+  - The workflow parses to `['app', 'deploy', 'fixtures']`.
+- **Owner action (hitl):** `gh api repos/cmknight/tabcreator/pages` returned 404 at planning time, so Pages does not appear to be enabled yet. Set Settings → Pages → Source to "GitHub Actions", push `main`, then confirm the deploy job succeeds and `#/settings` on the Pages URL shows "Engine v0.1.0".
+- **Residual risks:**
+  - Workers run without CSP on Pages (deferred).
+  - If the GitHub API call fails, the head-of-main check fails and so does the `deploy` job.
+  - `CI=1 pnpm e2e` needs an existing `dist`.
