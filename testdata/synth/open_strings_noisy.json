@@ -1,0 +1,47 @@
+{
+  "notes": [
+    {
+      "startMs": 300,
+      "endMs": 1200,
+      "midi": 40,
+      "string": 6,
+      "fret": 0
+    },
+    {
+      "startMs": 1300,
+      "endMs": 2200,
+      "midi": 45,
+      "string": 5,
+      "fret": 0
+    },
+    {
+      "startMs": 2300,
+      "endMs": 3200,
+      "midi": 50,
+      "string": 4,
+      "fret": 0
+    },
+    {
+      "startMs": 3300,
+      "endMs": 4200,
+      "midi": 55,
+      "string": 3,
+      "fret": 0
+    },
+    {
+      "startMs": 4300,
+      "endMs": 5200,
+      "midi": 59,
+      "string": 2,
+      "fret": 0
+    },
+    {
+      "startMs": 5300,
+      "endMs": 6200,
+      "midi": 64,
+      "string": 1,
+      "fret": 0
+    }
+  ],
+  "tempoBpm": null
+}

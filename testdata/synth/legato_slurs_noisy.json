@@ -1,0 +1,124 @@
+{
+  "notes": [
+    {
+      "startMs": 300,
+      "endMs": 600,
+      "midi": 60,
+      "string": 3,
+      "fret": 5
+    },
+    {
+      "startMs": 600,
+      "endMs": 895,
+      "midi": 62,
+      "string": 3,
+      "fret": 7
+    },
+    {
+      "startMs": 900,
+      "endMs": 1200,
+      "midi": 62,
+      "string": 3,
+      "fret": 7
+    },
+    {
+      "startMs": 1200,
+      "endMs": 1495,
+      "midi": 60,
+      "string": 3,
+      "fret": 5
+    },
+    {
+      "startMs": 1500,
+      "endMs": 1800,
+      "midi": 64,
+      "string": 2,
+      "fret": 5
+    },
+    {
+      "startMs": 1800,
+      "endMs": 2100,
+      "midi": 66,
+      "string": 2,
+      "fret": 7
+    },
+    {
+      "startMs": 2100,
+      "endMs": 2395,
+      "midi": 67,
+      "string": 2,
+      "fret": 8
+    },
+    {
+      "startMs": 2400,
+      "endMs": 2700,
+      "midi": 67,
+      "string": 2,
+      "fret": 8
+    },
+    {
+      "startMs": 2700,
+      "endMs": 3000,
+      "midi": 66,
+      "string": 2,
+      "fret": 7
+    },
+    {
+      "startMs": 3000,
+      "endMs": 3295,
+      "midi": 64,
+      "string": 2,
+      "fret": 5
+    },
+    {
+      "startMs": 3300,
+      "endMs": 3600,
+      "midi": 69,
+      "string": 1,
+      "fret": 5
+    },
+    {
+      "startMs": 3600,
+      "endMs": 3900,
+      "midi": 71,
+      "string": 1,
+      "fret": 7
+    },
+    {
+      "startMs": 3900,
+      "endMs": 4195,
+      "midi": 69,
+      "string": 1,
+      "fret": 5
+    },
+    {
+      "startMs": 4200,
+      "endMs": 4500,
+      "midi": 55,
+      "string": 4,
+      "fret": 5
+    },
+    {
+      "startMs": 4500,
+      "endMs": 4800,
+      "midi": 57,
+      "string": 4,
+      "fret": 7
+    },
+    {
+      "startMs": 4800,
+      "endMs": 5100,
+      "midi": 59,
+      "string": 4,
+      "fret": 9
+    },
+    {
+      "startMs": 5100,
+      "endMs": 5395,
+      "midi": 57,
+      "string": 4,
+      "fret": 7
+    }
+  ],
+  "tempoBpm": 100
+}

@@ -23,7 +23,12 @@ export default defineConfig({
     {
       name: 'dev',
       testMatch: DEV_SPECS,
-      use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${DEV_PORT}/` },
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: `http://localhost:${DEV_PORT}/`,
+        // The fake mic (US-0.4) plays through an AudioContext started without a user gesture.
+        launchOptions: { args: ['--autoplay-policy=no-user-gesture-required'] },
+      },
     },
   ],
   webServer: [

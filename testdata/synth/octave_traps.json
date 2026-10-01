@@ -1,0 +1,61 @@
+{
+  "notes": [
+    {
+      "startMs": 300,
+      "endMs": 1000,
+      "midi": 40,
+      "string": 6,
+      "fret": 0
+    },
+    {
+      "startMs": 1050,
+      "endMs": 1750,
+      "midi": 45,
+      "string": 5,
+      "fret": 0
+    },
+    {
+      "startMs": 1800,
+      "endMs": 2500,
+      "midi": 43,
+      "string": 6,
+      "fret": 3
+    },
+    {
+      "startMs": 2550,
+      "endMs": 3250,
+      "midi": 47,
+      "string": 5,
+      "fret": 2
+    },
+    {
+      "startMs": 3300,
+      "endMs": 4000,
+      "midi": 45,
+      "string": 6,
+      "fret": 5
+    },
+    {
+      "startMs": 4050,
+      "endMs": 4750,
+      "midi": 48,
+      "string": 5,
+      "fret": 3
+    },
+    {
+      "startMs": 4800,
+      "endMs": 5500,
+      "midi": 41,
+      "string": 6,
+      "fret": 1
+    },
+    {
+      "startMs": 5550,
+      "endMs": 6250,
+      "midi": 45,
+      "string": 5,
+      "fret": 0
+    }
+  ],
+  "tempoBpm": 80
+}

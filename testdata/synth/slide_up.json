@@ -1,0 +1,26 @@
+{
+  "notes": [
+    {
+      "startMs": 300,
+      "endMs": 1800,
+      "midi": 60,
+      "string": 3,
+      "fret": 5
+    },
+    {
+      "startMs": 2100,
+      "endMs": 3600,
+      "midi": 55,
+      "string": 4,
+      "fret": 5
+    },
+    {
+      "startMs": 3900,
+      "endMs": 5400,
+      "midi": 64,
+      "string": 2,
+      "fret": 5
+    }
+  ],
+  "tempoBpm": null
+}

@@ -8,6 +8,24 @@ permissions:
   contents: read
 
 jobs:
+  fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+
+      # Regenerates testdata/synth/ from tools/make_fixtures.py (pinned by its .lock); any
+      # difference means the generator is not deterministic or its outputs were not committed.
+      - name: Generate fixtures
+        run: uv run --locked tools/make_fixtures.py
+
+      - name: Fixtures match the committed files
+        run: |
+          git add --intent-to-add testdata
+          git diff --exit-code -- testdata
+
   app:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -75,8 +93,8 @@ jobs:
 
       - name: No fake mic in the production bundle
         run: |
-          if grep -r fakeMic app/dist; then
-            echo "::error::fakeMic found in app/dist"
+          if grep -rE 'fakeMic|testdata' app/dist; then
+            echo "::error::fake mic code or test fixtures found in app/dist"
             exit 1
           fi
 
