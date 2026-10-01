@@ -97,6 +97,11 @@ jobs:
             echo "::error::fake mic code or test fixtures found in app/dist"
             exit 1
           fi
+          if [ -n "$(find app/dist -name '*.wav')" ]; then
+            find app/dist -name '*.wav'
+            echo "::error::WAV files found in app/dist"
+            exit 1
+          fi
 
       - name: No dev-only test pages in the production bundle
         run: |

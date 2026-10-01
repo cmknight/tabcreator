@@ -438,13 +438,66 @@ def to_pcm16(x: np.ndarray) -> np.ndarray:
     return np.clip(np.round(x * 32767.0), -32768, 32767).astype(np.int16)
 
 
+def require(ok: bool, message: str) -> None:
+    # Not `assert`: these checks must also run under `python -O`.
+    if not ok:
+        raise SystemExit(f"fixture check failed: {message}")
+
+
 def check(name: str, pcm: np.ndarray, meta: dict) -> None:
+    """The answer JSON is well formed and fits the WAV."""
     length_ms = pcm.size / SPMS
     starts = [n["startMs"] for n in meta["notes"]]
-    assert starts == sorted(starts), f"{name}: notes not sorted by startMs"
+    require(starts == sorted(starts), f"{name}: notes not sorted by startMs")
     for n in meta["notes"]:
-        assert n["midi"] == OPEN_MIDI[n["string"]] + n["fret"], f"{name}: midi != open + fret"
-        assert 0 <= n["startMs"] < n["endMs"] <= length_ms, f"{name}: note outside the WAV"
+        require(n["midi"] == OPEN_MIDI[n["string"]] + n["fret"], f"{name}: midi != open + fret")
+        require(0 <= n["startMs"] < n["endMs"] <= length_ms, f"{name}: note outside the WAV")
+
+
+PITCH_WINDOW_MS = (10.0, 110.0)  # after startMs: past the pick, before any glide or vibrato
+# Measured error is <= 5 cents (the grid step); +/-20 still catches a doubled -45 c detune.
+PITCH_TOLERANCE_CENTS = 20.0
+PITCH_FFT = 1 << 16
+PITCH_HARMONICS = 5
+PITCH_GRID = np.arange(30.0, 100.0, 0.05)  # candidate MIDI pitches, 5-cent steps
+
+
+def dominant_midi(x: np.ndarray) -> float:
+    """The pitch whose first harmonics (weighted 1/h) carry the most spectral magnitude."""
+    mag = np.abs(np.fft.rfft(x * np.hanning(x.size), PITCH_FFT))
+    freqs = np.fft.rfftfreq(PITCH_FFT, 1.0 / SR)
+    f0 = 440.0 * 2.0 ** ((PITCH_GRID - 69.0) / 12.0)
+    score = sum(np.interp(h * f0, freqs, mag) / h for h in range(1, PITCH_HARMONICS + 1))
+    return float(PITCH_GRID[int(np.argmax(score))])
+
+
+def rms_db(x: np.ndarray) -> float:
+    return 20.0 * math.log10(max(rms(x), 1e-12))
+
+
+def check_audio(fx: Fixture, name: str, pcm: np.ndarray, meta: dict, clean_pcm: np.ndarray) -> None:
+    """The audio matches its answers: pitches on clean takes, and the per-fixture level facts."""
+    x = pcm.astype(np.float64) / 32768.0
+    if name == fx.name and fx.name != "octave_traps":
+        for n in meta["notes"]:
+            a = int(round((n["startMs"] + PITCH_WINDOW_MS[0]) * SPMS))
+            b = int(round((n["startMs"] + PITCH_WINDOW_MS[1]) * SPMS))
+            cents = (dominant_midi(x[a:b]) - n["midi"]) * 100.0 - fx.detune_cents
+            require(
+                abs(cents) <= PITCH_TOLERANCE_CENTS,
+                f"{name}: note at {n['startMs']} ms is {cents:+.0f} cents off MIDI {n['midi']}",
+            )
+    if name == "silence_60s":
+        require(not np.any(pcm), f"{name}: not all zeros")
+    if fx.name == "level_too_hot":
+        require(int(np.max(np.abs(pcm.astype(np.int32)))) >= 32767, f"{name}: never reaches full scale")
+    if name == "noise_room_-50dbfs":
+        level = rms_db(x)
+        require(abs(level + 50.0) <= 1.0, f"{name}: RMS {level:.2f} dBFS, want -50 +/- 1")
+    if name != fx.name:
+        clean = clean_pcm.astype(np.float64)
+        snr = rms_db(clean) - rms_db(pcm.astype(np.float64) - clean)
+        require(abs(snr - NOISY_SNR_DB) <= 1.0, f"{name}: SNR {snr:.2f} dB, want 30 +/- 1")
 
 
 def write_atomic(path: Path, write) -> None:
@@ -464,9 +517,11 @@ def main() -> None:
         if fx.noisy:
             noisy = add_noise(fx.name, clean)
             variants.append((f"{fx.name}_noisy", noisy))
+        clean_pcm = to_pcm16(clean)
         for name, audio in variants:
             pcm = to_pcm16(audio)
             check(name, pcm, meta)
+            check_audio(fx, name, pcm, meta, clean_pcm)
             write_atomic(
                 OUT_DIR / f"{name}.wav",
                 lambda p, pcm=pcm: sf.write(p, pcm, SR, subtype="PCM_16", format="WAV"),

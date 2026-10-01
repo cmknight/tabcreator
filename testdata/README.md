@@ -38,3 +38,7 @@ and a `{name}.json` answer file:
   pink noise at 30 dB SNR and the same answers.
 
 In the dev server, `?fakeMic=<name>` serves a fixture as the microphone (`app/src/audio/fake-mic.ts`).
+The fixture plays once, from the first `getUserMedia` call. Its audio can only start after a user
+gesture on the page (or with Chromium's `--autoplay-policy=no-user-gesture-required`, as the
+Playwright `dev` project uses); otherwise `getUserMedia` rejects with `NotAllowedError` after
+about 2 s, and a later call retries.
