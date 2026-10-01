@@ -110,6 +110,27 @@ jobs:
             exit 1
           fi
 
+      # Spine AD-13: the CSP meta and relative asset URLs (so the site works under /tabcreator/).
+      - name: CSP and relative assets in the production bundle
+        run: |
+          csp="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; media-src 'self' blob:; connect-src 'self'"
+          if ! grep -qF "<meta http-equiv=\"Content-Security-Policy\" content=\"$csp\"" app/dist/index.html; then
+            echo "::error::app/dist/index.html lacks the CSP meta tag"
+            exit 1
+          fi
+          if grep -q '="/assets' app/dist/index.html; then
+            echo "::error::app/dist/index.html has root-absolute asset URLs"
+            exit 1
+          fi
+
+      # The dist/ checked above is what the deploy job publishes (uploaded before Playwright, whose
+      # web server rebuilds it); only pushes to main deploy, and only once every job is green.
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: app/dist
+
       - name: Install Playwright Chromium
         run: pnpm --filter app exec playwright install --with-deps chromium
 
@@ -125,3 +146,23 @@ jobs:
             app/playwright-report
             app/test-results
           retention-days: 7
+
+  deploy:
+    needs: [fixtures, app]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # One deploy at a time; a newer push waits rather than cancelling one in progress.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
