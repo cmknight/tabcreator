@@ -9,6 +9,13 @@ const DEV_SPECS = /.*\.dev\.spec\.ts/;
 /** The sub-path spec runs against the build served under /tabcreator/, as on GitHub Pages. */
 const SUBPATH_SPECS = /.*subpath\.spec\.ts/;
 
+/**
+ * Locally, build the engine wasm (so Rust edits are never served stale) and the app first. In
+ * CI, serve the dist/ the workflow already built, checked and uploaded for Pages, so the
+ * browser tests run against exactly the published bytes.
+ */
+const BUILD = process.env.CI ? '' : 'pnpm -w run build:engine && pnpm exec vite build && ';
+
 export default defineConfig({
   testDir: './tests/e2e',
   forbidOnly: !!process.env.CI,
@@ -44,11 +51,10 @@ export default defineConfig({
   ],
   webServer: [
     {
-      // Builds the engine wasm (so Rust edits are never served stale) and the app, then serves
-      // the production bundle with `vite preview`.
+      // Serves the production bundle (built first locally, see BUILD) with `vite preview`.
       // Preview runs through the package bin, not `pnpm exec`: pnpm starts its child in a
       // separate process group, which Playwright's shutdown would leave running.
-      command: `pnpm -w run build:engine && pnpm exec vite build && node_modules/.bin/vite preview --port ${PORT} --strictPort`,
+      command: `${BUILD}node_modules/.bin/vite preview --port ${PORT} --strictPort`,
       url: `http://localhost:${PORT}/`,
       reuseExistingServer: !process.env.CI,
     },

@@ -3,18 +3,25 @@ title: 'Deploy to GitHub Pages'
 type: 'feature'
 ticket: '5'
 created: '2026-10-01'
-status: 'in-progress'
+status: 'in-review'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 baseline_revision: '819474b10a3d695257a6e2f790617f21c0ba3f48'
 context: []
 warnings: ['oversized']
-deferred: []
+deferred:
+  - summary: >-
+      The meta-tag CSP does not apply to workers and GitHub Pages cannot send CSP headers, so the engine and OPFS workers run without any CSP and 'wasm-unsafe-eval' is never enforced.
+    evidence: |-
+      Implementer showed removing 'wasm-unsafe-eval' still passes csp.spec.ts; workers loaded from URLs take CSP from their response headers, which Pages does not set. Spine AD-13 assumes the meta tag covers the app. Needs an architecture decision (accept, or self-host behind headers).
+    location: >-
+      app/vite.config.ts CSP; spine AD-13
+    severity: medium
 ---
 
 <intent-contract>
@@ -73,7 +80,10 @@ Builds on 1.1–1.4 (`819474b`). `app/vite.config.ts` has `worker.format: 'es'`,
 - CSP is injected by a build-only `transformIndexHtml` string replace right after `<meta charset>` (charset stays first; the build throws if the anchor is missing). Attribute is unescaped so the CI `grep -F` can match the exact string.
 - Sub-path: `app/tests/e2e/serve-subpath.ts`, a node:http static server (run by Node's type stripping) serving `dist/` only under `/tabcreator/` (404 elsewhere), as Playwright project `subpath` on port 4174; `chromium` ignores `subpath.spec.ts`.
 - CSP spec reports `securitypolicyviolation` through `page.exposeFunction`, so a reload cannot drop one; requests are collected on the context (includes the worker's wasm fetch).
-- The Pages artifact is uploaded right after the dist checks and before Playwright, because the Playwright web server rebuilds `dist`; the build is deterministic (same hashes), and deploy still needs the whole `app` job green.
+- One build: with `CI` set, the `chromium` and `subpath` web servers serve the existing `dist/` without rebuilding (locally they still rebuild engine and app), so the grep-checked, Playwright-tested and uploaded `app/dist` are the same bytes.
+- `deploy` first checks `github.sha` is still the head of `main` (`gh api …/commits/main`, `contents: read` on the job) and skips `deploy-pages` otherwise, so a late-finishing older run cannot publish over a newer one; the non-cancelling `pages` group is kept.
+- `csp.spec.ts` and `subpath.spec.ts` share `tests/e2e/hygiene.ts`: CSP violations, "Refused to" console, `requestfailed`/>=400 responses, and same-origin requests.
+- CI dist check rejects any root-absolute `(src|href)="/x` in `index.html` and any `url(/` in `dist/**/*.css`.
 - `actions/upload-pages-artifact@v5`, `actions/deploy-pages@v5` (latest majors on 2026-10-01).
 - Negative checks run: `base: '/'` fails `subpath.spec.ts`; `worker-src blob:` fails `csp.spec.ts`. Removing `'wasm-unsafe-eval'` does NOT fail it: the wasm compiles in the module worker, and a document's meta CSP does not apply to workers (a worker's CSP comes from its own response headers, which GitHub Pages does not set). The directive is kept as specified; it is enforced on the main thread only.
 - Dev server checked: no CSP meta, inline react-refresh script present.
@@ -81,6 +91,39 @@ Builds on 1.1–1.4 (`819474b`). `app/vite.config.ts` has `worker.format: 'es'`,
 ## Plan Change Log
 
 ## Review Triage Log
+
+- Coordinator review: out-of-order deploys, CI tests ran a rebuilt dist, sub-path spec lacked hygiene checks, narrow root-absolute check -- all fixed.
+
+### 2026-10-01 — Review pass
+- verdicts: 27 findings — high 0, medium 8, low 14, false 5, maybe-false 0
+- findings:
+  - `medium` `patch` (blind) overlapping main pushes can deploy out of order — deploy skips unless `github.sha` is the head of `main`.
+  - `medium` `patch` (blind) Playwright tests a rebuilt dist, not the uploaded one — in CI the web servers serve the existing `dist`.
+  - `low` `reject` (blind) CSP string duplicated in the CI step — a mismatch fails CI loudly; `csp.spec.ts` asserts the exported string against the build.
+  - `low` `patch` (blind) root-absolute check only covers `="/assets` — broadened to any root-absolute `src`/`href` and CSS `url(/`.
+  - `false` `reject` (blind) CSP lacks `base-uri`, `form-action`, `object-src`, `frame-ancestors` — the policy string is fixed verbatim by spine AD-13.
+  - `false` `reject` (blind) `worker-src blob:` broader than needed — fixed verbatim by spine AD-13.
+  - `medium` `defer` (blind) meta CSP does not reach workers and Pages sends no headers, so the engine worker runs without CSP and `'wasm-unsafe-eval'` is unenforced — pre-existing spine assumption, not caused by this change.
+  - `low` `patch` (blind) sub-path spec misses blocked requests and console errors — added with the claim fix below.
+  - `low` `reject` (blind) malformed URL crashes the test server — test-only; requests come from the app; fix adds a guard.
+  - `low` `reject` (blind) README lacks app basics and the published URL — plan asked for a Deploy section only.
+  - `low` `reject` (edge) malformed percent escape crashes `serve-subpath.ts` — as above.
+  - `low` `reject` (edge) non-numeric port argument — the config passes a constant.
+  - `low` `reject` (edge) reused local server serves a stale `dist` — local-only; CI never reuses.
+  - `low` `patch` (edge) other root-absolute URLs pass CI — same broadened check.
+  - `medium` `patch` (edge) out-of-order deploys — same fix.
+  - `medium` `patch` (edge) uploaded and tested bundles can differ — same fix.
+  - `low` `reject` (edge) late violation binding may be missed — the spec waits for the engine and navigations; fix adds timing code.
+  - `low` `patch` (edge) sub-path spec ignores `requestfailed` — added.
+  - `low` `reject` (edge) loose `subpath.spec.ts` match — no such file names exist.
+  - `medium` `patch` (edge, claim) sub-path spec does not assert zero violations or non-self requests — assertions added.
+  - `low` `patch` (edge, claim) "only relative asset URLs" not enforced — same broadened check.
+  - `false` `reject` (intent) a real push publishing is not verified — needs the owner's Pages setting and a push; recorded as the manual check (hitl).
+  - `false` `reject` (intent) deployed Settings not checked on github.io — same; the sub-path spec models it locally.
+  - `medium` `patch` (intent) browser tests run on a rebuild, not the published bytes — same fix as above.
+  - `medium` `patch` (intent) CSP/origin assertions not run under `/tabcreator/` — same fix as the claim.
+  - `low` `reject` (intent) no explicit check for `data:` URIs — `assetsInlineLimit: 0` plus the CSP spec (default-src blocks `data:`).
+  - `false` `reject` (intent) owner step only in README — the intent assigns it to the owner.
 
 ## Design Notes
 

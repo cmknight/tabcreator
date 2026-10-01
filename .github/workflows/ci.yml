@@ -118,13 +118,18 @@ jobs:
             echo "::error::app/dist/index.html lacks the CSP meta tag"
             exit 1
           fi
-          if grep -q '="/assets' app/dist/index.html; then
-            echo "::error::app/dist/index.html has root-absolute asset URLs"
+          if grep -nE '(src|href)="/[^/]' app/dist/index.html; then
+            echo "::error::app/dist/index.html has root-absolute URLs"
+            exit 1
+          fi
+          if grep -rn --include='*.css' 'url(/' app/dist; then
+            echo "::error::app/dist CSS has root-absolute url()s"
             exit 1
           fi
 
-      # The dist/ checked above is what the deploy job publishes (uploaded before Playwright, whose
-      # web server rebuilds it); only pushes to main deploy, and only once every job is green.
+      # The dist/ checked above is what Playwright tests (its web servers serve dist/ as built when
+      # CI is set) and what the deploy job publishes; only pushes to main deploy, and only once
+      # every job is green.
       - name: Upload Pages artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v5
@@ -153,6 +158,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
@@ -163,6 +169,23 @@ jobs:
       group: pages
       cancel-in-progress: false
     steps:
+      # The pages group runs deploys one at a time but not in commit order: a run whose `app` job
+      # finished late must not publish over a newer commit. Skip (successfully) unless this
+      # commit is still the head of main.
+      - name: Still the head of main
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head="$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)"
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main is now at $head; not deploying $GITHUB_SHA"
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy to GitHub Pages
         id: deployment
+        if: steps.head.outputs.current == 'true'
         uses: actions/deploy-pages@v5
