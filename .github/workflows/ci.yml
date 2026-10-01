@@ -27,6 +27,34 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # Rust 1.98.1 with rustfmt, clippy and the wasm32 target, read from rust-toolchain.toml.
+      - name: Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0
+
+      - name: cargo fmt
+        working-directory: engine
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        working-directory: engine
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: engine
+        run: cargo test --locked
+
+      # Lint and typecheck need the generated app/src/engine/pkg/.
+      - name: Build engine
+        run: pnpm build:engine
+
       - name: Format check
         run: pnpm format:check
 

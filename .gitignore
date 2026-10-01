@@ -3,3 +3,5 @@ dist/
 test-results/
 playwright-report/
 coverage/
+engine/target/
+app/src/engine/pkg/

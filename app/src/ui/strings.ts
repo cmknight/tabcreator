@@ -9,11 +9,16 @@ export const strings = {
   'global.navLibrary': 'Library',
   'global.navTuner': 'Tuner',
   'global.navSettings': 'Settings',
+  'global.engineFailed': 'The analysis engine failed to load',
+  'global.reload': 'Reload',
   'record.title': 'Record',
   'tab.title': 'Tab',
   'library.title': 'Library',
   'tuner.title': 'Tuner',
   'settings.title': 'Settings',
+  'settings.about': 'About',
+  'settings.engineVersion': (version: string) => `Engine v${version}`,
+  'settings.engineVersionUnavailable': 'Engine version unavailable',
 } as const;
 
 export type StringKey = keyof typeof strings;

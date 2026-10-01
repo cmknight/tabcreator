@@ -7,8 +7,9 @@
     "node": ">=24.21.0 <25"
   },
   "scripts": {
-    "dev": "pnpm --filter app dev",
-    "build": "pnpm --filter app build",
+    "build:engine": "wasm-pack build engine --release --target web --out-dir ../app/src/engine/pkg",
+    "dev": "pnpm build:engine && pnpm --filter app dev",
+    "build": "pnpm build:engine && pnpm --filter app build",
     "lint": "pnpm --filter app lint",
     "stylelint": "pnpm --filter app stylelint",
     "typecheck": "pnpm --filter app typecheck",

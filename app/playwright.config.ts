@@ -13,10 +13,11 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    // Builds the app, then serves the production bundle with `vite preview`.
+    // Builds the engine wasm (so Rust edits are never served stale) and the app, then serves
+    // the production bundle with `vite preview`.
     // Preview runs through the package bin, not `pnpm exec`: pnpm starts its child in a
     // separate process group, which Playwright's shutdown would leave running.
-    command: `pnpm exec vite build && node_modules/.bin/vite preview --port ${PORT} --strictPort`,
+    command: `pnpm -w run build:engine && pnpm exec vite build && node_modules/.bin/vite preview --port ${PORT} --strictPort`,
     url: `http://localhost:${PORT}/`,
     reuseExistingServer: !process.env.CI,
   },

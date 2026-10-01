@@ -4,6 +4,10 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  // The engine worker loads the wasm glue with a dynamic import, which needs an ES module worker.
+  worker: {
+    format: 'es',
+  },
   server: {
     port: 5173,
     strictPort: true,
@@ -14,6 +18,6 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
-    include: ['src/**/*.test.{ts,tsx}'],
+    include: ['src/**/*.test.{ts,tsx}', 'tests/unit/**/*.test.{ts,tsx}'],
   },
 });

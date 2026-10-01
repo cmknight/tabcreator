@@ -62,7 +62,7 @@ const layerConfigs = Object.entries(layers).map(([layer, group]) => ({
 }));
 
 export default tseslint.config(
-  { ignores: ['dist', 'coverage', 'playwright-report', 'test-results'] },
+  { ignores: ['dist', 'coverage', 'playwright-report', 'test-results', 'src/engine/pkg'] },
   js.configs.recommended,
   tseslint.configs.recommended,
   {
