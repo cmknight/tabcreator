@@ -134,6 +134,36 @@ describe('ESLint layering (spine AD-1)', () => {
   }
 });
 
+describe('aria-live has one owner (spine AD-18)', () => {
+  const jsx = 'export const X = () => <div aria-live="polite" />;\n';
+  const createElementProp =
+    "import { createElement } from 'react';\nexport const x = createElement('div', { 'aria-live': 'polite' });\n";
+
+  it.each(['src/ui/screens/Record.tsx', 'src/ui/components/X.tsx', 'src/App.tsx', 'src/dev/X.tsx'])(
+    'rejects an aria-live attribute in %s',
+    async (file) => {
+      expect(await lintRules(file, jsx)).toContain('no-restricted-syntax');
+    },
+  );
+
+  it('rejects an aria-live createElement prop outside ui/a11y/', async () => {
+    expect(await lintRules('src/ui/screens/X.ts', createElementProp)).toContain(
+      'no-restricted-syntax',
+    );
+  });
+
+  it('allows aria-live in ui/a11y/', async () => {
+    expect(await lintRules('src/ui/a11y/announcer.ts', createElementProp)).toEqual([]);
+    expect(await lintRules('src/ui/a11y/Region.tsx', jsx)).toEqual([]);
+  });
+
+  it('still rejects a dynamic dev/ import in ui/a11y/', async () => {
+    expect(
+      await lintRules('src/ui/a11y/x.ts', "export const p = import('../../dev/p');\n"),
+    ).toContain('no-restricted-syntax');
+  });
+});
+
 describe('stylelint colour literals (spine AD-12)', () => {
   it.each([
     ['hex', 'a { color: #fff; }'],

@@ -59,3 +59,15 @@ test('nav links, the tab route and back/forward', async ({ page }) => {
 
   expect(errors).toEqual([]);
 });
+
+test('every route has exactly one polite and one assertive live region (spine AD-18)', async ({
+  page,
+}) => {
+  for (const hash of ['#/record', '#/library', '#/tuner', '#/settings', '#/tab/abc']) {
+    await page.goto(`./${hash}`);
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect(page.locator('[aria-live="polite"][role="status"]')).toHaveCount(1);
+    await expect(page.locator('[aria-live="assertive"][role="alert"]')).toHaveCount(1);
+    await expect(page.locator('[aria-live]')).toHaveCount(2);
+  }
+});

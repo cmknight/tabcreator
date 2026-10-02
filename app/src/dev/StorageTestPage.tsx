@@ -251,12 +251,12 @@ function Check({ name, label, run }: { name: string; label: string; run: () => P
 
 export default function StorageTestPage() {
   return (
-    <main>
+    <div>
       <h1>Storage test page</h1>
       <Check name="records" label="Run records round-trip" run={recordsRoundTrip} />
       <Check name="raw" label="Run raw round-trip" run={rawRoundTrip} />
       <Check name="delete" label="Run delete clean-up" run={deleteCleanUp} />
       <Check name="format" label="Run format replace" run={formatReplace} />
-    </main>
+    </div>
   );
 }

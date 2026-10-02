@@ -1,6 +1,8 @@
 import { lazy, Suspense, type ReactNode } from 'react';
 import styles from './App.module.css';
-import { routeToHash, useHash, useRoute, type Route } from './ui/router';
+import { Announcer } from './ui/a11y/announcer';
+import { ToastHost } from './ui/components/ToastHost';
+import { parseRoute, routeToHash, useHash, useRoute, type Route } from './ui/router';
 import { Library } from './ui/screens/Library';
 import { Record } from './ui/screens/Record';
 import { Settings } from './ui/screens/Settings';
@@ -30,24 +32,44 @@ function renderScreen(route: Route): ReactNode {
   }
 }
 
-// Dev-only test page (spine: `#/__test/*` routes are gated on import.meta.env.DEV). Production
-// builds replace the condition with `false`, so the page and its route string tree-shake out.
+// Dev-only test pages (spine: `#/__test/*` routes are gated on import.meta.env.DEV). Production
+// builds replace the condition with `false`, so the pages and their route strings tree-shake out.
 const StorageTestPage = import.meta.env.DEV ? lazy(() => import('./dev/StorageTestPage')) : null;
+const UiTestPage = import.meta.env.DEV ? lazy(() => import('./dev/UiTestPage')) : null;
 
 export function App() {
   const hash = useHash();
-  if (import.meta.env.DEV && StorageTestPage && hash === '#/__test/storage') {
+  const DevPage = import.meta.env.DEV
+    ? hash === '#/__test/storage'
+      ? StorageTestPage
+      : hash === '#/__test/ui'
+        ? UiTestPage
+        : null
+    : null;
+  if (DevPage) {
+    // Inside the shell, so the test page runs with the announcer and toast host mounted.
     return (
-      <Suspense fallback={null}>
-        <StorageTestPage />
-      </Suspense>
+      <Shell current={null}>
+        <Suspense fallback={null}>
+          <DevPage />
+        </Suspense>
+      </Shell>
     );
   }
-  return <Shell />;
+  // An unknown hash shows Record while `useRoute` replaces it with #/record.
+  return (
+    <Shell current={parseRoute(hash)?.name ?? 'record'}>
+      <RoutedScreen />
+    </Shell>
+  );
 }
 
-function Shell() {
-  const route = useRoute();
+function RoutedScreen() {
+  return renderScreen(useRoute());
+}
+
+/** The app frame: top bar, main content, and the one announcer and toast host (spine AD-18). */
+function Shell({ current, children }: { current: Route['name'] | null; children: ReactNode }) {
   return (
     <>
       <header className={styles.topBar}>
@@ -60,7 +82,7 @@ function Shell() {
                   <a
                     className={styles.navLink}
                     href={routeToHash(item.route)}
-                    aria-current={route.name === item.route.name ? 'page' : undefined}
+                    aria-current={current === item.route.name ? 'page' : undefined}
                   >
                     {item.label}
                   </a>
@@ -70,7 +92,12 @@ function Shell() {
           </nav>
         </div>
       </header>
-      <main className={styles.main}>{renderScreen(route)}</main>
+      {/* tabIndex -1: the toast returns focus here when the element it came from is gone. */}
+      <main className={styles.main} tabIndex={-1}>
+        {children}
+      </main>
+      <Announcer />
+      <ToastHost />
     </>
   );
 }
