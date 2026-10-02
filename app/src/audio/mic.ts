@@ -71,6 +71,11 @@ export interface MicInput {
   readonly analyser: AnalyserNode;
   /** Linear RMS (0..1) of the analyser's current time-domain frame. */
   readRms(): number;
+  /**
+   * The analyser's current float time-domain frame (`ANALYSER_FFT_SIZE` samples). The array is
+   * reused: it is overwritten by the next `readFrame` or `readRms` call.
+   */
+  readFrame(): Float32Array;
   /** Stops the stream's tracks and closes the AudioContext. */
   close(): void;
 }
@@ -112,6 +117,10 @@ export function openInput(stream: MediaStream, onEnded?: (error: AppError) => vo
     if (tracks.some((track) => track.readyState === 'ended')) queueMicrotask(handleEnded);
     return {
       analyser,
+      readFrame() {
+        analyser.getFloatTimeDomainData(frame);
+        return frame;
+      },
       readRms() {
         analyser.getFloatTimeDomainData(frame);
         let sum = 0;

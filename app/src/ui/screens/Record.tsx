@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { recordingSession } from '../../session/recording-session';
+import { LevelMeter } from '../components/LevelMeter';
 import { micErrorCode, type MicErrorCode } from '../mic-error';
 import { strings } from '../strings';
 import styles from './Screen.module.css';
 import recordStyles from './Record.module.css';
 
-/** Marks the element that takes focus when the card or level bar replaces what had it. */
+/** Marks the element that takes focus when the card or level meter replaces what had it. */
 const FOCUS_TARGET = 'data-focus-target';
 
 export function Record() {
@@ -21,7 +22,7 @@ export function Record() {
   }, []);
 
   // When the view swaps while focus is inside it (Allow fails, Try again succeeds), the focused
-  // button goes and focus would fall to <body>: move it to the new card's heading or the bar.
+  // button goes and focus would fall to <body>: move it to the new card's heading or the meter.
   const area = useRef<HTMLDivElement>(null);
   const focusInside = useRef(false);
   const shownView = useRef(view);
@@ -46,7 +47,9 @@ export function Record() {
         }}
       >
         {mic === 'live' ? (
-          <LevelBar />
+          <div tabIndex={-1} data-focus-target="">
+            <LevelMeter />
+          </div>
         ) : (
           <MicSetupCard requesting={mic === 'requesting'} errorCode={errorCode} />
         )}
@@ -153,43 +156,5 @@ function MicSetupCard({
         {strings['record.allowMic']}
       </button>
     </section>
-  );
-}
-
-/** Plain linear RMS bar; story 2.6 adds the dBFS scale, peak hold and zones. */
-function LevelBar() {
-  const meterRef = useRef<HTMLDivElement>(null);
-  const fillRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    let frame = 0;
-    const tick = () => {
-      const level = Math.min(1, recordingSession.readLevel());
-      meterRef.current?.setAttribute('aria-valuenow', level.toFixed(4));
-      if (fillRef.current) fillRef.current.style.transform = `scaleX(${level})`;
-      frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, []);
-
-  return (
-    <div className={recordStyles.meter} tabIndex={-1} data-focus-target="">
-      <span id="input-level-label" className={recordStyles.meterLabel}>
-        {strings['record.inputLevel']}
-      </span>
-      <div
-        ref={meterRef}
-        className={recordStyles.track}
-        role="meter"
-        aria-labelledby="input-level-label"
-        aria-valuemin={0}
-        aria-valuemax={1}
-        aria-valuenow={0}
-        data-testid="input-level"
-      >
-        <div ref={fillRef} className={recordStyles.fill} />
-      </div>
-    </div>
   );
 }

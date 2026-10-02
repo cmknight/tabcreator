@@ -64,29 +64,3 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
-
-/* Plain level bar (story 2.6 adds the scale, zones and peak hold). */
-.meter {
-  margin-block-start: var(--space-4);
-}
-
-.meterLabel {
-  display: block;
-  margin-block-end: var(--space-1);
-}
-
-.track {
-  position: relative;
-  height: 12px;
-  overflow: hidden;
-  background: var(--color-border);
-  border-radius: 4px;
-}
-
-.fill {
-  position: absolute;
-  inset: 0;
-  background: var(--color-primary);
-  transform: scaleX(0);
-  transform-origin: left;
-}

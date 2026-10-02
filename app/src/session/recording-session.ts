@@ -1,12 +1,14 @@
 // Recording store (spine AD-3). For now it owns the mic: the setup → live path, the open input
 // (kept across screens, so leaving Record does not close the mic) and the level read by the
-// meter. Read it with useSyncExternalStore; the level is read on demand with `readLevel()`
-// inside the UI's animation frame, so the store notifies only on state changes.
+// meter. Read it with useSyncExternalStore; the levels are read on demand with `readLevels(now)`
+// inside the UI's animation frame, which also advances the level warning, so the store notifies
+// only on state changes (a mic transition or a warning change), never per frame.
 //
 // Decision (epic 2, 2026-10-02): this store writes `micGranted` through storage/prefs.ts
 // (`micDeviceId` follows with device select, story 2.7), although AD-3 names settings-session
 // as the prefs store.
 
+import { levelsDbfs, type LevelsDbfs } from '../audio/level-meter';
 import {
   micPermission,
   openInput,
@@ -15,6 +17,11 @@ import {
   type MicPermission,
 } from '../audio/mic';
 import { AppError, isAppError, type AppErrorCode } from '../model/errors';
+import {
+  INITIAL_LEVEL_WARNING_STATE,
+  nextWarning,
+  type LevelWarning,
+} from '../model/level-warnings';
 import { loadPrefs, updatePrefs } from '../storage/prefs';
 
 export type MicState = 'setup' | 'requesting' | 'live' | 'error';
@@ -23,7 +30,11 @@ export interface RecordingSnapshot {
   mic: MicState;
   /** Set in `error`; kept while a Try again is `requesting`, so the error card stays in place. */
   errorCode?: AppErrorCode;
+  /** The input level warning; only ever set while `live`. */
+  levelWarning: LevelWarning | null;
 }
+
+const SILENCE: LevelsDbfs = { peakDb: -Infinity, rmsDb: -Infinity };
 
 export interface RecordingSession {
   subscribe(listener: () => void): () => void;
@@ -36,8 +47,12 @@ export interface RecordingSession {
    * Otherwise does nothing, so the setup card asks first. Never retries from `error`.
    */
   resume(): Promise<void>;
-  /** Linear RMS (0..1) of the live input's current frame; 0 when the mic is not live. */
-  readLevel(): number;
+  /**
+   * Peak and RMS in dBFS of the live input's current frame, and advances the level warning to
+   * `now` (a monotonic clock, ms). Silence (`-Infinity`) when the mic is not live. Notifies
+   * subscribers only when the warning changes.
+   */
+  readLevels(now: number): LevelsDbfs;
   /** The live input's analyser, for the meter and tuner slices; null when not live. */
   getAnalyser(): AnalyserNode | null;
 }
@@ -48,20 +63,37 @@ export interface RecordingDeps {
   openInput: (
     stream: MediaStream,
     onEnded: (error: AppError) => void,
-  ) => Pick<MicInput, 'analyser' | 'readRms' | 'close'>;
+  ) => Pick<MicInput, 'analyser' | 'readFrame' | 'close'>;
   updatePrefs: (patch: { micGranted: boolean }) => unknown;
   loadPrefs: () => { micGranted: boolean };
   micPermission: () => Promise<MicPermission>;
 }
 
 export function createRecordingSession(deps: RecordingDeps): RecordingSession {
-  let snapshot: RecordingSnapshot = { mic: 'setup' };
+  let snapshot: RecordingSnapshot = { mic: 'setup', levelWarning: null };
   let input: ReturnType<RecordingDeps['openInput']> | null = null;
+  let warnings = INITIAL_LEVEL_WARNING_STATE;
   const listeners = new Set<() => void>();
 
-  function set(next: RecordingSnapshot) {
+  function notify(next: RecordingSnapshot) {
     snapshot = next;
     for (const l of listeners) l();
+  }
+
+  /** A mic transition: the level warning starts afresh with every transition. */
+  function set(next: { mic: MicState; errorCode?: AppErrorCode }) {
+    warnings = INITIAL_LEVEL_WARNING_STATE;
+    notify({ ...next, levelWarning: null });
+  }
+
+  function readLevels(now: number): LevelsDbfs {
+    if (!input || snapshot.mic !== 'live') return SILENCE;
+    const levels = levelsDbfs(input.readFrame());
+    warnings = nextWarning(warnings, { ...levels, now });
+    if (warnings.warning !== snapshot.levelWarning) {
+      notify({ ...snapshot, levelWarning: warnings.warning });
+    }
+    return levels;
   }
 
   /** The live track ended: close the input first, then show the lost card. */
@@ -129,7 +161,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     getSnapshot: () => snapshot,
     allowMic,
     resume,
-    readLevel: () => (input ? input.readRms() : 0),
+    readLevels,
     getAnalyser: () => input?.analyser ?? null,
   };
 }

@@ -160,7 +160,7 @@ describe('micPermission', () => {
 });
 
 describe('openInput', () => {
-  it('feeds the stream into one 4096-point analyser and reads linear RMS', () => {
+  it('feeds the stream into one 4096-point analyser and reads its frame and linear RMS', () => {
     vi.stubGlobal('AudioContext', FakeAudioContext);
     const { stream, track } = fakeStream();
     const input = openInput(stream);
@@ -173,6 +173,9 @@ describe('openInput', () => {
     expect(input.readRms()).toBe(0);
     ctx.analyser.frameValue = -0.5;
     expect(input.readRms()).toBeCloseTo(0.5, 6);
+    const frame = input.readFrame();
+    expect(frame).toHaveLength(ANALYSER_FFT_SIZE);
+    expect(frame[0]).toBe(-0.5);
 
     input.close();
     expect(track.stop).toHaveBeenCalled();

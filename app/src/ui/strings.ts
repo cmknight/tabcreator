@@ -11,11 +11,19 @@ export const strings = {
   'global.navSettings': 'Settings',
   'global.engineFailed': 'The analysis engine failed to load',
   'global.reload': 'Reload',
+  'global.inputLevel': 'Input level',
+  'global.levelUnit': 'dBFS',
+  'global.levelTooLoud': 'Too loud — move back or lower the input',
+  'global.levelTooQuiet': 'Too quiet — move closer to the guitar',
+  /** The meter's `aria-valuetext`: "−20 dBFS", "−6 dBFS, too loud", "−50 dBFS, too quiet". */
+  'global.levelValueText': (db: number, warning: 'loud' | 'quiet' | null) =>
+    `${db < 0 ? `−${-db}` : `${db}`} dBFS${
+      warning === 'loud' ? ', too loud' : warning === 'quiet' ? ', too quiet' : ''
+    }`,
   'record.title': 'Record',
   'record.micSetupTitle': 'TabCreator needs your microphone',
   'record.micSetupText': 'Audio is analysed on this computer and never uploaded.',
   'record.allowMic': 'Allow microphone',
-  'record.inputLevel': 'Input level',
   'record.tryAgain': 'Try again',
   'record.micError.mic-denied.title': 'Microphone access is blocked',
   'record.micError.mic-denied.body':
