@@ -85,6 +85,23 @@ describe('raw writer client', () => {
     });
   });
 
+  it('lets close() be retried after the close request fails', async () => {
+    const { store, workers } = setup();
+    const writer = await store.openRawWriter('t1');
+    const worker = workers[0]!;
+    worker.reply = (m) => ({
+      type: 'error',
+      reqId: m.reqId,
+      name: 'InvalidStateError',
+      message: 'flush failed',
+    });
+    await expect(writer.close()).rejects.toMatchObject({ code: 'storage-failed' });
+    worker.reply = (m) => ({ type: 'done', reqId: m.reqId });
+    await expect(writer.close()).resolves.toBeUndefined();
+    await writer.close(); // closed now: no further request
+    expect(worker.posted.map((m) => m.type)).toEqual(['open', 'close', 'close']);
+  });
+
   it('rejects pending requests when the worker crashes, then starts a new worker', async () => {
     const { store, workers } = setup();
     await store.openRawWriter('warm-up');

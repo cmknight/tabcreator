@@ -11,7 +11,7 @@ const FIXTURES: Record<string, () => Promise<string>> = Object.fromEntries(
 
 const SAMPLE_RATE = 48_000;
 /** How long to wait for the AudioContext to start before giving up (no user gesture yet). */
-const RESUME_TIMEOUT_MS = 2000;
+export const RESUME_TIMEOUT_MS = 2000;
 
 /**
  * Replaces `navigator.mediaDevices.getUserMedia` and `enumerateDevices` with a single fake
