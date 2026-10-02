@@ -3,12 +3,12 @@ title: 'Refactor sweep'
 type: 'refactor'
 ticket: '6'
 created: '2026-10-02'
-status: 'done'
+status: 'built'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 baseline_revision: 'bbd5962bfe9b78f86fb9959228879baa564006b0'
@@ -124,6 +124,28 @@ Code for S1, S2, S4:
 
 ## Review Triage Log
 
+### 2026-10-02 — Review pass
+- verdicts: 18 findings — high 0, medium 0, low 11, false 7, maybe-false 0
+- findings:
+  - `false` `reject` (edge) retried close resolves `done` though the flush failed — every `append` flushes before replying (`opfs-worker.ts` append), so nothing unflushed remains at close.
+  - `false` `reject` (edge) a throwing `post` leaves the queue rejected — replies are plain `{type, reqId, name, message}` objects that cannot fail structured clone.
+  - `low` `reject` (edge) a `close()` error masks the flush error — needs two failures in one call; fix adds error juggling.
+  - `false` `reject` (blind) close retry reports false success — as above.
+  - `false` `reject` (blind) one failed `post` stalls the worker — as above.
+  - `low` `reject` (blind) `as unknown as Promise<OpfsRoot>` skips the structural check — the real API is used by the e2e raw round-trip; tightening is cosmetic.
+  - `false` `reject` (blind) worker bootstrap untested — `storage.dev.spec.ts` drives a real open/append/close round-trip through it in CI.
+  - `low` `reject` (blind) short-write, flush-after-write and rollback-failure branches untested — extra coverage beyond the sweep's named items.
+  - `low` `reject` (blind) failed `open` untested — extra coverage beyond scope.
+  - `low` `reject` (blind) fake-mic unit suite covers only the timeout path — the other paths are covered by the six dev-project Playwright specs.
+  - `low` `reject` (blind) timer clearance not asserted — a leftover 2 s timer only resolves a settled race.
+  - `low` `reject` (blind) `until` deadline equals the test timeout — failure still reports, only less specifically.
+  - `false` `reject` (intent) dispositions are not in the patch — the review diff excluded `_bmad-output`; the plan records every disposition and is committed.
+  - `low` `reject` (intent) some residual risks (quota simulated, 30 MB fixtures, `CI=1 pnpm e2e` needs `dist`) have no disposition — accepted trade-offs recorded in their own plans; fix would edit this build's plan.
+  - `low` `reject` (intent) scope not agreed with the owner — the auto workflow sets scope from the ticket's named sources.
+  - `low` `reject` (intent) no GitHub CI run covers this commit yet — the local equivalent passed; the next push runs it.
+  - `false` `reject` (intent) evidence closures rely on runs outside the change — the ticket allows closing on recorded evidence.
+  - `low` `reject` (intent) unit tests use fakes, not the browser surface — the browser paths stay covered by the existing e2e specs.
+
 ## Verification
 
 **Commands:**
@@ -146,7 +168,8 @@ Code for S1, S2, S4:
   - S6 closed on evidence: epic Decision (user approved, 2026-10-02) and spine AD-13 "Accepted limitation (2026-10-02)".
   - S7 closed on evidence: run 36958117778 `deploy` job succeeded; the "Deploy to GitHub Pages" step (gated on `current=true`) ran; https://cmknight.github.io/tabcreator/ returns 200.
   - S8 deferred to US-4.5; S9 and S10 to US-3.2; S11 to US-8.4; S12 to US-8.1.
-- **Review:** none run in this pass.
+- **Review:** 18 findings (low 11, false 7); no patches, nothing deferred. Every rejection and its reason is in the Review Triage Log.
+- **Follow-up review recommended:** false. No entries were patched.
 - **Verification:**
   - The full plan command exited 0: 13 Vitest files / 157 tests, 16 Playwright tests (run with `~/.cargo/bin` on `PATH` so `wasm-pack` resolves).
   - `grep -n "alternate\|DEV ? null" app/src/lint-rules.test.ts` matches lines 91 and 95.
