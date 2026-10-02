@@ -50,3 +50,4 @@ The player starts every session with clean, correctly levelled input from a guit
 - Decision: recording-session writes micGranted and micDeviceId through a read-modify-write updatePrefs in storage/prefs.ts; tuner readings come from recording-session's single 4096-sample analyser (2026-10-02).
 - Decision: the meter's under-2% CPU target is left to the budgets epic (2026-10-02).
 - Source conflict: CAP-3 — the spec shows warnings "before and during recording" vs EXPERIENCE.md Level meter row "Too quiet only while recording or on the Tuner"; entry 6 follows the spec (spec precedence).
+- Resolved: story 2.7's deferred real-hardware item — unplugging the active mic in real Chrome with another input connected switched to the default with the toast, not the lost card (owner tested, 2026-10-02).
