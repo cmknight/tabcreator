@@ -47,9 +47,7 @@ export function Record() {
         }}
       >
         {mic === 'live' ? (
-          <div tabIndex={-1} data-focus-target="">
-            <LevelMeter />
-          </div>
+          <LevelMeter />
         ) : (
           <MicSetupCard requesting={mic === 'requesting'} errorCode={errorCode} />
         )}

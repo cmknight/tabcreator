@@ -3,12 +3,12 @@ title: 'Level meter with warnings'
 type: 'feature'
 ticket: '6'
 created: '2026-10-02'
-status: 'in-progress'
+status: 'in-review'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 baseline_revision: '230035d0de27c7e3d069f3281347d85b29a37bc4'
@@ -87,6 +87,32 @@ Builds on 2.1 (mic, store, plain bar) and 2.5 (`f57dbf7`, error cards, focus wra
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-02 — Review pass
+- verdicts: 22 findings — high 0, medium 7, low 12, false 3, maybe-false 0
+- findings:
+  - `medium` `patch` (verif) visual fill and peak tick untested — e2e asserts the clip-path on silence and the tick on open_strings.
+  - `medium` `patch` (verif, other) stale quiet timer and warning after leaving Record — warning state resets after a read gap.
+  - `low` `patch` (verif, other) `readRms` has no caller — removed.
+  - `medium` `patch` (edge) old quietSince survives a read gap — same gap reset.
+  - `medium` `patch` (edge) stale warning shown on remount, never announced — same gap reset clears it.
+  - `low` `reject` (edge) NaN samples poison the levels — AnalyserNode float data does not contain NaN.
+  - `medium` `patch` (blind) stale warning timers after reads stop — same gap reset.
+  - `medium` `patch` (blind) peak tick steps down in 1.5 s holds instead of following — follows frame by frame after expiry.
+  - `low` `reject` (blind) clearing a warning is not announced — no approved copy; value text drops the suffix.
+  - `low` `patch` (blind) `readRms` dead code — removed.
+  - `low` `reject` (blind) −3 and 0 scale labels can overlap on narrow screens — v1 targets desktop Chrome, where the track is wide.
+  - `low` `reject` (blind) duplicated dB formatting and an inline warning type — cosmetic.
+  - `low` `patch` (blind) focus lands on an unnamed wrapper — the labelled meter is now the focus target.
+  - `low` `patch` (blind) peak tick untested — covered by the e2e fill and tick assertions.
+  - `false` `reject` (blind) Too quiet fires 3 s after the mic opens before playing — required by CAP-3 and Done-when 3 on silence_60s (decision 2026-10-02).
+  - `medium` `patch` (intent) warning behaviour depends on where the meter is mounted — gap reset makes it independent of mount history.
+  - `low` `reject` (intent) the 200 ms bound is measured from the meter appearing — the page cannot see the first clipped frame; the bound includes the fixture's lead-in.
+  - `false` `reject` (intent) colour does not follow the warning state — the record mockup specifies fixed zones clipped to the level.
+  - `low` `reject` (intent) 30 fps counted as DOM writes — writes per animation frame are the rendered updates.
+  - `low` `patch` (intent) axe not run in the no-warning state — added to the open_strings test.
+  - `false` `reject` (intent) reduced motion handled only as CSS transitions — there is no value smoothing to remove.
+  - `low` `reject` (intent) a second dBFS helper beside tuner.ts — refactor sweep scope.
 
 ## Design Notes
 

@@ -34,6 +34,9 @@ export interface RecordingSnapshot {
   levelWarning: LevelWarning | null;
 }
 
+/** A longer pause between level reads resets the warning machine. */
+const READ_GAP_MS = 500;
+
 const SILENCE: LevelsDbfs = { peakDb: -Infinity, rmsDb: -Infinity };
 
 export interface RecordingSession {
@@ -73,6 +76,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   let snapshot: RecordingSnapshot = { mic: 'setup', levelWarning: null };
   let input: ReturnType<RecordingDeps['openInput']> | null = null;
   let warnings = INITIAL_LEVEL_WARNING_STATE;
+  /** When `readLevels` last ran; null since the last mic transition. */
+  let lastReadAt: number | null = null;
   const listeners = new Set<() => void>();
 
   function notify(next: RecordingSnapshot) {
@@ -83,11 +88,18 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   /** A mic transition: the level warning starts afresh with every transition. */
   function set(next: { mic: MicState; errorCode?: AppErrorCode }) {
     warnings = INITIAL_LEVEL_WARNING_STATE;
+    lastReadAt = null;
     notify({ ...next, levelWarning: null });
   }
 
   function readLevels(now: number): LevelsDbfs {
     if (!input || snapshot.mic !== 'live') return SILENCE;
+    // The warnings advance only while a meter reads them: after a gap (meter unmounted, tab
+    // hidden) the old timings say nothing about the input, so start afresh.
+    if (lastReadAt !== null && now - lastReadAt > READ_GAP_MS) {
+      warnings = INITIAL_LEVEL_WARNING_STATE;
+    }
+    lastReadAt = now;
     const levels = levelsDbfs(input.readFrame());
     warnings = nextWarning(warnings, { ...levels, now });
     if (warnings.warning !== snapshot.levelWarning) {

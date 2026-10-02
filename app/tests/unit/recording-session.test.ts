@@ -13,6 +13,12 @@ function level(amplitude: number) {
   frame = new Float32Array(4096).fill(amplitude);
 }
 
+/** Reads levels every 16 ms from `from` up to and including `to`, as the meter's frames do. */
+function readEvery(session: { readLevels(now: number): unknown }, from: number, to: number) {
+  for (let t = from; t < to; t += 16) session.readLevels(t);
+  session.readLevels(to);
+}
+
 function setup(overrides: Partial<RecordingDeps> = {}) {
   frame = new Float32Array(4096);
   const input = { analyser, readFrame: vi.fn(() => frame), close: vi.fn() };
@@ -265,7 +271,7 @@ describe('recording session', () => {
       await session.allowMic();
       listener.mockClear();
       level(0.1); // −20 dBFS
-      session.readLevels(0);
+      readEvery(session, 0, 984);
       expect(listener).not.toHaveBeenCalled();
       level(1);
       session.readLevels(1000);
@@ -284,8 +290,7 @@ describe('recording session', () => {
       const { session } = setup();
       await session.allowMic();
       level(0); // silence
-      session.readLevels(0);
-      session.readLevels(2900);
+      readEvery(session, 0, 2900);
       expect(session.getSnapshot().levelWarning).toBeNull();
       session.readLevels(3000);
       expect(session.getSnapshot().levelWarning).toBe('quiet');
@@ -293,6 +298,34 @@ describe('recording session', () => {
       frame[0] = 1; // a loud peak with a quiet RMS
       session.readLevels(3100);
       expect(session.getSnapshot().levelWarning).toBe('loud');
+    });
+
+    it('starts afresh after a gap in reads: no stale warning, and Too quiet needs 3 s of new quiet', async () => {
+      const { session, listener } = setup();
+      await session.allowMic();
+      level(0);
+      readEvery(session, 0, 3000);
+      expect(session.getSnapshot().levelWarning).toBe('quiet');
+      listener.mockClear();
+      // The meter was away for 10 s: the first read clears the old warning.
+      session.readLevels(13_000);
+      expect(session.getSnapshot().levelWarning).toBeNull();
+      expect(listener).toHaveBeenCalledTimes(1);
+      for (let t = 13_016; t < 16_000; t += 16) session.readLevels(t);
+      expect(session.getSnapshot().levelWarning).toBeNull();
+      session.readLevels(16_000);
+      expect(session.getSnapshot().levelWarning).toBe('quiet');
+    });
+
+    it('drops a stale Too loud after a gap', async () => {
+      const { session } = setup();
+      await session.allowMic();
+      level(1);
+      session.readLevels(0);
+      expect(session.getSnapshot().levelWarning).toBe('loud');
+      level(0.1);
+      session.readLevels(600);
+      expect(session.getSnapshot().levelWarning).toBeNull();
     });
 
     it('clears the warning and starts afresh when the mic leaves live', async () => {

@@ -59,17 +59,18 @@ export function nextWarning(state: LevelWarningState, reading: LevelReading): Le
 export interface PeakHold {
   /** The dBFS the tick shows; `-Infinity` before any signal. */
   readonly db: number;
-  /** When `db` was taken. */
+  /** When the held peak was taken; once 1.5 s old, the tick follows the peak frame by frame. */
   readonly at: number;
 }
 
 export const INITIAL_PEAK_HOLD: PeakHold = { db: -Infinity, at: -Infinity };
 
 /**
- * The peak-hold tick: a higher peak replaces the held one at once; a held peak stays for 1.5 s,
- * then the tick follows the current peak.
+ * The peak-hold tick: a peak at or above the tick starts a new 1.5 s hold at once; once the
+ * hold expires, the tick follows the current peak frame by frame until a peak rises to it again.
  */
 export function nextPeakHold(hold: PeakHold, peakDb: number, now: number): PeakHold {
-  if (peakDb >= hold.db || now - hold.at >= PEAK_HOLD_MS) return { db: peakDb, at: now };
+  if (peakDb >= hold.db) return { db: peakDb, at: now };
+  if (now - hold.at >= PEAK_HOLD_MS) return { db: peakDb, at: hold.at };
   return hold;
 }

@@ -87,8 +87,6 @@ const assertiveLog = (page: Page) =>
 const meter = (page: Page) => page.getByRole('meter', { name: 'Input level' });
 const card = (page: Page, code: Code) => page.getByRole('region', { name: CARDS[code].title });
 const tryAgain = (page: Page) => page.getByRole('button', { name: 'Try again' });
-/** The level bar's container, which takes focus when it replaces a focused card. */
-const levelBar = (page: Page) => page.locator('[data-focus-target]').filter({ has: meter(page) });
 
 async function open(page: Page): Promise<string[]> {
   const errors = collectErrors(page);
@@ -124,8 +122,9 @@ async function expectTryAgainRecovers(page: Page, callsBefore: number) {
   await page.evaluate(() => ((window as unknown as { __noReload: boolean }).__noReload = true));
   await tryAgain(page).click();
   await expect(meter(page)).toBeVisible();
-  // The focused Try again is gone: focus moves to the level bar, not <body>.
-  await expect(levelBar(page)).toBeFocused();
+  // The focused Try again is gone: focus moves to the labelled meter, not <body>.
+  await expect(meter(page)).toBeFocused();
+  await expect(meter(page)).toHaveAttribute('data-focus-target', '');
   expect(await gumCalls(page)).toBe(callsBefore + 1);
   expect(
     await page.evaluate(() => (window as unknown as { __noReload?: boolean }).__noReload),
@@ -216,7 +215,7 @@ test('during a Try again the card stays with the button aria-disabled and focuse
 
   await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
   await expect(meter(page)).toBeVisible();
-  await expect(levelBar(page)).toBeFocused();
+  await expect(meter(page)).toBeFocused();
   // 3, not 2: the counter also counts the hold wrapper's own call through to the fake mic.
   expect(await gumCalls(page)).toBe(3);
   expect(errors).toEqual([]);

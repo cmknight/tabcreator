@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { INITIAL_PEAK_HOLD, nextPeakHold } from '../../model/level-warnings';
 import { recordingSession } from '../../session/recording-session';
 import { announce } from '../a11y/announcer';
@@ -47,7 +47,8 @@ function WarnIcon() {
  * green / amber / red zones, a 1.5 s peak-hold tick, and the Too loud / Too quiet warning as
  * icon + text under the bar. Reads the live input from `recordingSession` every animation frame;
  * the store notifies only when the warning changes. A new warning is announced politely through
- * the shared announcer (spine AD-18), so the warning line itself is not a live region.
+ * the shared announcer (spine AD-18), so the warning line itself is not a live region. The
+ * meter element is a `data-focus-target`: it takes focus when it replaces a focused card.
  */
 export function LevelMeter() {
   const { levelWarning } = useSyncExternalStore(
@@ -59,7 +60,9 @@ export function LevelMeter() {
   const fillRef = useRef<HTMLDivElement>(null);
   const peakRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  // A layout effect, and the first frame read at once: after a gap the store drops a stale
+  // warning on that read, before the meter is painted.
+  useLayoutEffect(() => {
     let frame = 0;
     let hold = INITIAL_PEAK_HOLD;
     let ariaAt = -Infinity;
@@ -93,7 +96,7 @@ export function LevelMeter() {
       }
       frame = requestAnimationFrame(tick);
     };
-    frame = requestAnimationFrame(tick);
+    tick();
     return () => cancelAnimationFrame(frame);
   }, []);
 
@@ -122,6 +125,8 @@ export function LevelMeter() {
         aria-valuenow={MIN_DB}
         aria-valuetext={strings['global.levelValueText'](MIN_DB, null)}
         data-testid="input-level"
+        tabIndex={-1}
+        data-focus-target=""
       >
         <div ref={fillRef} className={styles.fill} data-testid="input-level-fill" />
         <div ref={peakRef} className={styles.peak} data-testid="input-level-peak" />

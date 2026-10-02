@@ -119,6 +119,23 @@ describe('peak hold', () => {
     expect(hold.db).toBe(-40);
   });
 
+  it('after the hold expires, follows a falling peak frame by frame', () => {
+    let hold = nextPeakHold(INITIAL_PEAK_HOLD, -6, 0);
+    hold = nextPeakHold(hold, -10, 1000);
+    expect(hold.db).toBe(-6);
+    // Falling 1 dB per 16 ms frame from 1500 ms on: the tick tracks each frame.
+    for (let i = 0; i < 40; i++) {
+      const db = -10 - i;
+      hold = nextPeakHold(hold, db, 1500 + i * 16);
+      expect(hold.db).toBe(db);
+    }
+    // A peak that rises to the tick starts a new hold.
+    hold = nextPeakHold(hold, -20, 2200);
+    expect(hold).toEqual({ db: -20, at: 2200 });
+    hold = nextPeakHold(hold, -30, 3000);
+    expect(hold.db).toBe(-20);
+  });
+
   it('starts at -Infinity and follows silence', () => {
     expect(nextPeakHold(INITIAL_PEAK_HOLD, -Infinity, 0).db).toBe(-Infinity);
   });

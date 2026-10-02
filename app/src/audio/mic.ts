@@ -69,11 +69,9 @@ export async function micPermission(): Promise<MicPermission> {
 /** One open mic stream with its single shared analyser. */
 export interface MicInput {
   readonly analyser: AnalyserNode;
-  /** Linear RMS (0..1) of the analyser's current time-domain frame. */
-  readRms(): number;
   /**
    * The analyser's current float time-domain frame (`ANALYSER_FFT_SIZE` samples). The array is
-   * reused: it is overwritten by the next `readFrame` or `readRms` call.
+   * reused: it is overwritten by the next `readFrame` call.
    */
   readFrame(): Float32Array;
   /** Stops the stream's tracks and closes the AudioContext. */
@@ -120,12 +118,6 @@ export function openInput(stream: MediaStream, onEnded?: (error: AppError) => vo
       readFrame() {
         analyser.getFloatTimeDomainData(frame);
         return frame;
-      },
-      readRms() {
-        analyser.getFloatTimeDomainData(frame);
-        let sum = 0;
-        for (const v of frame) sum += v * v;
-        return Math.sqrt(sum / frame.length);
       },
       close() {
         detach();
