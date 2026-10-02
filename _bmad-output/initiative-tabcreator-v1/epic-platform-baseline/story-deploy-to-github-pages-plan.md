@@ -3,7 +3,7 @@ title: 'Deploy to GitHub Pages'
 type: 'feature'
 ticket: '5'
 created: '2026-10-01'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
