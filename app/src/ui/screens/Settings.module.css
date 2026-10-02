@@ -21,17 +21,6 @@
   margin: 0;
 }
 
-.button {
-  height: 36px;
-  padding-inline: var(--space-4);
-  background: var(--color-surface);
-  color: var(--color-text);
-  font: var(--font-ui);
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  cursor: pointer;
-}
-
 .panel {
   margin-block-start: var(--space-6);
 }

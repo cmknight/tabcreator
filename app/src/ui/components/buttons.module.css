@@ -1,10 +1,10 @@
-/* Primary button (DESIGN.md button-primary), shared by the mic setup card and the Tuner's
-   "Done — go to Record" link. */
+/* Shared buttons. Primary (DESIGN.md button-primary): the mic setup card and the Tuner's
+   "Done — go to Record" link. Secondary (DESIGN.md button-secondary): Settings' Reload. */
 .primary {
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
-  height: 36px;
+  height: var(--size-control);
   padding-inline: var(--space-3);
   background: var(--color-primary);
   color: var(--color-on-primary);
@@ -12,11 +12,22 @@
   font-weight: 500;
   text-decoration: none;
   border: 1px solid var(--color-primary);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
 .primary[aria-disabled='true'] {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.secondary {
+  height: var(--size-control);
+  padding-inline: var(--space-4);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-ui);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
 }

@@ -79,6 +79,18 @@ test('low rate: the banner shows above the h1, is announced politely and passes 
   expect(errors).toEqual([]);
 });
 
+test('dark mode: Record with the banner passes axe', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  const errors = await goLive(page, 'open_strings', { [OPEN]: { sampleRate: 16000 } });
+  await expect(banner(page)).toBeVisible();
+  // The dark tokens are in force, so axe's contrast check sees the dark colours.
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe(
+    'dark',
+  );
+  await expectNoSeriousAxe(page);
+  expect(errors).toEqual([]);
+});
+
 test('returning to Record while the banner shows announces it again', async ({ page }) => {
   const errors = await goLive(page, 'open_strings', { [OPEN]: { sampleRate: 16000 } });
   const polite = page.locator('[aria-live="polite"]');

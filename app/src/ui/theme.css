@@ -1,8 +1,10 @@
 /*
  * The only file that defines colours (spine AD-12). Mirrors the
  * DESIGN.md frontmatter tokens: colors → --color-*, typography → --font-*
- * (the `font` shorthand), spacing → --space-*. Dark values redefine the same
- * properties; the -dark suffix never appears here.
+ * (the `font` shorthand), spacing → --space-*, rounded → --radius-*, and the
+ * 36 px control height (button and form-control `height`) → --size-control.
+ * Dark values redefine the same colour properties; the -dark suffix never
+ * appears here. Radius and size tokens do not change with the theme.
  */
 
 :root {
@@ -41,6 +43,11 @@
   --space-gutter: 16px;
   --space-content-max: 1100px;
   --space-focus-ring: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-full: 9999px;
+  --size-control: 36px;
 
   color-scheme: light;
 }

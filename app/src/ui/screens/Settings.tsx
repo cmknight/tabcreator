@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { reloadApp } from '../../session/app-reload';
 import { settingsSession, type EngineStatus } from '../../session/settings-session';
+import buttons from '../components/buttons.module.css';
 import { strings } from '../strings';
 import styles from './Screen.module.css';
 import settingsStyles from './Settings.module.css';
@@ -27,7 +28,7 @@ export function Settings() {
             <path d="M12 7v6M12 16.5v.5" stroke="currentColor" strokeWidth="2" />
           </svg>
           <p className={settingsStyles.bannerText}>{strings['global.engineFailed']}</p>
-          <button type="button" className={settingsStyles.button} onClick={reloadApp}>
+          <button type="button" className={buttons.secondary} onClick={reloadApp}>
             {strings['global.reload']}
           </button>
         </div>

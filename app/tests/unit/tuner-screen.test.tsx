@@ -1,7 +1,11 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StringNo } from '../../src/model/types';
-import { recordingSession, type RecordingSnapshot } from '../../src/session/recording-session';
+import {
+  recordingSession,
+  TUNER_POLL_MS,
+  type RecordingSnapshot,
+} from '../../src/session/recording-session';
 import { Tuner } from '../../src/ui/screens/Tuner';
 
 // The Tuner's rendering of one reading (plan I/O matrix: off by 12, flat, beyond range), with
@@ -84,5 +88,66 @@ describe('Tuner reading display', () => {
     for (const id of ['tuner-string', 'tuner-cents', 'tuner-needle-mark']) {
       expect(screen.getByTestId(id).className, id).not.toMatch(/held/);
     }
+  });
+});
+
+describe('Tuner display dedupe (sameDisplay)', () => {
+  let cents: number;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    cents = 0;
+    vi.spyOn(recordingSession, 'getSnapshot').mockReturnValue(LIVE);
+    vi.spyOn(recordingSession, 'resume').mockResolvedValue();
+    vi.spyOn(recordingSession, 'readLevels').mockReturnValue({
+      peakDb: -Infinity,
+      rmsDb: -Infinity,
+    });
+    vi.spyOn(recordingSession, 'readTuner').mockImplementation(() => ({
+      reading: { string: 5, cents },
+      held: false,
+      inTune: false,
+    }));
+  });
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  const centsText = () => screen.getByTestId('tuner-cents').textContent;
+
+  /** Renders at `from` cents, checks what shows, then lets one poll read `to`. */
+  function step(from: number, to: number) {
+    cents = from;
+    render(<Tuner />);
+    expect(centsText()).toBe('+2 cents');
+    expect(needleLeft()).toBeCloseTo(50 + from, 6);
+    cents = to;
+    act(() => vi.advanceTimersByTime(TUNER_POLL_MS));
+  }
+
+  it('2.46 → 2.54 (same needle tenth, different whole cents): readout and needle update', () => {
+    step(2.46, 2.54);
+    expect(centsText()).toBe('+3 cents');
+    expect(needleLeft()).toBeCloseTo(52.54, 6);
+  });
+
+  it('2.40 → 2.60: readout and needle update', () => {
+    step(2.4, 2.6);
+    expect(centsText()).toBe('+3 cents');
+    expect(needleLeft()).toBeCloseTo(52.6, 6);
+  });
+
+  it('2.1 → 2.3 (same whole cents, different needle tenth): the needle updates', () => {
+    step(2.1, 2.3);
+    expect(centsText()).toBe('+2 cents');
+    expect(needleLeft()).toBeCloseTo(52.3, 6);
+  });
+
+  it('2.41 → 2.44 (nothing visible changes): the shown display is kept', () => {
+    step(2.41, 2.44);
+    expect(centsText()).toBe('+2 cents');
+    expect(needleLeft()).toBeCloseTo(52.41, 6);
   });
 });

@@ -20,14 +20,14 @@
   position: relative;
   height: 12px;
   background: var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 /* The zones are fixed; the fill clips them to the level, so colour follows position. */
 .fill {
   position: absolute;
   inset: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: linear-gradient(
     to right,
     var(--color-meter-ok) 0 80%,

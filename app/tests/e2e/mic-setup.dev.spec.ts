@@ -58,7 +58,8 @@ test('first visit, Allow, re-enter and return', async ({ page }) => {
   await expect(setupCard(page)).toHaveCount(0);
   expect(await gumCalls(page)).toBe(1);
 
-  // Re-enter straight away, while this stream's fixture is still playing: the bar is live again, no second call.
+  // Re-enter straight away: the stream from Allow is reused, still playing its fixture (each new
+  // stream plays it from the start), so the bar is live again with no second call.
   const nav = page.getByRole('navigation');
   await nav.getByRole('link', { name: 'Tuner' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Tuner');
@@ -72,7 +73,7 @@ test('first visit, Allow, re-enter and return', async ({ page }) => {
   expect(prefs.micGranted).toBe(true);
   expect(prefs.theme).toBe('dark');
 
-  // Axe on the live bar, last: the fixture may have gone silent by now, which axe does not mind.
+  // Axe on the live bar, last: axe checks the markup, whatever the fixture is playing.
   await expectNoSeriousAxe(page);
 
   // Return with micGranted: after a reload the card shows again and nothing is requested.

@@ -209,6 +209,24 @@ test('Tune first opens the Tuner; Done — go to Record returns with the mic sti
   expect(errors).toEqual([]);
 });
 
+test('dark mode: the live Tuner, with a reading and a ticked chip, passes axe', async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  const errors = collectErrors(page);
+  await page.goto('./?fakeMic=open_strings#/tuner');
+  await page.getByRole('button', { name: 'Allow microphone' }).click();
+  await expect(needle(page)).toBeVisible();
+  // The dark tokens are in force, so axe's contrast check sees the dark colours.
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe(
+    'dark',
+  );
+  await expect(page.locator('li[data-ticked]').first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId('tuner-needle-mark')).toBeVisible();
+  await expectNoSeriousAxe(page);
+  expect(errors).toEqual([]);
+});
+
 test('ticks are kept when leaving the Tuner and coming back', async ({ page }) => {
   const errors = collectErrors(page);
   await page.goto('./?fakeMic=open_strings#/tuner');

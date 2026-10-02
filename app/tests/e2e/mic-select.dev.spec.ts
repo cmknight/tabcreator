@@ -37,9 +37,12 @@ interface GumCall {
 
 /**
  * Wraps the fake mic's getUserMedia to record each call's device constraint and how many
- * earlier tracks were still live at that moment. Call once the fake mic is installed.
+ * earlier tracks were still live at that moment. Waits for the fake mic first: `main.tsx`
+ * installs it after a dynamic import that can finish after `goto` resolves, and installing it
+ * later would replace this wrapper.
  */
 async function recordGum(page: Page): Promise<void> {
+  await page.waitForFunction(() => window.__fakeMic !== undefined);
   await page.evaluate(() => {
     const md = navigator.mediaDevices;
     const original = md.getUserMedia.bind(md);
@@ -121,12 +124,14 @@ test('switch: old tracks stop before one exact request, and the meter follows', 
   await select(page).selectOption(SILENCE);
   await expect(select(page)).toHaveValue(SILENCE);
   await expect(meter(page)).toHaveAttribute('aria-valuenow', '-60');
+  // The meter drops to −60 as soon as the old input closes, before the new one opens; the switch
+  // is done (and a next choice accepted) once the device is saved.
+  await expect.poll(async () => (await storedPrefs(page)).micDeviceId).toBe(SILENCE);
   expect(await gumCalls(page)).toBe(2);
   expect((await gumLog(page))[1]).toEqual({
     deviceId: JSON.stringify({ exact: SILENCE }),
     liveBefore: 0,
   });
-  expect((await storedPrefs(page)).micDeviceId).toBe(SILENCE);
   // The select keeps focus through the switch.
   await expect(select(page)).toBeFocused();
 
