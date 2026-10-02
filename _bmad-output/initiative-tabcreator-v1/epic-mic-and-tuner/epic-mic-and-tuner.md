@@ -6,7 +6,7 @@ covers: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-26, CAP-25]
 after: []
 assignee: ""
 risk: medium
-status: in-progress
+status: done
 ---
 
 # Mic and tuner
@@ -51,3 +51,4 @@ The player starts every session with clean, correctly levelled input from a guit
 - Decision: the meter's under-2% CPU target is left to the budgets epic (2026-10-02).
 - Source conflict: CAP-3 — the spec shows warnings "before and during recording" vs EXPERIENCE.md Level meter row "Too quiet only while recording or on the Tuner"; entry 6 follows the spec (spec precedence).
 - Resolved: story 2.7's deferred real-hardware item — unplugging the active mic in real Chrome with another input connected switched to the default with the toast, not the lost card (owner tested, 2026-10-02).
+- Decision: epic closed as done (2026-10-02). The retrospective verified Done when 1–4 and the user accepted it with open items (epic-mic-and-tuner-retrospective.md). CAP-2 "select disabled while recording" and the CAP-26 mid-take clause moved to the Recording epic as touch points, where they are recorded.

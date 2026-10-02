@@ -1,0 +1,20 @@
+# tickets.toml — a container's agreed children. tickets.py reads it.
+# The order of the tables is the build order: move a table to reorder. `id` names a child for good and is never reused.
+# Status never lives here: an entry's plan beside it carries `status`.
+# Only the opening refactor is planned so far; the rest of the epic is planned at inception, after it.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Split the recording store"
+description = "Splits app/src/session/recording-session.ts so it keeps only mic lifecycle, devices and prefs, moving input quality, the tuner reading and ticks, and level warnings into their own modules or a tuner store behind the same snapshot, with no behaviour change, before the recorder, count-in and recovery scan land."
+verify = "Full CI is green, every existing recording-session test passes with its intent unchanged, and the store file holds only mic lifecycle, devices and prefs while set() handles only mic transitions."
+covers = []
+after = ["epic-mic-and-tuner"]
+hitl = false
+risk = "medium"
+references = [
+  "retrospective — _bmad-output/initiative-tabcreator-v1/epic-mic-and-tuner/epic-mic-and-tuner-retrospective.md, God-class / size growth and action A1",
+  "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-3",
+]
+notes = ["the store split (A1) should be the first story of the Recording epic"]

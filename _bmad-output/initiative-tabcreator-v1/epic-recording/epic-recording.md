@@ -42,3 +42,4 @@ A good performance is never lost, whatever happens to the tab.
 - Waits on epic 1 because: needs storage layer, OPFS worker, events.
 - Waits on epic 2 because: needs mic stream and level meter.
 - Touch points from epic 2 (Mic and tuner), owned here: mic lost or unplugged mid-take stops cleanly and keeps the audio (US-1.1, US-1.2, CAP-26 mid-take clause); clipCount during a recording (US-1.3); Microphone select disabled while recording (CAP-2); Record button disabled with a reason when the mic is unavailable (EXPERIENCE.md). Epic 2 entry 1 provides recording-session and the stream; entry 7 the select (2026-10-02).
+- Decision: opening refactor "Split the recording store" is entry 1, ahead of every other Recording story (epic 2 retrospective action A1; user decision, 2026-10-02). The rest of the epic is planned at inception, after it.
