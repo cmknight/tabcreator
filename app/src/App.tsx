@@ -2,6 +2,7 @@ import { lazy, Suspense, type ReactNode } from 'react';
 import styles from './App.module.css';
 import { Announcer } from './ui/a11y/announcer';
 import { MicErrorAnnouncer } from './ui/components/MicErrorAnnouncer';
+import { MicNotices } from './ui/components/MicNotices';
 import { ToastHost } from './ui/components/ToastHost';
 import { parseRoute, routeToHash, useHash, useRoute, type Route } from './ui/router';
 import { Library } from './ui/screens/Library';
@@ -99,6 +100,7 @@ function Shell({ current, children }: { current: Route['name'] | null; children:
       </main>
       <Announcer />
       <MicErrorAnnouncer />
+      <MicNotices />
       <ToastHost />
     </>
   );

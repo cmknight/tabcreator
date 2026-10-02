@@ -11,6 +11,11 @@ export const strings = {
   'global.navSettings': 'Settings',
   'global.engineFailed': 'The analysis engine failed to load',
   'global.reload': 'Reload',
+  'global.microphone': 'Microphone',
+  /** The option text for an input the browser gives no label. */
+  'global.microphoneUnnamed': (n: number) => `Microphone ${n}`,
+  /** Toast when the active input is unplugged and another one takes over (EXPERIENCE.md). */
+  'global.micSwitched': (label: string) => `Microphone disconnected — switched to ${label}`,
   'global.inputLevel': 'Input level',
   'global.levelUnit': 'dBFS',
   'global.levelTooLoud': 'Too loud — move back or lower the input',

@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { recordingSession } from '../../session/recording-session';
 import { LevelMeter } from '../components/LevelMeter';
+import { MicSelect } from '../components/MicSelect';
 import { micErrorCode, type MicErrorCode } from '../mic-error';
 import { strings } from '../strings';
 import styles from './Screen.module.css';
@@ -47,7 +48,10 @@ export function Record() {
         }}
       >
         {mic === 'live' ? (
-          <LevelMeter />
+          <>
+            <MicSelect />
+            <LevelMeter />
+          </>
         ) : (
           <MicSetupCard requesting={mic === 'requesting'} errorCode={errorCode} />
         )}

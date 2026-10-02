@@ -1,5 +1,6 @@
-// Microphone access and the live input (spine AD-2: the only getUserMedia / AudioContext /
-// AnalyserNode owner). Processing is always off, so the engine hears the raw instrument.
+// Microphone access, the input device list and the live input (spine AD-2: the only
+// getUserMedia / enumerateDevices / devicechange / AudioContext / AnalyserNode owner).
+// Processing is always off, so the engine hears the raw instrument.
 
 import { AppError, type AppErrorCode } from '../model/errors';
 
@@ -51,6 +52,56 @@ export async function requestMic(deviceId?: string): Promise<MediaStream> {
   }
 }
 
+/** One selectable audio input. */
+export interface MicDevice {
+  readonly deviceId: string;
+  readonly label: string;
+  /** Shared by the inputs of one physical device; resolves Chrome's `default` to a real id. */
+  readonly groupId: string;
+}
+
+/** Chrome's pseudo-entries that alias a real device; they are never listed. */
+const PSEUDO_DEVICE_IDS: ReadonlySet<string> = new Set(['default', 'communications']);
+
+/** The audio inputs with a real id, in browser order. Never rejects: empty when unavailable. */
+export async function listMics(): Promise<MicDevice[]> {
+  let infos: MediaDeviceInfo[];
+  try {
+    infos = await navigator.mediaDevices.enumerateDevices();
+  } catch {
+    return [];
+  }
+  return infos
+    .filter(
+      (d) => d.kind === 'audioinput' && d.deviceId !== '' && !PSEUDO_DEVICE_IDS.has(d.deviceId),
+    )
+    .map((d) => ({ deviceId: d.deviceId, label: d.label, groupId: d.groupId }));
+}
+
+/** Calls `listener` on each `devicechange`. Returns the unsubscribe function. */
+export function onDeviceChange(listener: () => void): () => void {
+  const mediaDevices = typeof navigator === 'undefined' ? undefined : navigator.mediaDevices;
+  if (!mediaDevices?.addEventListener) return () => {};
+  mediaDevices.addEventListener('devicechange', listener);
+  return () => mediaDevices.removeEventListener('devicechange', listener);
+}
+
+/**
+ * The listed device a live input runs on: its track's `deviceId`, or for an id that is not
+ * listed (Chrome reports `default` for a default request) the listed device with its `groupId`.
+ * Null when neither matches.
+ */
+export function activeDevice(
+  input: { deviceId: string | null; groupId: string | null },
+  devices: readonly MicDevice[],
+): MicDevice | null {
+  return (
+    devices.find((d) => d.deviceId === input.deviceId) ??
+    (input.groupId ? devices.find((d) => d.groupId === input.groupId) : undefined) ??
+    null
+  );
+}
+
 export type MicPermission = 'granted' | 'prompt' | 'denied' | 'unknown';
 
 /**
@@ -69,6 +120,12 @@ export async function micPermission(): Promise<MicPermission> {
 /** One open mic stream with its single shared analyser. */
 export interface MicInput {
   readonly analyser: AnalyserNode;
+  /** The device the live track reports (`getSettings().deviceId`); null when it reports none. */
+  readonly deviceId: string | null;
+  /** The track's `groupId` setting; null when it reports none. */
+  readonly groupId: string | null;
+  /** The track's label ("" when the browser gives none). */
+  readonly label: string;
   /**
    * The analyser's current float time-domain frame (`ANALYSER_FFT_SIZE` samples). The array is
    * reused: it is overwritten by the next `readFrame` call.
@@ -76,6 +133,17 @@ export interface MicInput {
   readFrame(): Float32Array;
   /** Stops the stream's tracks and closes the AudioContext. */
   close(): void;
+}
+
+/** The first audio track's device settings and label. */
+function trackDevice(stream: MediaStream): Pick<MicInput, 'deviceId' | 'groupId' | 'label'> {
+  const track = stream.getTracks()[0];
+  const settings = track?.getSettings?.() ?? {};
+  return {
+    deviceId: settings.deviceId || null,
+    groupId: settings.groupId || null,
+    label: track?.label ?? '',
+  };
 }
 
 function stopTracks(stream: MediaStream): void {
@@ -115,6 +183,7 @@ export function openInput(stream: MediaStream, onEnded?: (error: AppError) => vo
     if (tracks.some((track) => track.readyState === 'ended')) queueMicrotask(handleEnded);
     return {
       analyser,
+      ...trackDevice(stream),
       readFrame() {
         analyser.getFloatTimeDomainData(frame);
         return frame;

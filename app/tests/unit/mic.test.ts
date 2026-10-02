@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  activeDevice,
   ANALYSER_FFT_SIZE,
+  listMics,
   micErrorCode,
   micPermission,
+  onDeviceChange,
   openInput,
   requestMic,
 } from '../../src/audio/mic';
@@ -19,10 +22,12 @@ function stubGetUserMedia(impl: (c: MediaStreamConstraints) => Promise<MediaStre
   return getUserMedia;
 }
 
-function fakeStream() {
+function fakeStream(settings: MediaTrackSettings = {}, label = '') {
   const track = Object.assign(new EventTarget(), {
     stop: vi.fn(),
     readyState: 'live' as MediaStreamTrackState,
+    label,
+    getSettings: () => settings,
   });
   /** Ends the track on its own, as a revoke or unplug does. */
   const end = () => {
@@ -118,6 +123,67 @@ describe('requestMic', () => {
   });
 });
 
+describe('listMics', () => {
+  const info = (kind: MediaDeviceKind, deviceId: string, label = '', groupId = '') =>
+    ({ kind, deviceId, label, groupId }) as MediaDeviceInfo;
+
+  function stubEnumerate(impl: () => Promise<MediaDeviceInfo[]>) {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: { enumerateDevices: vi.fn(impl) },
+      configurable: true,
+    });
+  }
+
+  it('keeps audio inputs with a real id, without the default and communications aliases', async () => {
+    stubEnumerate(() =>
+      Promise.resolve([
+        info('audioinput', 'default', 'Default - USB', 'g1'),
+        info('audioinput', 'communications', 'Communications - USB', 'g1'),
+        info('audioinput', 'usb', 'USB', 'g1'),
+        info('audiooutput', 'spk', 'Speakers', 'g2'),
+        info('videoinput', 'cam', 'Camera', 'g3'),
+        info('audioinput', '', '', ''),
+        info('audioinput', 'builtin', 'Built-in', 'g4'),
+      ]),
+    );
+    await expect(listMics()).resolves.toEqual([
+      { deviceId: 'usb', label: 'USB', groupId: 'g1' },
+      { deviceId: 'builtin', label: 'Built-in', groupId: 'g4' },
+    ]);
+  });
+
+  it('is empty when enumerateDevices rejects', async () => {
+    stubEnumerate(() => Promise.reject(new Error('no')));
+    await expect(listMics()).resolves.toEqual([]);
+  });
+});
+
+describe('onDeviceChange', () => {
+  it('calls the listener on each devicechange until unsubscribed', () => {
+    const target = new EventTarget();
+    Object.defineProperty(navigator, 'mediaDevices', { value: target, configurable: true });
+    const listener = vi.fn();
+    const stop = onDeviceChange(listener);
+    target.dispatchEvent(new Event('devicechange'));
+    target.dispatchEvent(new Event('devicechange'));
+    stop();
+    target.dispatchEvent(new Event('devicechange'));
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('activeDevice', () => {
+  const usb = { deviceId: 'usb', label: 'USB', groupId: 'g1' };
+  const builtin = { deviceId: 'builtin', label: 'Built-in', groupId: 'g2' };
+
+  it('matches the track device id first, then its group, else null', () => {
+    expect(activeDevice({ deviceId: 'builtin', groupId: 'g1' }, [usb, builtin])).toBe(builtin);
+    expect(activeDevice({ deviceId: 'default', groupId: 'g1' }, [usb, builtin])).toBe(usb);
+    expect(activeDevice({ deviceId: 'default', groupId: null }, [usb, builtin])).toBeNull();
+    expect(activeDevice({ deviceId: null, groupId: 'g9' }, [usb])).toBeNull();
+  });
+});
+
 describe('micErrorCode', () => {
   it('maps by name, whatever the error class', () => {
     expect(micErrorCode(new TypeError('x'))).toBe('mic-failed');
@@ -179,6 +245,14 @@ describe('openInput', () => {
     input.close();
     expect(track.stop).toHaveBeenCalled();
     expect(ctx.closed).toBe(true);
+  });
+
+  it('reports the live track device id, group and label', () => {
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    const { stream } = fakeStream({ deviceId: 'usb', groupId: 'g1' }, 'USB');
+    expect(openInput(stream)).toMatchObject({ deviceId: 'usb', groupId: 'g1', label: 'USB' });
+    const bare = openInput(fakeStream().stream);
+    expect(bare).toMatchObject({ deviceId: null, groupId: null, label: '' });
   });
 
   it('calls onEnded once with mic-lost when a track ends on its own', () => {
