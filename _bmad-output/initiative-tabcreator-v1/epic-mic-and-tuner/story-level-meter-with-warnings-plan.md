@@ -3,14 +3,14 @@ title: 'Level meter with warnings'
 type: 'feature'
 ticket: '6'
 created: '2026-10-02'
-status: 'in-review'
+status: 'built'
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
 review_source: 'auto'
 lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 baseline_revision: '230035d0de27c7e3d069f3281347d85b29a37bc4'
 context:
   - '{project-root}/_bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md'
@@ -129,3 +129,36 @@ drawFill(rmsDb); drawPeak(peakHold(peakDb, now)); maybeUpdateAria(rmsDb, now); /
 **Commands:**
 - `npx -y -p node@24.21.0 -p pnpm@12.6.0 -- sh -c 'pnpm install --frozen-lockfile && pnpm build:engine && pnpm format:check && pnpm lint && pnpm stylelint && pnpm typecheck && pnpm test && pnpm build && CI=1 pnpm e2e'` -- expected: all exit 0 (`~/.cargo/bin` on PATH)
 - `grep -rlE '__test|UiTestPage|StorageTestPage|fakeMic' app/dist` -- expected: no output
+
+## Auto Run Result
+
+- **Summary:** Record has a real level meter.
+  - Peak and RMS are computed in dBFS from the shared analyser (`audio/level-meter.ts`).
+  - The bar runs from −60 to 0 dBFS, with an RMS fill clipped over fixed ok/warn/hot zones and a 1.5 s peak-hold tick that then follows the peak.
+  - Warnings show as icon plus text and are announced politely: Too loud (peak ≥ −1 dBFS, clears 2 s after the last loud peak) and Too quiet (RMS < −45 dBFS for 3 s).
+  - The meter has `role="meter"` with value text, updated at most 4 times a second. The fill updates every frame, with no transitions under reduced motion.
+  - The warning state resets after a gap in reads, so leaving and returning never shows a stale warning.
+- **Files changed:**
+  - `app/src/audio/level-meter.ts` (new), `app/src/audio/mic.ts`: `readFrame` added, `readRms` removed.
+  - `app/src/model/level-warnings.ts` (new): warning and peak-hold state machines.
+  - `app/src/session/recording-session.ts`: `readLevels(now)`, `levelWarning`, the gap reset.
+  - `app/src/ui/components/LevelMeter.tsx`, `.module.css` (new), `app/src/ui/screens/Record.tsx`, `app/src/ui/strings.ts`: the meter and its copy.
+  - Tests: `app/tests/unit/{level-meter,level-warnings,recording-session,mic}.test.ts`, `app/tests/e2e/level-meter.dev.spec.ts`, `mic-errors.dev.spec.ts`.
+  - Commits: `e864802` (build) and `17119e8` (review fixes).
+- **Review:** 22 findings (medium 7, low 12, false 3); 5 fixes applied, nothing deferred. Fixes:
+  - the read-gap reset (one entry covering five findings);
+  - a following peak tick;
+  - e2e checks of the fill and tick;
+  - focus on the labelled meter;
+  - removal of the `readRms` dead code.
+
+  Rejections and their reasons are in the Review Triage Log.
+- **Follow-up review recommended:** true. Three medium entries were patched. Unverified risks:
+  - the 500 ms read-gap reset and the first frame drawn from a layout effect, in a real backgrounded Chrome tab;
+  - the follow-after-hold peak tick's look with real guitar input.
+- **Verification:**
+  - The full plan command exited 0: 53 Playwright tests, with all unit tests passing.
+  - `app/dist` has no dev-only strings.
+- **Residual risks:**
+  - The 200 ms Too-loud bound is measured from the meter appearing, including the fixture's 300 ms lead-in.
+  - The −3 and 0 scale labels can crowd on very narrow screens.
