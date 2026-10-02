@@ -158,3 +158,173 @@ test('without ?fakeMic the real mediaDevices are untouched', async ({ page }) =>
   expect(native.enumerateDevices).toContain('[native code]');
   expect(errors).toEqual([]);
 });
+
+const TWO_DEVICES = '?fakeMic=open_strings,silence_60s';
+const OPEN_ID = 'fake-mic-open_strings';
+const SILENCE_ID = 'fake-mic-silence_60s';
+
+test('a fixture list serves one device per fixture, the first by default', async ({ page }) => {
+  const errors = await open(page, TWO_DEVICES);
+
+  const result = await page.evaluate(async () => {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const settings = stream.getAudioTracks()[0]!.getSettings();
+    stream.getTracks().forEach((track) => track.stop());
+    return {
+      devices: devices.map(({ deviceId, groupId, kind, label }) => ({
+        deviceId,
+        groupId,
+        kind,
+        label,
+      })),
+      defaultId: settings.deviceId,
+    };
+  });
+
+  expect(result.devices.map(({ deviceId, kind, label }) => ({ deviceId, kind, label }))).toEqual([
+    { deviceId: OPEN_ID, kind: 'audioinput', label: 'Fake mic: open_strings' },
+    { deviceId: SILENCE_ID, kind: 'audioinput', label: 'Fake mic: silence_60s' },
+  ]);
+  expect(result.devices[0]!.groupId).not.toBe(result.devices[1]!.groupId);
+  expect(result.defaultId).toBe(OPEN_ID);
+  expect(errors).toEqual([]);
+});
+
+test('unplug ends the track, drops the device and fires devicechange', async ({ page }) => {
+  const errors = await open(page, TWO_DEVICES);
+
+  const result = await page.evaluate(async (id) => {
+    const md = navigator.mediaDevices;
+    const stream = await md.getUserMedia({ audio: { deviceId: { exact: id } } });
+    const track = stream.getAudioTracks()[0]!;
+    let ended = 0;
+    let changes = 0;
+    track.addEventListener('ended', () => ended++);
+    md.addEventListener('devicechange', () => changes++);
+    window.__fakeMic!.unplug(id);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    let exactError: string | null = null;
+    try {
+      await md.getUserMedia({ audio: { deviceId: { exact: id } } });
+    } catch (err) {
+      exactError = err instanceof DOMException ? err.name : String(err);
+    }
+    return {
+      readyState: track.readyState,
+      ended,
+      changes,
+      devices: (await md.enumerateDevices()).map((d) => d.deviceId),
+      exactError,
+    };
+  }, OPEN_ID);
+
+  expect(result).toEqual({
+    readyState: 'ended',
+    ended: 1,
+    changes: 1,
+    devices: [SILENCE_ID],
+    exactError: 'OverconstrainedError',
+  });
+  expect(errors).toEqual([]);
+});
+
+test('revoke ends the track and the device stays listed', async ({ page }) => {
+  const errors = await open(page, TWO_DEVICES);
+
+  const result = await page.evaluate(async () => {
+    const md = navigator.mediaDevices;
+    const stream = await md.getUserMedia({ audio: true });
+    const track = stream.getAudioTracks()[0]!;
+    let ended = 0;
+    track.addEventListener('ended', () => ended++);
+    window.__fakeMic!.revoke();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return {
+      readyState: track.readyState,
+      ended,
+      devices: (await md.enumerateDevices()).length,
+    };
+  });
+
+  expect(result).toEqual({ readyState: 'ended', ended: 1, devices: 2 });
+  expect(await tryGetUserMedia(page, { audio: true })).toBe('ok');
+  expect(errors).toEqual([]);
+});
+
+test('failNext rejects the next getUserMedia only', async ({ page }) => {
+  const errors = await open(page, TWO_DEVICES);
+
+  await page.evaluate(() => window.__fakeMic!.failNext('NotReadableError', 'device busy'));
+  expect(await tryGetUserMedia(page, { audio: true })).toBe('NotReadableError');
+  expect(await tryGetUserMedia(page, { audio: true })).toBe('ok');
+  expect(errors).toEqual([]);
+});
+
+test('configure sets the sample rate and label of later streams', async ({ page }) => {
+  const errors = await open(page, TWO_DEVICES);
+
+  const result = await page.evaluate(async (id) => {
+    const md = navigator.mediaDevices;
+    let changes = 0;
+    md.addEventListener('devicechange', () => changes++);
+    window.__fakeMic!.configure(id, { sampleRate: 16000, label: 'AirPods Pro' });
+    const stream = await md.getUserMedia({ audio: { deviceId: { exact: id } } });
+    const track = stream.getAudioTracks()[0]!;
+    const settings = track.getSettings();
+    const label = track.label;
+    stream.getTracks().forEach((t) => t.stop());
+    return {
+      sampleRate: settings.sampleRate,
+      deviceId: settings.deviceId,
+      label,
+      listed: (await md.enumerateDevices()).find((d) => d.deviceId === id)?.label,
+      changes,
+    };
+  }, SILENCE_ID);
+
+  expect(result).toEqual({
+    sampleRate: 16000,
+    deviceId: SILENCE_ID,
+    label: 'AirPods Pro',
+    listed: 'AirPods Pro',
+    changes: 1,
+  });
+  expect(errors).toEqual([]);
+});
+
+test('a stream opened after the fixture has ended hears it from the start', async ({ page }) => {
+  test.setTimeout(30_000);
+  const errors = await open(page, '?fakeMic=bend_up');
+
+  const rmsDb = await page.evaluate(async () => {
+    const md = navigator.mediaDevices;
+    const first = await md.getUserMedia({ audio: true });
+    // bend_up is 5.9 s long: by now the first stream has played it through.
+    await new Promise((resolve) => setTimeout(resolve, 6200));
+    const second = await md.getUserMedia({ audio: true });
+    const ctx = new AudioContext();
+    await ctx.resume();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    ctx.createMediaStreamSource(second).connect(analyser);
+
+    // The second stream's first 1.5 s, reading a full analyser window about every 20 ms.
+    const frame = new Float32Array(analyser.fftSize);
+    let sumSquares = 0;
+    let count = 0;
+    const end = performance.now() + 1500;
+    while (performance.now() < end) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      analyser.getFloatTimeDomainData(frame);
+      for (const v of frame) sumSquares += v * v;
+      count += frame.length;
+    }
+    [first, second].forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
+    await ctx.close();
+    return 10 * Math.log10(sumSquares / count);
+  });
+
+  expect(rmsDb).toBeGreaterThan(-40);
+  expect(errors).toEqual([]);
+});

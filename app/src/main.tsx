@@ -9,13 +9,18 @@ if (!root) throw new Error('#root element missing from index.html');
 
 document.title = strings['global.appName'];
 
-// Dev-only fake microphone (stories US-0.4). Production builds replace the condition with
-// `false`, so this branch, the module and the parameter name tree-shake out.
+// Dev-only fake microphone (stories US-0.4, 2.2): `?fakeMic=<fixture>[,<fixture>…]`, one device
+// per fixture, with test hooks on `window.__fakeMic`. Production builds replace the condition
+// with `false`, so this branch, the module and the parameter name tree-shake out.
 if (import.meta.env.DEV) {
-  const fixture = new URLSearchParams(window.location.search).get('fakeMic');
-  if (fixture !== null) {
+  const param = new URLSearchParams(window.location.search).get('fakeMic');
+  if (param !== null) {
+    const fixtures = param
+      .split(',')
+      .map((name) => name.trim())
+      .filter((name) => name !== '');
     const { installFakeMic } = await import('./audio/fake-mic');
-    installFakeMic(fixture);
+    window.__fakeMic = installFakeMic(fixtures);
   }
 }
 

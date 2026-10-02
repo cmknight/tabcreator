@@ -37,8 +37,20 @@ and a `{name}.json` answer file:
 - Every fixture except `silence_60s` and `noise_room_-50dbfs` has a `{name}_noisy` twin with
   pink noise at 30 dB SNR and the same answers.
 
-In the dev server, `?fakeMic=<name>` serves a fixture as the microphone (`app/src/audio/fake-mic.ts`).
-The fixture plays once, from the first `getUserMedia` call. Its audio can only start after a user
+In the dev server, `?fakeMic=<name>[,<name>…]` serves fixtures as microphones
+(`app/src/audio/fake-mic.ts`): one input device per fixture, in list order, labelled
+`Fake mic: <name>` with id `fake-mic-<name>` (unknown names are dropped, duplicates collapsed).
+`getUserMedia` honours `deviceId` constraints and defaults to the first device. Every stream
+plays its fixture once from the start, then silence. The audio can only start after a user
 gesture on the page (or with Chromium's `--autoplay-policy=no-user-gesture-required`, as the
 Playwright `dev` project uses); otherwise `getUserMedia` rejects with `NotAllowedError` after
 about 2 s, and a later call retries.
+
+Dev builds also expose test hooks on `window.__fakeMic` (reset by reload):
+
+- `unplug(deviceId)` drops the device, ends its live tracks (`ended` event) and fires
+  `devicechange`.
+- `revoke()` ends every live track; the devices stay listed.
+- `failNext(name, message?)` makes the next `getUserMedia` call reject with that `DOMException`.
+- `configure(deviceId, { sampleRate?, label? })` changes the settings of streams opened
+  afterwards; a label change fires `devicechange`.
