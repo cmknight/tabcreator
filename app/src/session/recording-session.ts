@@ -1,32 +1,19 @@
-// Recording store (spine AD-3). For now it owns the mic: the setup → live path, the open input
-// (kept across screens, so leaving Record does not close the mic) and the level read by the
-// meter. Read it with useSyncExternalStore; the levels are read on demand with `readLevels(now)`
-// inside the UI's animation frame, which also advances the level warning, so the store notifies
-// only on state changes (a mic transition or a warning change), never per frame.
+// Recording store (spine AD-3). It owns the mic: the setup → live path, the open input (kept
+// across screens, so leaving Record does not close the mic), the input device list (refreshed on
+// `devicechange` while live), the chosen device (`micDeviceId`) and the fallback to the default
+// input when the active one is unplugged. Read it with useSyncExternalStore.
 //
-// It also owns the input device list (refreshed on `devicechange` while live), the chosen
-// device (`micDeviceId`) and the fallback to the default input when the active one is unplugged.
-//
-// While live it also derives the input quality warning (story 2.8) from the live track's sample
-// rate and the active input's label; Dismiss hides it for the rest of the page session (memory
-// only, never prefs).
-//
-// While live it also feeds the Tuner (story 9): `readTuner(now)` runs the pitch detector on the
-// live input's frame and advances the pure tuner machine (audio/tuner.ts), the same way
-// `readLevels` advances the level warning. Strings that reach In tune are kept in
-// `tunedStrings` for the page session (memory only); the store notifies only when that set grows.
+// What the live input yields is derived by three modules it composes through one contract
+// (input-derivation.ts): the level warning (level-watch.ts), the input quality warning
+// (input-quality-watch.ts) and the Tuner's reading and ticks (tuner-watch.ts). Each mic
+// transition asks them once for their fields, so it notifies once; the reads (`readLevels`,
+// `readTuner`, inside the UI's animation frame or poll) notify only when a published field
+// changes, never per frame.
 //
 // Decision (epic 2, 2026-10-02): this store writes `micGranted` and `micDeviceId` through
 // storage/prefs.ts, although AD-3 names settings-session as the prefs store.
 
-import { levelsDbfs, type LevelsDbfs } from '../audio/level-meter';
-import {
-  INITIAL_TUNER_STATE,
-  detectPitch,
-  nextTuner,
-  type TunerReading,
-  type TunerState,
-} from '../audio/tuner';
+import type { LevelsDbfs } from '../audio/level-meter';
 import {
   activeDevice,
   listMics,
@@ -35,30 +22,19 @@ import {
   openInput,
   requestMic,
   type MicDevice,
-  type MicInput,
   type MicPermission,
 } from '../audio/mic';
 import { AppError, isAppError, type AppErrorCode } from '../model/errors';
-import { isPoorInput } from '../model/input-quality';
-import {
-  INITIAL_LEVEL_WARNING_STATE,
-  nextWarning,
-  type LevelWarning,
-} from '../model/level-warnings';
-import type { StringNo } from '../model/types';
 import { loadPrefs, updatePrefs } from '../storage/prefs';
+import type { InputTransition, OpenedInput } from './input-derivation';
+import { createInputQualityWatch, type InputQualityFields } from './input-quality-watch';
+import { createLevelWatch, type LevelFields } from './level-watch';
+import { createTunerWatch, type TunerDisplay, type TunerFields } from './tuner-watch';
 
 export type { MicDevice } from '../audio/mic';
 export type { TunerReading } from '../audio/tuner';
 export { TUNER_POLL_MS } from '../audio/tuner';
-
-/** What the Tuner shows for one poll: the reading (null = no pitch) and whether it is In tune. */
-export interface TunerDisplay {
-  reading: TunerReading | null;
-  /** `reading` is kept from an earlier frame (the latest had no pitch): no direction, no In tune. */
-  held: boolean;
-  inTune: boolean;
-}
+export type { TunerDisplay } from './tuner-watch';
 
 export type MicState = 'setup' | 'requesting' | 'live' | 'error';
 
@@ -70,33 +46,18 @@ export interface MicNotice {
   seq: number;
 }
 
-export interface RecordingSnapshot {
+/** The mic fields, plus the fields each input derivation owns (see input-derivation.ts). */
+export interface RecordingSnapshot extends LevelFields, InputQualityFields, TunerFields {
   mic: MicState;
   /** Set in `error`; kept while a Try again is `requesting`, so the error card stays in place. */
   errorCode?: AppErrorCode;
-  /** The input level warning; only ever set while `live`. */
-  levelWarning: LevelWarning | null;
   /** The selectable audio inputs; only filled while `live`. */
   devices: readonly MicDevice[];
   /** The listed device the live input runs on (or is switching to); null when not live. */
   activeDeviceId: string | null;
   /** The latest notice; kept until the next one replaces it. */
   notice?: MicNotice;
-  /**
-   * The live input is likely a Bluetooth headset in call mode or runs below 44.1 kHz. False
-   * unless `live`; kept through a device switch until the new input opens.
-   */
-  inputQualityPoor: boolean;
-  /** The quality warning was dismissed; in memory only, for the rest of the page session. */
-  inputQualityDismissed: boolean;
-  /** Strings that reached In tune on the Tuner, in tick order; memory only, page session. */
-  tunedStrings: readonly StringNo[];
 }
-
-/** A longer pause between level (or tuner) reads resets the warning (or tuner) machine. */
-const READ_GAP_MS = 500;
-
-const SILENCE: LevelsDbfs = { peakDb: -Infinity, rmsDb: -Infinity };
 
 export interface RecordingSession {
   subscribe(listener: () => void): () => void;
@@ -137,11 +98,6 @@ export interface RecordingSession {
   dismissInputQuality(): void;
 }
 
-type OpenedInput = Pick<
-  MicInput,
-  'analyser' | 'readFrame' | 'close' | 'deviceId' | 'groupId' | 'label' | 'sampleRate'
->;
-
 /** The shell functions the store drives; injected so tests can fake audio/ and storage/. */
 export interface RecordingDeps {
   requestMic: (deviceId?: string) => Promise<MediaStream>;
@@ -159,22 +115,20 @@ const asAppError = (err: unknown) =>
     : new AppError('mic-failed', 'Opening the microphone failed', { cause: err });
 
 export function createRecordingSession(deps: RecordingDeps): RecordingSession {
+  // The watches publish through `patch`, which reads `snapshot` only when called (never here).
+  const levels = createLevelWatch(patch);
+  const quality = createInputQualityWatch(patch);
+  const tuning = createTunerWatch(patch);
+  const idle: InputTransition = { live: false, input: null, devices: [] };
   let snapshot: RecordingSnapshot = {
     mic: 'setup',
-    levelWarning: null,
     devices: [],
     activeDeviceId: null,
-    inputQualityPoor: false,
-    inputQualityDismissed: false,
-    tunedStrings: [],
+    ...levels.transition(idle),
+    ...quality.transition(idle),
+    ...tuning.transition(idle),
   };
   let input: OpenedInput | null = null;
-  let warnings = INITIAL_LEVEL_WARNING_STATE;
-  /** When `readLevels` last ran; null since the last mic transition. */
-  let lastReadAt: number | null = null;
-  let tuner: TunerState = INITIAL_TUNER_STATE;
-  /** When `readTuner` last ran; null since the last mic transition. */
-  let lastTunerReadAt: number | null = null;
   /** A device switch or an ended-track fallback is running. */
   let busy = false;
   /** Bumped on every device list request, so an older answer never replaces a newer one. */
@@ -188,7 +142,17 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     for (const l of listeners) l();
   }
 
-  /** A mic transition: the level warning and the tuner start afresh with every transition. */
+  /** A derivation's read publishes its fields; notifies only when one of them changes. */
+  function patch(fields: Partial<RecordingSnapshot>) {
+    const keys = Object.keys(fields) as (keyof RecordingSnapshot)[];
+    if (keys.every((k) => Object.is(fields[k], snapshot[k]))) return;
+    notify({ ...snapshot, ...fields });
+  }
+
+  /** The open input while live; the derivations read nothing otherwise. */
+  const liveInput = () => (snapshot.mic === 'live' ? input : null);
+
+  /** A mic transition: builds the mic fields, then asks each derivation once for its own. */
   function set(next: {
     mic: MicState;
     errorCode?: AppErrorCode;
@@ -196,17 +160,13 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     activeDeviceId?: string | null;
     notice?: MicNotice;
   }) {
-    warnings = INITIAL_LEVEL_WARNING_STATE;
-    lastReadAt = null;
-    tuner = INITIAL_TUNER_STATE;
-    lastTunerReadAt = null;
     const live = next.mic === 'live';
     const notice = next.notice ?? snapshot.notice;
     const devices = live ? (next.devices ?? snapshot.devices) : [];
+    const t: InputTransition = { live, input: live ? input : null, devices };
     notify({
       mic: next.mic,
       ...(next.errorCode ? { errorCode: next.errorCode } : {}),
-      levelWarning: null,
       devices,
       activeDeviceId: !live
         ? null
@@ -214,14 +174,9 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
           ? (next.activeDeviceId ?? null)
           : snapshot.activeDeviceId,
       ...(notice ? { notice } : {}),
-      // While a switch runs there is no input: keep the last answer until the new one opens.
-      inputQualityPoor: !live
-        ? false
-        : input
-          ? poorInput(input, devices)
-          : snapshot.inputQualityPoor,
-      inputQualityDismissed: snapshot.inputQualityDismissed,
-      tunedStrings: snapshot.tunedStrings,
+      ...levels.transition(t),
+      ...quality.transition(t),
+      ...tuning.transition(t),
     });
     if (live && !stopDeviceChange) stopDeviceChange = deps.onDeviceChange(refreshDevices);
     if (!live && stopDeviceChange) {
@@ -230,38 +185,9 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     }
   }
 
-  function readLevels(now: number): LevelsDbfs {
-    if (!input || snapshot.mic !== 'live') return SILENCE;
-    // The warnings advance only while a meter reads them: after a gap (meter unmounted, tab
-    // hidden) the old timings say nothing about the input, so start afresh.
-    if (lastReadAt !== null && now - lastReadAt > READ_GAP_MS) {
-      warnings = INITIAL_LEVEL_WARNING_STATE;
-    }
-    lastReadAt = now;
-    const levels = levelsDbfs(input.readFrame());
-    warnings = nextWarning(warnings, { ...levels, now });
-    if (warnings.warning !== snapshot.levelWarning) {
-      notify({ ...snapshot, levelWarning: warnings.warning });
-    }
-    return levels;
-  }
+  const readLevels = (now: number): LevelsDbfs => levels.read(liveInput(), now);
 
-  function readTuner(now: number): TunerDisplay | null {
-    if (!input || snapshot.mic !== 'live') return null;
-    // As with the levels: after a gap (Tuner unmounted, tab hidden) the timings are stale.
-    if (lastTunerReadAt !== null && now - lastTunerReadAt > READ_GAP_MS) {
-      tuner = INITIAL_TUNER_STATE;
-    }
-    lastTunerReadAt = now;
-    // `readFrame` reuses its buffer: detect at once, before anything else reads it.
-    const hz = detectPitch(input.readFrame(), input.analyser.context.sampleRate);
-    tuner = nextTuner(tuner, hz, now);
-    const ticked = tuner.inTune ? tuner.reading!.string : null; // In tune implies a reading
-    if (ticked !== null && !snapshot.tunedStrings.includes(ticked)) {
-      notify({ ...snapshot, tunedStrings: [...snapshot.tunedStrings, ticked] });
-    }
-    return { reading: tuner.reading, held: tuner.held, inTune: tuner.inTune };
-  }
+  const readTuner = (now: number): TunerDisplay | null => tuning.read(liveInput(), now);
 
   async function listDevices(): Promise<MicDevice[]> {
     try {
@@ -275,13 +201,6 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   const activeId = (opened: OpenedInput, devices: readonly MicDevice[]) =>
     activeDevice(opened, devices)?.deviceId ?? opened.deviceId;
 
-  /** The quality rule on `opened`'s rate and label: the listed device's, else the track's. */
-  const poorInput = (opened: OpenedInput, devices: readonly MicDevice[]) =>
-    isPoorInput({
-      sampleRate: opened.sampleRate,
-      label: activeDevice(opened, devices)?.label || opened.label,
-    });
-
   /**
    * Re-reads the device list while live (a `devicechange`), keeping the active id resolved and
    * the quality warning current (a relabelled input).
@@ -292,13 +211,12 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     if (seq !== listSeq || snapshot.mic !== 'live') return;
     const settled = input && !busy ? input : null;
     const activeDeviceId = settled ? activeId(settled, devices) : snapshot.activeDeviceId;
-    const inputQualityPoor = settled ? poorInput(settled, devices) : snapshot.inputQualityPoor;
-    notify({ ...snapshot, devices, activeDeviceId, inputQualityPoor });
-  }
-
-  function dismissInputQuality() {
-    if (snapshot.inputQualityDismissed) return;
-    notify({ ...snapshot, inputQualityDismissed: true });
+    notify({
+      ...snapshot,
+      devices,
+      activeDeviceId,
+      ...quality.devicesChanged({ input: settled, devices }),
+    });
   }
 
   /** Opens `stream` as the live input, then lists the devices. Throws `AppError`. */
@@ -474,7 +392,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     readLevels,
     readTuner,
     getAnalyser: () => input?.analyser ?? null,
-    dismissInputQuality,
+    dismissInputQuality: () => quality.dismiss(),
   };
 }
 

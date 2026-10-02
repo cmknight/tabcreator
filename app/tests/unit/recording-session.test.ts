@@ -711,6 +711,131 @@ describe('recording session', () => {
       });
     });
 
+    /** Live on 'a' with Too loud showing and string 6 In tune (ticked). */
+    async function liveLoudAndInTune(setup: ReturnType<typeof devicesSetup>) {
+      await setup.session.allowMic();
+      level(1);
+      setup.session.readLevels(0);
+      expect(setup.session.getSnapshot().levelWarning).toBe('loud');
+      tone(6);
+      expect(tuneEvery(setup.session, 0, 500)).toMatchObject({ inTune: true });
+      expect(setup.session.getSnapshot().tunedStrings).toEqual([6]);
+    }
+
+    /** After a reset, a silent read 50 ms later has no held reading and is not In tune. */
+    function expectFreshTuner(session: { readTuner(now: number): unknown }) {
+      level(0);
+      expect(session.readTuner(550)).toEqual({ reading: null, held: false, inTune: false });
+    }
+
+    it('a live → live switch resets the level warning and the tuner; ticks are kept', async () => {
+      const s = devicesSetup();
+      await liveLoudAndInTune(s);
+      await s.session.selectMic('b');
+      expect(s.session.getSnapshot()).toMatchObject({
+        mic: 'live',
+        activeDeviceId: 'b',
+        levelWarning: null,
+        tunedStrings: [6],
+      });
+      expectFreshTuner(s.session);
+    });
+
+    it('an unplug fallback resets the level warning and the tuner; ticks are kept', async () => {
+      const s = devicesSetup();
+      await liveLoudAndInTune(s);
+      await s.unplug('a');
+      expect(s.session.getSnapshot()).toMatchObject({
+        mic: 'live',
+        activeDeviceId: 'b',
+        levelWarning: null,
+        tunedStrings: [6],
+        notice: { kind: 'switched', label: 'Mic B', seq: 1 },
+      });
+      expectFreshTuner(s.session);
+    });
+
+    describe('one notify per transition, carrying quality and ticks', () => {
+      const HEADSET = { deviceId: 'h', label: 'AirPods Pro (Hands-Free)', groupId: 'gh' };
+
+      /** Live on the headset (poor) with string 6 ticked; records each notified snapshot. */
+      async function liveWatched() {
+        const s = devicesSetup({ listed: [HEADSET, A] });
+        await s.session.allowMic();
+        tone(6);
+        tuneEvery(s.session, 0, 500);
+        const seen: ReturnType<typeof s.session.getSnapshot>[] = [];
+        s.session.subscribe(() => seen.push(s.session.getSnapshot()));
+        return { ...s, seen };
+      }
+
+      it('allow: requesting, then live, one notify each', async () => {
+        const s = devicesSetup({ listed: [HEADSET, A] });
+        const seen: ReturnType<typeof s.session.getSnapshot>[] = [];
+        s.session.subscribe(() => seen.push(s.session.getSnapshot()));
+        await s.session.allowMic();
+        expect(seen.map((x) => x.mic)).toEqual(['requesting', 'live']);
+        expect(seen[1]).toMatchObject({
+          devices: [HEADSET, A],
+          activeDeviceId: 'h',
+          levelWarning: null,
+          inputQualityPoor: true,
+          tunedStrings: [],
+        });
+      });
+
+      it('switch: the pending choice, then live, one notify each', async () => {
+        const { session, seen } = await liveWatched();
+        await session.selectMic('a');
+        expect(seen).toHaveLength(2);
+        expect(seen[0]).toMatchObject({
+          mic: 'live',
+          activeDeviceId: 'a',
+          inputQualityPoor: true, // kept while the new input opens
+          tunedStrings: [6],
+        });
+        expect(seen[1]).toMatchObject({
+          mic: 'live',
+          activeDeviceId: 'a',
+          levelWarning: null,
+          inputQualityPoor: false,
+          tunedStrings: [6],
+        });
+      });
+
+      it('fallback: one notify with the new device, quality and ticks', async () => {
+        const { seen, setListed, inputs } = await liveWatched();
+        setListed([A]);
+        inputs[0]!.end();
+        await flush();
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({
+          mic: 'live',
+          devices: [A],
+          activeDeviceId: 'a',
+          levelWarning: null,
+          inputQualityPoor: false,
+          tunedStrings: [6],
+          notice: { kind: 'switched', label: 'Mic A', seq: 1 },
+        });
+      });
+
+      it('lost: one notify, quality false, ticks kept', async () => {
+        const { session, seen, revoke } = await liveWatched();
+        await revoke();
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({
+          mic: 'error',
+          errorCode: 'mic-lost',
+          devices: [],
+          levelWarning: null,
+          inputQualityPoor: false,
+          tunedStrings: [6],
+        });
+        expect(session.getSnapshot()).toBe(seen[0]);
+      });
+    });
+
     it('devicechange while live refreshes the list; listening stops off live', async () => {
       const C = { deviceId: 'c', label: 'Mic C', groupId: 'gc' };
       const { session, setListed, fireDeviceChange, hasDeviceChangeListener, revoke } =
