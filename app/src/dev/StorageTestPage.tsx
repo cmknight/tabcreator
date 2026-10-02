@@ -72,10 +72,8 @@ async function presence(id: string) {
   };
 }
 
-async function deleteCleanUp() {
-  const id = crypto.randomUUID();
-  const createdAt = new Date().toISOString();
-  const take: Take = {
+function testTake(id: string, createdAt: string): Take {
+  return {
     id,
     title: 'Storage test take',
     createdAt,
@@ -91,6 +89,86 @@ async function deleteCleanUp() {
     analysisVersion: null,
     updatedAt: createdAt,
   };
+}
+
+/** The AppError code a write rejects with, or `resolved` if it does not reject. */
+async function codeOf(write: () => Promise<unknown>): Promise<string> {
+  try {
+    await write();
+    return 'resolved';
+  } catch (err) {
+    return (err as { code?: string }).code ?? 'no-code';
+  }
+}
+
+/**
+ * Real-IndexedDB proof of the storage contract (epic Done-when 4): a Take and a Tab read back
+ * deep-equal, writes to a missing take reject `take-not-found` and write nothing, and each
+ * committed write emits its event with the writer.
+ */
+async function recordsRoundTrip() {
+  const id = crypto.randomUUID();
+  const missing = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const events: StorageEvent[] = [];
+  const unsubscribe = subscribe((e) => {
+    if ('takeId' in e && (e.takeId === id || e.takeId === missing)) events.push(e);
+  });
+  try {
+    const take = await db.createTake(testTake(id, createdAt));
+    const tab = await db.putTab(
+      {
+        takeId: id,
+        notes: [
+          {
+            id: crypto.randomUUID(),
+            startMs: 100,
+            endMs: 400,
+            midi: 45,
+            confidence: 0.9,
+            string: 5,
+            fret: 0,
+            locked: false,
+            lowConfidence: false,
+          },
+        ],
+        updatedAt: createdAt,
+        deletedStartMs: [250],
+      },
+      'take-session',
+    );
+    const readTake = await db.getTake(id);
+    const readTab = await db.getTab(id);
+    const missingTab: Tab = {
+      takeId: missing,
+      notes: [],
+      updatedAt: createdAt,
+      deletedStartMs: [],
+    };
+    const rejections = {
+      patchTake: await codeOf(() => db.patchTake(missing, { title: 'x' }, 'take-session')),
+      putTab: await codeOf(() => db.putTab(missingTab, 'take-session')),
+      commitAnalysis: await codeOf(() =>
+        db.commitAnalysis(missing, missingTab, { status: 'analyzed' }),
+      ),
+    };
+    return {
+      takeEqual: JSON.stringify(readTake) === JSON.stringify(take),
+      tabEqual: JSON.stringify(readTab) === JSON.stringify(tab),
+      rejections,
+      missingWritten: (await db.getTake(missing)) !== null || (await db.getTab(missing)) !== null,
+      events: events.map((e) => [e.type, e.writer]),
+    };
+  } finally {
+    unsubscribe();
+    await quietly(() => db.deleteTake(id, 'library-session'));
+  }
+}
+
+async function deleteCleanUp() {
+  const id = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const take = testTake(id, createdAt);
   const tab: Tab = { takeId: id, notes: [], updatedAt: createdAt, deletedStartMs: [] };
 
   let writer: RawWriter | null = null;
@@ -175,6 +253,7 @@ export default function StorageTestPage() {
   return (
     <main>
       <h1>Storage test page</h1>
+      <Check name="records" label="Run records round-trip" run={recordsRoundTrip} />
       <Check name="raw" label="Run raw round-trip" run={rawRoundTrip} />
       <Check name="delete" label="Run delete clean-up" run={deleteCleanUp} />
       <Check name="format" label="Run format replace" run={formatReplace} />

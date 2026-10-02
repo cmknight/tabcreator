@@ -27,6 +27,27 @@ async function openPage(page: Page): Promise<string[]> {
   return errors;
 }
 
+test('a Take and Tab round-trip in real IndexedDB; missing-take writes reject', async ({
+  page,
+}) => {
+  const errors = await openPage(page);
+  expect(await runCheck(page, 'Run records round-trip', 'records')).toEqual({
+    takeEqual: true,
+    tabEqual: true,
+    rejections: {
+      patchTake: 'take-not-found',
+      putTab: 'take-not-found',
+      commitAnalysis: 'take-not-found',
+    },
+    missingWritten: false,
+    events: [
+      ['take-put', 'recording-session'],
+      ['tab-put', 'take-session'],
+    ],
+  });
+  expect(errors).toEqual([]);
+});
+
 test('raw PCM appended in 1 s chunks reads back sample-exact', async ({ page }) => {
   const errors = await openPage(page);
   expect(await runCheck(page, 'Run raw round-trip', 'raw')).toEqual({

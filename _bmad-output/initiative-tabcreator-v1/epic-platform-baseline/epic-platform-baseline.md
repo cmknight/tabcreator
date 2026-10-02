@@ -6,7 +6,7 @@ covers: []
 after: []
 assignee: ""
 risk: medium
-status: in-progress
+status: done
 ---
 
 # Platform baseline
@@ -54,3 +54,4 @@ Scaffold, CI, deployment, the engine bridge, the storage layer and test tooling 
 - Decision: entry 1 creates every shared type and error code so entries 2 and 3 only read them; entry 2 is the only parallel entry that edits the CI workflow (2026-09-28).
 - Decision: refactor sweep closes the epic (2026-09-28).
 - Decision: accept that the engine and OPFS workers run with no CSP on GitHub Pages — the meta-tag CSP does not reach workers and Pages cannot send headers; resolves story 1.5's deferred item (user approved, 2026-10-02).
+- Decision: epic closed after the closure check: Done when 1–5 and R1–R7 met; Done-when 4's browser half added as the dev page's records round-trip check; deferrals S8–S12 logged in deferred-work.md with owning stories (user approved, 2026-10-02).
