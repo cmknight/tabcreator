@@ -1,0 +1,1888 @@
+diff --git a/app/src/audio/tuner.test.ts b/app/src/audio/tuner.test.ts
+index e61048c..0e1dc4a 100644
+--- a/app/src/audio/tuner.test.ts
++++ b/app/src/audio/tuner.test.ts
+@@ -2,18 +2,25 @@
+ import { describe, expect, it } from 'vitest';
+ import type { StringNo } from '../model/types';
+ import {
++  INITIAL_TUNER_STATE,
++  IN_TUNE_CENTS,
++  IN_TUNE_MS,
+   MAX_HZ,
+   MEDIAN_SIZE,
+   MIN_HZ,
+   OPEN_STRING_HZ,
++  NO_PITCH_HOLD_MS,
+   SILENCE_DBFS,
++  TUNER_POLL_MS,
+   TUNER_WINDOW,
+   YIN_THRESHOLD,
+   detectPitch,
+   median,
+   nearestString,
++  nextTuner,
+   pushEstimate,
+   rmsDbfs,
++  type TunerState,
+ } from './tuner';
+ 
+ const STRINGS: StringNo[] = [1, 2, 3, 4, 5, 6];
+@@ -215,3 +222,148 @@ describe('nearestString', () => {
+     expect(nearestString(400).string).toBe(1);
+   });
+ });
++
++describe('tuner machine', () => {
++  /** The pitch `cents` from open string `s`. */
++  const at = (s: StringNo, cents: number) => OPEN_STRING_HZ[s] * 2 ** (cents / 1200);
++
++  /** Feeds `hz` every poll from `from` up to and including `to`; returns the last state. */
++  function feed(state: TunerState, hz: number | null, from: number, to: number): TunerState {
++    for (let t = from; t <= to; t += TUNER_POLL_MS) state = nextTuner(state, hz, t);
++    return state;
++  }
++
++  it('has the timing constants of US-2.1', () => {
++    expect([IN_TUNE_CENTS, IN_TUNE_MS, NO_PITCH_HOLD_MS, TUNER_POLL_MS]).toEqual([
++      3, 500, 3000, 50,
++    ]);
++    expect(INITIAL_TUNER_STATE.reading).toBeNull();
++    expect(INITIAL_TUNER_STATE.inTune).toBe(false);
++  });
++
++  it('reads the nearest string of the median of the last five estimates', () => {
++    let s = INITIAL_TUNER_STATE;
++    for (const c of [10, 12, 40, 11, 13]) s = nextTuner(s, at(5, c), 0);
++    expect(s.history).toHaveLength(MEDIAN_SIZE);
++    expect(s.reading!.string).toBe(5);
++    expect(s.reading!.cents).toBeCloseTo(12, 6);
++    expect(s.inTune).toBe(false);
++  });
++
++  it('a steady in-tune tone: not In tune at 499 ms, In tune at 500 ms', () => {
++    let s = nextTuner(INITIAL_TUNER_STATE, at(5, 0), 1000);
++    s = nextTuner(s, at(5, 0), 1499);
++    expect(s.inTune).toBe(false);
++    s = nextTuner(s, at(5, 0), 1500);
++    expect(s.inTune).toBe(true);
++    expect(s.reading!.string).toBe(5);
++  });
++
++  it('±3 cents counts as in range; beyond does not', () => {
++    for (const c of [2.9999, -2.9999]) {
++      const s = feed(INITIAL_TUNER_STATE, at(4, c), 0, 500);
++      expect(s.inTune).toBe(true);
++    }
++    for (const c of [3.2, -3.2, 12]) {
++      const s = feed(INITIAL_TUNER_STATE, at(4, c), 0, 2000);
++      expect(s.inTune).toBe(false);
++      expect(s.reading!.cents).toBeCloseTo(c, 6);
++    }
++  });
++
++  it('jitter across 3 cents clears In tune and restarts the timer', () => {
++    let s = feed(INITIAL_TUNER_STATE, at(3, 2), 0, 600);
++    expect(s.inTune).toBe(true);
++    // Sharp estimates move the median out of range on the third one.
++    let t = 650;
++    while (Math.abs(s.reading!.cents) <= IN_TUNE_CENTS) {
++      s = nextTuner(s, at(3, 4), t);
++      if (Math.abs(s.reading!.cents) <= IN_TUNE_CENTS) expect(s.inTune).toBe(true);
++      t += TUNER_POLL_MS;
++    }
++    expect(s.reading!.cents).toBeCloseTo(4, 6);
++    expect(s.inTune).toBe(false);
++    // Back in range: a full 500 ms again from the first in-range reading.
++    let back = -1;
++    while (back < 0) {
++      s = nextTuner(s, at(3, 0), t);
++      if (Math.abs(s.reading!.cents) <= IN_TUNE_CENTS) back = t;
++      t += TUNER_POLL_MS;
++    }
++    s = nextTuner(s, at(3, 0), back + IN_TUNE_MS - 1);
++    expect(s.inTune).toBe(false);
++    s = nextTuner(s, at(3, 0), back + IN_TUNE_MS);
++    expect(s.inTune).toBe(true);
++  });
++
++  it('a dropout keeps the last reading but clears In tune, the history and the timer', () => {
++    let s = feed(INITIAL_TUNER_STATE, at(2, 1), 0, 600);
++    expect(s.inTune).toBe(true);
++    const shown = s.reading;
++    s = nextTuner(s, null, 650);
++    expect(s.reading).toEqual(shown);
++    expect(s.inTune).toBe(false);
++    expect(s.history).toEqual([]);
++    // Pitch back at 700: the timer starts there.
++    s = nextTuner(s, at(2, 1), 700);
++    s = nextTuner(s, at(2, 1), 1199);
++    expect(s.inTune).toBe(false);
++    s = nextTuner(s, at(2, 1), 1200);
++    expect(s.inTune).toBe(true);
++  });
++
++  it('holds the last reading for under 3 s with no pitch, then shows no pitch', () => {
++    let s = feed(INITIAL_TUNER_STATE, at(6, -7), 0, 200); // last pitch at 200
++    s = feed(s, null, 250, 200 + NO_PITCH_HOLD_MS - 50);
++    s = nextTuner(s, null, 200 + NO_PITCH_HOLD_MS - 1);
++    expect(s.reading!.string).toBe(6);
++    expect(s.reading!.cents).toBeCloseTo(-7, 6);
++    s = nextTuner(s, null, 200 + NO_PITCH_HOLD_MS);
++    expect(s.reading).toBeNull();
++    expect(s.inTune).toBe(false);
++  });
++
++  it('no pitch from the start is the no-pitch state', () => {
++    const s = feed(INITIAL_TUNER_STATE, null, 0, 5000);
++    expect(s.reading).toBeNull();
++    expect(s.inTune).toBe(false);
++  });
++
++  it('a string change restarts the timer', () => {
++    let s = feed(INITIAL_TUNER_STATE, at(5, 0), 0, 400);
++    expect(s.inTune).toBe(false);
++    // A null frame between strings would clear the history; here the pitch jumps straight to D:
++    // the median switches string once three D estimates are in.
++    let t = 450;
++    while (s.reading!.string === 5) {
++      s = nextTuner(s, at(4, 0), t);
++      t += TUNER_POLL_MS;
++    }
++    const changedAt = t - TUNER_POLL_MS;
++    expect(s.reading!.string).toBe(4);
++    expect(s.inTune).toBe(false);
++    s = nextTuner(s, at(4, 0), changedAt + IN_TUNE_MS - 1);
++    expect(s.inTune).toBe(false);
++    s = nextTuner(s, at(4, 0), changedAt + IN_TUNE_MS);
++    expect(s.inTune).toBe(true);
++  });
++
++  it('a string change while In tune clears it', () => {
++    let s = feed(INITIAL_TUNER_STATE, at(5, 0), 0, 600);
++    expect(s.inTune).toBe(true);
++    let t = 650;
++    while (s.reading!.string === 5) {
++      s = nextTuner(s, at(4, 0), t);
++      t += TUNER_POLL_MS;
++    }
++    expect(s.inTune).toBe(false);
++  });
++
++  it('does not mutate the state it is given', () => {
++    const s = feed(INITIAL_TUNER_STATE, at(1, 0), 0, 100);
++    const copy = structuredClone(s);
++    nextTuner(s, at(1, 0), 150);
++    nextTuner(s, null, 150);
++    expect(s).toEqual(copy);
++  });
++});
+diff --git a/app/src/audio/tuner.ts b/app/src/audio/tuner.ts
+index 67b783c..7777f8e 100644
+--- a/app/src/audio/tuner.ts
++++ b/app/src/audio/tuner.ts
+@@ -1,6 +1,8 @@
+-// Tuner pitch core (US-2.1, CAP-4): pure, stateless functions over one AnalyserNode frame.
+-// No browser APIs, no module state, no timers; the Tuner screen (story 9) owns polling,
+-// the estimate history and the In tune timing. Imports model/ only (AD-1).
++// Tuner core (US-2.1, CAP-4): pure functions over one AnalyserNode frame, and the pure tuner
++// machine (`nextTuner`) that owns the estimate history, the In tune timing and the no-pitch hold.
++// No browser APIs, no module state, no timers: recording-session drives the machine with each
++// polled frame's pitch and a timestamp, and the Tuner screen only polls the store. Imports
++// model/ only (AD-1).
+ 
+ import { OPEN_MIDI, type StringNo } from '../model/types';
+ 
+@@ -108,3 +110,72 @@ export function nearestString(hz: number): { string: StringNo; targetHz: number;
+   }
+   return best as { string: StringNo; targetHz: number; cents: number };
+ }
++
++/** In tune: the reading stays within this many cents (inclusive) of its string… */
++export const IN_TUNE_CENTS = 3;
++/** …on the same string for this long, continuously. */
++export const IN_TUNE_MS = 500;
++/** After the last pitch, the last reading stays on screen this long, then the no-pitch state. */
++export const NO_PITCH_HOLD_MS = 3000;
++/** How often the Tuner screen polls a reading. */
++export const TUNER_POLL_MS = 50;
++
++/** The smoothed string and its offset in cents (unrounded). */
++export interface TunerReading {
++  string: StringNo;
++  cents: number;
++}
++
++export interface TunerState {
++  /** The last `MEDIAN_SIZE` pitch estimates, Hz; emptied by a frame with no pitch. */
++  readonly history: readonly number[];
++  /** What the screen shows; null is the no-pitch state. */
++  readonly reading: TunerReading | null;
++  /** The reading has held within `IN_TUNE_CENTS` on its string for `IN_TUNE_MS`. */
++  readonly inTune: boolean;
++  /** When the current in-range run on `reading.string` began; null when not in range. */
++  readonly inRangeSince: number | null;
++  /** When the last pitch arrived; null before any. */
++  readonly lastPitchAt: number | null;
++}
++
++export const INITIAL_TUNER_STATE: TunerState = Object.freeze({
++  history: [],
++  reading: null,
++  inTune: false,
++  inRangeSince: null,
++  lastPitchAt: null,
++});
++
++/**
++ * Advances the tuner by one polled frame: `hz` is that frame's `detectPitch` result and `now` a
++ * monotonic clock in ms. A pitch joins the median history and the reading is the open string
++ * nearest the median. In tune needs |cents| ≤ `IN_TUNE_CENTS` on the same string for `IN_TUNE_MS`
++ * without a break; a reading out of range, a string change or a frame with no pitch restarts that
++ * timer. A frame with no pitch also empties the history but keeps the last reading for up to
++ * `NO_PITCH_HOLD_MS` after the last pitch; after that the reading is null (no pitch).
++ */
++export function nextTuner(state: TunerState, hz: number | null, now: number): TunerState {
++  if (hz === null) {
++    const held = state.lastPitchAt !== null && now - state.lastPitchAt < NO_PITCH_HOLD_MS;
++    return {
++      history: [],
++      reading: held ? state.reading : null,
++      inTune: false,
++      inRangeSince: null,
++      lastPitchAt: state.lastPitchAt,
++    };
++  }
++  const history = pushEstimate(state.history, hz);
++  const { string, cents } = nearestString(median(history)!); // history is not empty
++  const inRange = Math.abs(cents) <= IN_TUNE_CENTS;
++  const sameRun = state.inRangeSince !== null && state.reading?.string === string;
++  const inRangeSince = !inRange ? null : sameRun ? state.inRangeSince : now;
++  return {
++    history,
++    reading: { string, cents },
++    inTune: inRangeSince !== null && now - inRangeSince >= IN_TUNE_MS,
++    inRangeSince,
++    lastPitchAt: now,
++  };
++}
+diff --git a/app/src/session/recording-session.ts b/app/src/session/recording-session.ts
+index 85e8a8e..8a5dbec 100644
+--- a/app/src/session/recording-session.ts
++++ b/app/src/session/recording-session.ts
+@@ -11,10 +11,22 @@
+ // rate and the active input's label; Dismiss hides it for the rest of the page session (memory
+ // only, never prefs).
+ //
++// While live it also feeds the Tuner (story 9): `readTuner(now)` runs the pitch detector on the
++// live input's frame and advances the pure tuner machine (audio/tuner.ts), the same way
++// `readLevels` advances the level warning. Strings that reach In tune are kept in
++// `tunedStrings` for the page session (memory only); the store notifies only when that set grows.
++//
+ // Decision (epic 2, 2026-10-02): this store writes `micGranted` and `micDeviceId` through
+ // storage/prefs.ts, although AD-3 names settings-session as the prefs store.
+ 
+ import { levelsDbfs, type LevelsDbfs } from '../audio/level-meter';
++import {
++  INITIAL_TUNER_STATE,
++  detectPitch,
++  nextTuner,
++  type TunerReading,
++  type TunerState,
++} from '../audio/tuner';
+ import {
+   activeDevice,
+   listMics,
+@@ -33,9 +45,18 @@ import {
+   nextWarning,
+   type LevelWarning,
+ } from '../model/level-warnings';
++import type { StringNo } from '../model/types';
+ import { loadPrefs, updatePrefs } from '../storage/prefs';
+ 
+ export type { MicDevice } from '../audio/mic';
++export type { TunerReading } from '../audio/tuner';
++export { TUNER_POLL_MS } from '../audio/tuner';
++
++/** What the Tuner shows for one poll: the reading (null = no pitch) and whether it is In tune. */
++export interface TunerDisplay {
++  reading: TunerReading | null;
++  inTune: boolean;
++}
+ 
+ export type MicState = 'setup' | 'requesting' | 'live' | 'error';
+ 
+@@ -66,9 +87,11 @@ export interface RecordingSnapshot {
+   inputQualityPoor: boolean;
+   /** The quality warning was dismissed; in memory only, for the rest of the page session. */
+   inputQualityDismissed: boolean;
++  /** Strings that reached In tune on the Tuner, in tick order; memory only, page session. */
++  tunedStrings: readonly StringNo[];
+ }
+ 
+-/** A longer pause between level reads resets the warning machine. */
++/** A longer pause between level (or tuner) reads resets the warning (or tuner) machine. */
+ const READ_GAP_MS = 500;
+ 
+ const SILENCE: LevelsDbfs = { peakDb: -Infinity, rmsDb: -Infinity };
+@@ -99,6 +122,13 @@ export interface RecordingSession {
+    * subscribers only when the warning changes.
+    */
+   readLevels(now: number): LevelsDbfs;
++  /**
++   * The Tuner's reading for the live input's current frame at `now` (a monotonic clock, ms):
++   * detects the pitch at the analyser's sample rate and advances the tuner machine. Null when
++   * the mic is not live. After a gap of more than 500 ms between reads the machine starts
++   * afresh; ticked strings are kept. Notifies subscribers only when a string first ticks.
++   */
++  readTuner(now: number): TunerDisplay | null;
+   /** The live input's analyser, for the meter and tuner slices; null when not live. */
+   getAnalyser(): AnalyserNode | null;
+   /** Hides the input quality warning until the page reloads, whatever input is chosen. */
+@@ -134,11 +164,15 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
+     activeDeviceId: null,
+     inputQualityPoor: false,
+     inputQualityDismissed: false,
++    tunedStrings: [],
+   };
+   let input: OpenedInput | null = null;
+   let warnings = INITIAL_LEVEL_WARNING_STATE;
+   /** When `readLevels` last ran; null since the last mic transition. */
+   let lastReadAt: number | null = null;
++  let tuner: TunerState = INITIAL_TUNER_STATE;
++  /** When `readTuner` last ran; null since the last mic transition. */
++  let lastTunerReadAt: number | null = null;
+   /** A device switch or an ended-track fallback is running. */
+   let busy = false;
+   /** Bumped on every device list request, so an older answer never replaces a newer one. */
+@@ -152,7 +186,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
+     for (const l of listeners) l();
+   }
+ 
+-  /** A mic transition: the level warning starts afresh with every transition. */
++  /** A mic transition: the level warning and the tuner start afresh with every transition. */
+   function set(next: {
+     mic: MicState;
+     errorCode?: AppErrorCode;
+@@ -162,6 +196,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
+   }) {
+     warnings = INITIAL_LEVEL_WARNING_STATE;
+     lastReadAt = null;
++    tuner = INITIAL_TUNER_STATE;
++    lastTunerReadAt = null;
+     const live = next.mic === 'live';
+     const notice = next.notice ?? snapshot.notice;
+     const devices = live ? (next.devices ?? snapshot.devices) : [];
+@@ -183,6 +219,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
+           ? poorInput(input, devices)
+           : snapshot.inputQualityPoor,
+       inputQualityDismissed: snapshot.inputQualityDismissed,
++      tunedStrings: snapshot.tunedStrings,
+     });
+     if (live && !stopDeviceChange) stopDeviceChange = deps.onDeviceChange(refreshDevices);
+     if (!live && stopDeviceChange) {
+@@ -207,6 +244,23 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
+     return levels;
+   }
+ 
++  function readTuner(now: number): TunerDisplay | null {
++    if (!input || snapshot.mic !== 'live') return null;
++    // As with the levels: after a gap (Tuner unmounted, tab hidden) the timings are stale.
++    if (lastTunerReadAt !== null && now - lastTunerReadAt > READ_GAP_MS) {
++      tuner = INITIAL_TUNER_STATE;
++    }
++    lastTunerReadAt = now;
++    // `readFrame` reuses its buffer: detect at once, before anything else reads it.
++    const hz = detectPitch(input.readFrame(), input.analyser.context.sampleRate);
++    tuner = nextTuner(tuner, hz, now);
++    const ticked = tuner.inTune ? tuner.reading!.string : null; // In tune implies a reading
++    if (ticked !== null && !snapshot.tunedStrings.includes(ticked)) {
++      notify({ ...snapshot, tunedStrings: [...snapshot.tunedStrings, ticked] });
++    }
++    return { reading: tuner.reading, inTune: tuner.inTune };
++  }
++
+   async function listDevices(): Promise<MicDevice[]> {
+     try {
+       return await deps.listMics();
+@@ -416,6 +470,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
+     resume,
+     selectMic,
+     readLevels,
++    readTuner,
+     getAnalyser: () => input?.analyser ?? null,
+     dismissInputQuality,
+   };
+diff --git a/app/src/ui/components/MicGate.module.css b/app/src/ui/components/MicGate.module.css
+new file mode 100644
+index 0000000..06fc811
+--- /dev/null
++++ b/app/src/ui/components/MicGate.module.css
+@@ -0,0 +1,49 @@
++/* Mic setup card (mockup record.html: dialog surface, max 480 px). */
++.setup {
++  max-width: 480px;
++  margin: var(--space-8) auto 0;
++  padding: var(--space-6);
++  background: var(--color-surface);
++  color: var(--color-text);
++  border: 1px solid var(--color-border);
++  border-radius: 10px;
++}
++
++.setupIcon {
++  display: block;
++  width: 32px;
++  height: 32px;
++  color: var(--color-primary);
++}
++
++.setupTitle {
++  margin: var(--space-3) 0 var(--space-2);
++  font: var(--font-heading);
++}
++
++.setupText {
++  margin: 0 0 var(--space-4);
++}
++
++/* Error variant (mockup record.html (c)): banner-error edge, danger icon, numbered steps. */
++.error {
++  border-inline-start: 4px solid var(--color-danger);
++}
++
++.error .setupIcon {
++  color: var(--color-danger);
++}
++
++.steps {
++  margin: 0 0 var(--space-4);
++  padding-inline-start: var(--space-6);
++}
++
++.steps li {
++  margin-block: var(--space-1);
++}
++
++.actions {
++  display: flex;
++  gap: var(--space-2);
++}
+diff --git a/app/src/ui/components/MicGate.tsx b/app/src/ui/components/MicGate.tsx
+new file mode 100644
+index 0000000..f4bf46c
+--- /dev/null
++++ b/app/src/ui/components/MicGate.tsx
+@@ -0,0 +1,149 @@
++import { useEffect, useLayoutEffect, useRef, useSyncExternalStore, type ReactNode } from 'react';
++import { recordingSession } from '../../session/recording-session';
++import { micErrorCode, type MicErrorCode } from '../mic-error';
++import { strings } from '../strings';
++import buttons from './buttons.module.css';
++import styles from './MicGate.module.css';
++
++/** Marks the element that takes focus when the card or the live view replaces what had it. */
++const FOCUS_TARGET = 'data-focus-target';
++
++/**
++ * The mic area of a mic screen (Record, Tuner): `children` while the mic is live, otherwise the
++ * mic setup card or its error variant in their place (EXPERIENCE.md Mic setup card). On mount it
++ * resumes a mic granted before (`recordingSession.resume()`). When the view swaps while focus is
++ * inside it (Allow fails, Try again succeeds), the focused button goes and focus would fall to
++ * <body>: focus moves to the new view's `data-focus-target` (the card heading, the level meter).
++ */
++export function MicGate({ children }: { children: ReactNode }) {
++  const { mic, errorCode: code } = useSyncExternalStore(
++    recordingSession.subscribe,
++    recordingSession.getSnapshot,
++  );
++  const errorCode = mic === 'live' ? null : micErrorCode(code);
++  const view = mic === 'live' ? 'live' : (errorCode ?? 'setup');
++
++  useEffect(() => {
++    void recordingSession.resume();
++  }, []);
++
++  const area = useRef<HTMLDivElement>(null);
++  const focusInside = useRef(false);
++  const shownView = useRef(view);
++  useLayoutEffect(() => {
++    if (shownView.current === view) return;
++    shownView.current = view;
++    const active = document.activeElement;
++    if (!focusInside.current || (active !== null && active !== document.body)) return;
++    area.current?.querySelector<HTMLElement>(`[${FOCUS_TARGET}]`)?.focus();
++  }, [view]);
++
++  return (
++    <div
++      ref={area}
++      onFocus={() => (focusInside.current = true)}
++      onBlur={(e) => {
++        // A removed element blurs with no relatedTarget: that is the swap, not focus leaving.
++        const to = e.relatedTarget;
++        if (to && !e.currentTarget.contains(to)) focusInside.current = false;
++      }}
++    >
++      {mic === 'live' ? (
++        children
++      ) : (
++        <MicSetupCard requesting={mic === 'requesting'} errorCode={errorCode} />
++      )}
++    </div>
++  );
++}
++
++function MicIcon({ off }: { off: boolean }) {
++  return (
++    <svg className={styles.setupIcon} viewBox="0 0 24 24" aria-hidden="true">
++      <rect
++        x="9"
++        y="3"
++        width="6"
++        height="11"
++        rx="3"
++        fill="none"
++        stroke="currentColor"
++        strokeWidth="2"
++      />
++      <path
++        d={`M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7${off ? 'M4 4l16 16' : ''}`}
++        fill="none"
++        stroke="currentColor"
++        strokeWidth="2"
++        strokeLinecap="round"
++      />
++    </svg>
++  );
++}
++
++/**
++ * The mic setup card, or its error variant (mockup record.html (c)): danger edge, mic-off icon,
++ * the code's heading, one sentence, numbered steps and Try again. The error heading is announced
++ * by `MicErrorAnnouncer` in the shell, so the card itself is not a live region (AD-18). While a
++ * request runs the button is `aria-disabled`, not `disabled`, so it keeps focus.
++ */
++function MicSetupCard({
++  requesting,
++  errorCode,
++}: {
++  requesting: boolean;
++  errorCode: MicErrorCode | null;
++}) {
++  if (errorCode) {
++    const key = `record.micError.${errorCode}` as const;
++    return (
++      <section
++        className={`${styles.setup} ${styles.error}`}
++        aria-labelledby="mic-setup-title"
++        data-error-code={errorCode}
++      >
++        <MicIcon off />
++        <h2 id="mic-setup-title" className={styles.setupTitle} tabIndex={-1} data-focus-target="">
++          {strings[`${key}.title`]}
++        </h2>
++        <p className={styles.setupText}>{strings[`${key}.body`]}</p>
++        <ol className={styles.steps}>
++          <li>{strings[`${key}.step1`]}</li>
++          <li>{strings[`${key}.step2`]}</li>
++          <li>{strings[`${key}.step3`]}</li>
++        </ol>
++        <div className={styles.actions}>
++          <button
++            type="button"
++            className={buttons.primary}
++            aria-disabled={requesting || undefined}
++            onClick={() => {
++              if (!requesting) void recordingSession.allowMic();
++            }}
++          >
++            {strings['record.tryAgain']}
++          </button>
++        </div>
++      </section>
++    );
++  }
++  return (
++    <section className={styles.setup} aria-labelledby="mic-setup-title">
++      <MicIcon off={false} />
++      <h2 id="mic-setup-title" className={styles.setupTitle} tabIndex={-1} data-focus-target="">
++        {strings['record.micSetupTitle']}
++      </h2>
++      <p className={styles.setupText}>{strings['record.micSetupText']}</p>
++      <button
++        type="button"
++        className={buttons.primary}
++        aria-disabled={requesting || undefined}
++        onClick={() => {
++          if (!requesting) void recordingSession.allowMic();
++        }}
++      >
++        {strings['record.allowMic']}
++      </button>
++    </section>
++  );
++}
+diff --git a/app/src/ui/components/buttons.module.css b/app/src/ui/components/buttons.module.css
+new file mode 100644
+index 0000000..ce8b0b7
+--- /dev/null
++++ b/app/src/ui/components/buttons.module.css
+@@ -0,0 +1,22 @@
++/* Primary button (DESIGN.md button-primary), shared by the mic setup card and the Tuner's
++   "Done — go to Record" link. */
++.primary {
++  box-sizing: border-box;
++  display: inline-flex;
++  align-items: center;
++  height: 36px;
++  padding-inline: var(--space-3);
++  background: var(--color-primary);
++  color: var(--color-on-primary);
++  font: var(--font-ui);
++  font-weight: 500;
++  text-decoration: none;
++  border: 1px solid var(--color-primary);
++  border-radius: 6px;
++  cursor: pointer;
++}
++
++.primary[aria-disabled='true'] {
++  opacity: 0.4;
++  cursor: not-allowed;
++}
+diff --git a/app/src/ui/screens/Record.module.css b/app/src/ui/screens/Record.module.css
+index f449921..9447ee8 100644
+--- a/app/src/ui/screens/Record.module.css
++++ b/app/src/ui/screens/Record.module.css
+@@ -1,66 +1,12 @@
+-/* Mic setup card (mockup record.html: dialog surface, max 480 px). */
+-.setup {
+-  max-width: 480px;
+-  margin: var(--space-8) auto 0;
+-  padding: var(--space-6);
+-  background: var(--color-surface);
+-  color: var(--color-text);
+-  border: 1px solid var(--color-border);
+-  border-radius: 10px;
+-}
+-
+-.setupIcon {
+-  display: block;
+-  width: 32px;
+-  height: 32px;
+-  color: var(--color-primary);
+-}
+-
+-.setupTitle {
+-  margin: var(--space-3) 0 var(--space-2);
+-  font: var(--font-heading);
+-}
+-
+-.setupText {
+-  margin: 0 0 var(--space-4);
+-}
+-
+-/* Error variant (mockup record.html (c)): banner-error edge, danger icon, numbered steps. */
+-.error {
+-  border-inline-start: 4px solid var(--color-danger);
+-}
+-
+-.error .setupIcon {
+-  color: var(--color-danger);
+-}
+-
+-.steps {
+-  margin: 0 0 var(--space-4);
+-  padding-inline-start: var(--space-6);
+-}
+-
+-.steps li {
+-  margin-block: var(--space-1);
+-}
+-
+-.actions {
++/* The h1 row (mockup record.html .rec-head): "Tune first" at its right end. */
++.head {
+   display: flex;
+-  gap: var(--space-2);
++  align-items: baseline;
++  justify-content: space-between;
++  gap: var(--space-4);
+ }
+ 
+-.primary {
+-  height: 36px;
+-  padding-inline: var(--space-3);
+-  background: var(--color-primary);
+-  color: var(--color-on-primary);
+-  font: var(--font-ui);
++.link {
++  color: var(--color-primary);
+   font-weight: 500;
+-  border: 1px solid var(--color-primary);
+-  border-radius: 6px;
+-  cursor: pointer;
+-}
+-
+-.primary[aria-disabled='true'] {
+-  opacity: 0.4;
+-  cursor: not-allowed;
+ }
+diff --git a/app/src/ui/screens/Record.tsx b/app/src/ui/screens/Record.tsx
+index cced748..b1f5c45 100644
+--- a/app/src/ui/screens/Record.tsx
++++ b/app/src/ui/screens/Record.tsx
+@@ -1,167 +1,29 @@
+-import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+-import { recordingSession } from '../../session/recording-session';
+ import { InputQualityBanner } from '../components/InputQualityBanner';
+ import { LevelMeter } from '../components/LevelMeter';
++import { MicGate } from '../components/MicGate';
+ import { MicSelect } from '../components/MicSelect';
+-import { micErrorCode, type MicErrorCode } from '../mic-error';
+ import { strings } from '../strings';
+ import styles from './Screen.module.css';
+ import recordStyles from './Record.module.css';
+ 
+-/** Marks the element that takes focus when the card or level meter replaces what had it. */
+-const FOCUS_TARGET = 'data-focus-target';
+-
+ export function Record() {
+-  const { mic, errorCode: code } = useSyncExternalStore(
+-    recordingSession.subscribe,
+-    recordingSession.getSnapshot,
+-  );
+-  const errorCode = mic === 'live' ? null : micErrorCode(code);
+-  const view = mic === 'live' ? 'live' : (errorCode ?? 'setup');
+-
+-  useEffect(() => {
+-    void recordingSession.resume();
+-  }, []);
+-
+-  // When the view swaps while focus is inside it (Allow fails, Try again succeeds), the focused
+-  // button goes and focus would fall to <body>: move it to the new card's heading or the meter.
+-  const area = useRef<HTMLDivElement>(null);
+-  const focusInside = useRef(false);
+-  const shownView = useRef(view);
+-  useLayoutEffect(() => {
+-    if (shownView.current === view) return;
+-    shownView.current = view;
+-    const active = document.activeElement;
+-    if (!focusInside.current || (active !== null && active !== document.body)) return;
+-    area.current?.querySelector<HTMLElement>(`[${FOCUS_TARGET}]`)?.focus();
+-  }, [view]);
+-
+   return (
+     <section className={styles.screen}>
+       {/* First, above the h1 (mockup order); it renders only while the mic is live. */}
+       <InputQualityBanner />
+-      <h1 className={styles.title} tabIndex={-1}>
+-        {strings['record.title']}
+-      </h1>
+-      <div
+-        ref={area}
+-        onFocus={() => (focusInside.current = true)}
+-        onBlur={(e) => {
+-          // A removed element blurs with no relatedTarget: that is the swap, not focus leaving.
+-          const to = e.relatedTarget;
+-          if (to && !e.currentTarget.contains(to)) focusInside.current = false;
+-        }}
+-      >
+-        {mic === 'live' ? (
+-          <>
+-            <MicSelect />
+-            <LevelMeter />
+-          </>
+-        ) : (
+-          <MicSetupCard requesting={mic === 'requesting'} errorCode={errorCode} />
+-        )}
++      {/* The h1 with "Tune first" at the row's right end (mockup record.html rec-head). */}
++      <div className={recordStyles.head}>
++        <h1 className={styles.title} tabIndex={-1}>
++          {strings['record.title']}
++        </h1>
++        <a className={recordStyles.link} href="#/tuner">
++          {strings['record.tuneFirst']}
++        </a>
+       </div>
+-    </section>
+-  );
+-}
+-
+-function MicIcon({ off }: { off: boolean }) {
+-  return (
+-    <svg className={recordStyles.setupIcon} viewBox="0 0 24 24" aria-hidden="true">
+-      <rect
+-        x="9"
+-        y="3"
+-        width="6"
+-        height="11"
+-        rx="3"
+-        fill="none"
+-        stroke="currentColor"
+-        strokeWidth="2"
+-      />
+-      <path
+-        d={`M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7${off ? 'M4 4l16 16' : ''}`}
+-        fill="none"
+-        stroke="currentColor"
+-        strokeWidth="2"
+-        strokeLinecap="round"
+-      />
+-    </svg>
+-  );
+-}
+-
+-/**
+- * The mic setup card, or its error variant (mockup record.html (c)): danger edge, mic-off icon,
+- * the code's heading, one sentence, numbered steps and Try again. The error heading is announced
+- * by `MicErrorAnnouncer` in the shell, so the card itself is not a live region (AD-18). While a
+- * request runs the button is `aria-disabled`, not `disabled`, so it keeps focus.
+- */
+-function MicSetupCard({
+-  requesting,
+-  errorCode,
+-}: {
+-  requesting: boolean;
+-  errorCode: MicErrorCode | null;
+-}) {
+-  if (errorCode) {
+-    const key = `record.micError.${errorCode}` as const;
+-    return (
+-      <section
+-        className={`${recordStyles.setup} ${recordStyles.error}`}
+-        aria-labelledby="mic-setup-title"
+-        data-error-code={errorCode}
+-      >
+-        <MicIcon off />
+-        <h2
+-          id="mic-setup-title"
+-          className={recordStyles.setupTitle}
+-          tabIndex={-1}
+-          data-focus-target=""
+-        >
+-          {strings[`${key}.title`]}
+-        </h2>
+-        <p className={recordStyles.setupText}>{strings[`${key}.body`]}</p>
+-        <ol className={recordStyles.steps}>
+-          <li>{strings[`${key}.step1`]}</li>
+-          <li>{strings[`${key}.step2`]}</li>
+-          <li>{strings[`${key}.step3`]}</li>
+-        </ol>
+-        <div className={recordStyles.actions}>
+-          <button
+-            type="button"
+-            className={recordStyles.primary}
+-            aria-disabled={requesting || undefined}
+-            onClick={() => {
+-              if (!requesting) void recordingSession.allowMic();
+-            }}
+-          >
+-            {strings['record.tryAgain']}
+-          </button>
+-        </div>
+-      </section>
+-    );
+-  }
+-  return (
+-    <section className={recordStyles.setup} aria-labelledby="mic-setup-title">
+-      <MicIcon off={false} />
+-      <h2
+-        id="mic-setup-title"
+-        className={recordStyles.setupTitle}
+-        tabIndex={-1}
+-        data-focus-target=""
+-      >
+-        {strings['record.micSetupTitle']}
+-      </h2>
+-      <p className={recordStyles.setupText}>{strings['record.micSetupText']}</p>
+-      <button
+-        type="button"
+-        className={recordStyles.primary}
+-        aria-disabled={requesting || undefined}
+-        onClick={() => {
+-          if (!requesting) void recordingSession.allowMic();
+-        }}
+-      >
+-        {strings['record.allowMic']}
+-      </button>
++      <MicGate>
++        <MicSelect />
++        <LevelMeter />
++      </MicGate>
+     </section>
+   );
+ }
+diff --git a/app/src/ui/screens/Tuner.module.css b/app/src/ui/screens/Tuner.module.css
+new file mode 100644
+index 0000000..4ea1cd2
+--- /dev/null
++++ b/app/src/ui/screens/Tuner.module.css
+@@ -0,0 +1,213 @@
++/* Tuner screen (US-2.1, mockup tuner.html). */
++
++/* Display panel: surface + hairline, like other panels. */
++.panel {
++  margin-block-start: var(--space-4);
++  padding: var(--space-8) var(--space-6) var(--space-6);
++  background: var(--color-surface);
++  color: var(--color-text);
++  text-align: center;
++  border: 1px solid var(--color-border);
++  border-radius: 6px;
++}
++
++.stringName {
++  margin: 0;
++  font: var(--font-display);
++}
++
++.none {
++  color: var(--color-text-muted);
++}
++
++.hint {
++  margin: var(--space-2) 0 0;
++}
++
++/* Needle track: −50 … +50 cents, max 640 px. */
++.needleWrap {
++  max-width: 640px;
++  margin: var(--space-6) auto 0;
++}
++
++.track {
++  position: relative;
++  height: 44px;
++}
++
++.line {
++  position: absolute;
++  top: 21px;
++  right: 0;
++  left: 0;
++  height: 2px;
++  background: var(--color-border);
++}
++
++.tick {
++  position: absolute;
++  top: 14px;
++  width: 2px;
++  height: 16px;
++  margin-inline-start: -1px;
++  background: var(--color-border);
++}
++
++.tick.mid {
++  top: 6px;
++  height: 32px;
++  background: var(--color-text);
++}
++
++.needle {
++  position: absolute;
++  top: 0;
++  bottom: 0;
++  width: 4px;
++  margin-inline-start: -2px;
++  background: var(--color-primary);
++  border-radius: 2px;
++  transition: left 50ms linear;
++}
++
++@media (prefers-reduced-motion: reduce) {
++  .needle {
++    transition: none;
++  }
++}
++
++.scale {
++  position: relative;
++  height: 18px;
++  font: var(--font-numeric);
++  font-size: 13px;
++  font-weight: 400;
++  color: var(--color-text-muted);
++}
++
++.scale span {
++  position: absolute;
++  transform: translateX(-50%);
++  white-space: nowrap;
++}
++
++/* Keeps its height when empty (no pitch) so the layout does not jump. */
++.readout {
++  display: flex;
++  flex-wrap: wrap;
++  gap: var(--space-3);
++  justify-content: center;
++  align-items: baseline;
++  min-height: 24px;
++  margin-block-start: var(--space-3);
++}
++
++.cents {
++  font: var(--font-numeric);
++}
++
++.direction {
++  font-weight: 600;
++}
++
++.inTune,
++.allSet {
++  display: inline-flex;
++  gap: 6px;
++  align-items: center;
++  color: var(--color-success);
++  font-weight: 600;
++}
++
++.inTuneIcon {
++  flex: none;
++  width: 18px;
++  height: 18px;
++}
++
++.allSet {
++  margin: var(--space-4) 0 0;
++}
++
++/* Six string chips: rounded.full; ticked ones fill with success and get a check badge. */
++.chips {
++  display: flex;
++  flex-wrap: wrap;
++  gap: var(--space-3);
++  justify-content: center;
++  margin: var(--space-6) 0 0;
++  padding: 0;
++  list-style: none;
++}
++
++.chip {
++  position: relative;
++  display: grid;
++  flex: none;
++  place-items: center;
++  box-sizing: border-box;
++  width: 44px;
++  height: 44px;
++  background: var(--color-surface);
++  color: var(--color-text);
++  font: var(--font-ui);
++  font-weight: 600;
++  line-height: 1;
++  border: 2px solid var(--color-border);
++  border-radius: 9999px;
++}
++
++.chip.ticked {
++  background: var(--color-success);
++  color: var(--color-surface);
++  border-color: var(--color-success);
++}
++
++.badge {
++  position: absolute;
++  top: -5px;
++  right: -5px;
++  display: grid;
++  place-items: center;
++  box-sizing: border-box;
++  width: 18px;
++  height: 18px;
++  background: var(--color-surface);
++  color: var(--color-success);
++  border: 2px solid var(--color-success);
++  border-radius: 9999px;
++}
++
++.badgeIcon {
++  width: 11px;
++  height: 11px;
++}
++
++/* Level meter + microphone select row. */
++.inputs {
++  display: flex;
++  flex-wrap: wrap;
++  gap: var(--space-4) var(--space-8);
++  align-items: flex-start;
++  margin-block-start: var(--space-6);
++}
++
++.meterBlock {
++  flex: 1 1 360px;
++  min-width: 0;
++}
++
++.micBlock {
++  flex: 0 1 300px;
++  min-width: 0;
++}
++
++.micBlock:empty {
++  display: none;
++}
++
++.doneRow {
++  margin-block-start: var(--space-6);
++  padding-block-start: var(--space-4);
++  border-block-start: 1px solid var(--color-border);
++}
+diff --git a/app/src/ui/screens/Tuner.tsx b/app/src/ui/screens/Tuner.tsx
+index aae8d90..234d77f 100644
+--- a/app/src/ui/screens/Tuner.tsx
++++ b/app/src/ui/screens/Tuner.tsx
+@@ -1,10 +1,233 @@
++import { useEffect, useState, useSyncExternalStore } from 'react';
++import type { StringNo } from '../../model/types';
++import {
++  recordingSession,
++  TUNER_POLL_MS,
++  type TunerDisplay,
++} from '../../session/recording-session';
++import { announce } from '../a11y/announcer';
++import buttons from '../components/buttons.module.css';
++import { InputQualityBanner } from '../components/InputQualityBanner';
++import { LevelMeter } from '../components/LevelMeter';
++import { MicGate } from '../components/MicGate';
++import { MicSelect } from '../components/MicSelect';
+ import { strings } from '../strings';
+ import styles from './Screen.module.css';
++import tunerStyles from './Tuner.module.css';
+ 
++/** Chips left to right: low E to high E. */
++const CHIPS: readonly StringNo[] = [6, 5, 4, 3, 2, 1];
++const TICKS = [-50, -25, 0, 25, 50] as const;
++const NO_PITCH: TunerDisplay = { reading: null, inTune: false };
++/**
++ * "All six strings in tune" is announced this long after the sixth string's own "… in tune",
++ * so the shared polite region does not replace one with the other before it is spoken.
++ */
++const ALL_SIX_DELAY_MS = 1000;
++
++/** Needle position on the track, 0–100 %, clamped to −50…+50 cents. */
++const needlePercent = (cents: number) => Math.min(50, Math.max(-50, cents)) + 50;
++
++function tickLabel(cents: number): string {
++  return cents < 0 ? `−${-cents}` : cents > 0 ? `+${cents}` : '0';
++}
++
++/** Whether two displays render the same (cents to 0.1, the needle's resolution). */
++function sameDisplay(a: TunerDisplay, b: TunerDisplay): boolean {
++  if (a.inTune !== b.inTune) return false;
++  if (a.reading === null || b.reading === null) return a.reading === b.reading;
++  return (
++    a.reading.string === b.reading.string &&
++    a.reading.cents.toFixed(1) === b.reading.cents.toFixed(1)
++  );
++}
++
++function CheckIcon({ className }: { className: string | undefined }) {
++  return (
++    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
++      <path
++        d="M5 12.5l4.5 4.5L19 7"
++        fill="none"
++        stroke="currentColor"
++        strokeWidth="2.4"
++        strokeLinecap="round"
++        strokeLinejoin="round"
++      />
++    </svg>
++  );
++}
++
++/**
++ * The Tuner screen (US-2.1, CAP-4; mockup tuner.html): the string name, a −50…+50 cents
++ * needle, the cents readout with the direction or In tune, six string chips ticked for the page
++ * session, then the level meter and the microphone select, and "Done — go to Record". While the
++ * mic is not live the setup card or its error variant takes the place of all of it.
++ */
+ export function Tuner() {
+   return (
+     <section className={styles.screen}>
+-      <h1 className={styles.title}>{strings['tuner.title']}</h1>
++      {/* First, above the h1 (mockup order); it renders only while the mic is live. */}
++      <InputQualityBanner />
++      <h1 className={styles.title} tabIndex={-1}>
++        {strings['tuner.title']}
++      </h1>
++      <MicGate>
++        <TunerPanel />
++        <div className={tunerStyles.inputs}>
++          <div className={tunerStyles.meterBlock}>
++            <LevelMeter />
++          </div>
++          <div className={tunerStyles.micBlock}>
++            <MicSelect />
++          </div>
++        </div>
++        <div className={tunerStyles.doneRow}>
++          <a className={buttons.primary} href="#/record">
++            {strings['tuner.done']}
++          </a>
++        </div>
++      </MicGate>
+     </section>
+   );
+ }
++
++/**
++ * The tuner display. Mounted only while the mic is live (inside `MicGate`), and polls
++ * `recordingSession.readTuner` every `TUNER_POLL_MS` while mounted; the store notifies only when
++ * a string ticks. Nothing here is a live region (AD-18): a string entering In tune and the sixth
++ * tick are announced politely through the shared announcer.
++ */
++function TunerPanel() {
++  const { tunedStrings } = useSyncExternalStore(
++    recordingSession.subscribe,
++    recordingSession.getSnapshot,
++  );
++  const [display, setDisplay] = useState<TunerDisplay>(NO_PITCH);
++
++  useEffect(() => {
++    let inTune = false;
++    let allSixAt: number | null = null;
++    const poll = () => {
++      const now = performance.now();
++      const before = recordingSession.getSnapshot().tunedStrings.length;
++      const next = recordingSession.readTuner(now) ?? NO_PITCH;
++      if (next.inTune && !inTune && next.reading) {
++        announce(strings['tuner.stringInTune'](next.reading.string));
++      }
++      inTune = next.inTune;
++      if (
++        before < CHIPS.length &&
++        recordingSession.getSnapshot().tunedStrings.length >= CHIPS.length
++      ) {
++        allSixAt = now + ALL_SIX_DELAY_MS;
++      }
++      if (allSixAt !== null && now >= allSixAt) {
++        allSixAt = null;
++        announce(strings['tuner.allInTune']);
++      }
++      setDisplay((shown) => (sameDisplay(shown, next) ? shown : next));
++    };
++    // Read at once: after a gap the store restarts the machine before anything is shown.
++    poll();
++    const id = setInterval(poll, TUNER_POLL_MS);
++    return () => clearInterval(id);
++  }, []);
++
++  const { reading, inTune } = display;
++  const rounded = reading ? Math.round(reading.cents) : 0;
++  const allSix = CHIPS.every((s) => tunedStrings.includes(s));
++
++  return (
++    <div className={tunerStyles.panel}>
++      {reading ? (
++        <p className={tunerStyles.stringName}>{strings['tuner.stringLetter'](reading.string)}</p>
++      ) : (
++        <>
++          <p className={`${tunerStyles.stringName} ${tunerStyles.none}`} aria-hidden="true">
++            {strings['tuner.noPitch']}
++          </p>
++          <p className={tunerStyles.hint}>{strings['tuner.noPitchHint']}</p>
++        </>
++      )}
++      <div className={tunerStyles.needleWrap}>
++        <div
++          className={tunerStyles.track}
++          role="img"
++          aria-label={strings['tuner.needleLabel'](reading ? reading.cents : null)}
++          data-testid="tuner-needle"
++        >
++          <span className={tunerStyles.line} />
++          {TICKS.map((c) => (
++            <span
++              key={c}
++              className={`${tunerStyles.tick} ${c === 0 ? tunerStyles.mid : ''}`}
++              style={{ left: `${needlePercent(c)}%` }}
++            />
++          ))}
++          {reading && (
++            <span
++              className={tunerStyles.needle}
++              style={{ left: `${needlePercent(reading.cents).toFixed(2)}%` }}
++              data-testid="tuner-needle-mark"
++            />
++          )}
++        </div>
++        <div className={tunerStyles.scale} aria-hidden="true">
++          {TICKS.map((c) => (
++            <span key={c} style={{ left: `${needlePercent(c)}%` }}>
++              {tickLabel(c)}
++            </span>
++          ))}
++        </div>
++      </div>
++      <div
++        className={tunerStyles.readout}
++        data-testid="tuner-readout"
++        data-string={reading?.string}
++        data-cents={reading?.cents.toFixed(1)}
++      >
++        {reading && (
++          <>
++            <span className={tunerStyles.cents}>{strings['tuner.cents'](reading.cents)}</span>
++            {inTune ? (
++              <span className={tunerStyles.inTune} data-testid="tuner-in-tune">
++                <CheckIcon className={tunerStyles.inTuneIcon} />
++                {strings['tuner.inTune']}
++              </span>
++            ) : rounded > 0 ? (
++              <span className={tunerStyles.direction}>{strings['tuner.sharp']}</span>
++            ) : rounded < 0 ? (
++              <span className={tunerStyles.direction}>{strings['tuner.flat']}</span>
++            ) : null}
++          </>
++        )}
++      </div>
++      <ul className={tunerStyles.chips} aria-label={strings['tuner.chipsLabel']}>
++        {CHIPS.map((s) => {
++          const ticked = tunedStrings.includes(s);
++          return (
++            <li
++              key={s}
++              className={`${tunerStyles.chip} ${ticked ? tunerStyles.ticked : ''}`}
++              aria-label={strings['tuner.chipLabel'](s, ticked)}
++              data-ticked={ticked || undefined}
++            >
++              <span aria-hidden="true">{strings['tuner.stringLetter'](s)}</span>
++              {ticked && (
++                <span className={tunerStyles.badge} aria-hidden="true">
++                  <CheckIcon className={tunerStyles.badgeIcon} />
++                </span>
++              )}
++            </li>
++          );
++        })}
++      </ul>
++      {allSix && (
++        <p className={tunerStyles.allSet}>
++          <CheckIcon className={tunerStyles.inTuneIcon} />
++          {strings['tuner.allInTune']}
++        </p>
++      )}
++    </div>
++  );
++}
+diff --git a/app/src/ui/strings.ts b/app/src/ui/strings.ts
+index 32bc83c..58a7a70 100644
+--- a/app/src/ui/strings.ts
++++ b/app/src/ui/strings.ts
+@@ -1,3 +1,21 @@
++import type { StringNo } from '../model/types';
++
++/** The tuner's spoken string names, `StringNo` 1 = high e … 6 = low E. */
++const STRING_NAMES: Readonly<Record<StringNo, string>> = {
++  1: 'High E',
++  2: 'B',
++  3: 'G',
++  4: 'D',
++  5: 'A',
++  6: 'Low E',
++};
++
++/** Signed, rounded cents with U+2212 for minus: "+12", "−1", "0". */
++function signedCents(cents: number): string {
++  const n = Math.round(cents);
++  return n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0';
++}
++
+ /**
+  * Every user-visible string (spine AD-12). One flat object; keys are
+  * `<screen|global>.<camelCase>`. Parameterised strings are typed functions.
+@@ -35,6 +53,7 @@ export const strings = {
+   'record.micSetupText': 'Audio is analysed on this computer and never uploaded.',
+   'record.allowMic': 'Allow microphone',
+   'record.tryAgain': 'Try again',
++  'record.tuneFirst': 'Tune first',
+   'record.micError.mic-denied.title': 'Microphone access is blocked',
+   'record.micError.mic-denied.body':
+     'Chrome is blocking the microphone for this site. To allow it:',
+@@ -69,6 +88,27 @@ export const strings = {
+   'tab.title': 'Tab',
+   'library.title': 'Library',
+   'tuner.title': 'Tuner',
++  /** The string name in display type; both E strings show "E". */
++  'tuner.stringLetter': (string: StringNo) =>
++    string === 1 || string === 6 ? 'E' : STRING_NAMES[string],
++  'tuner.noPitch': '—',
++  'tuner.noPitchHint': 'Play a single open string',
++  /** The cents readout: "+12 cents", "−1 cents", "0 cents". */
++  'tuner.cents': (cents: number) => `${signedCents(cents)} cents`,
++  'tuner.sharp': '♯ Sharp — tune down',
++  'tuner.flat': '♭ Flat — tune up',
++  'tuner.inTune': 'In tune',
++  /** The needle's accessible name; `cents` null is no pitch. */
++  'tuner.needleLabel': (cents: number | null) =>
++    `Tuning needle, −50 to +50 cents: ${cents === null ? 'No pitch detected' : `${signedCents(cents)} cents`}`,
++  'tuner.chipsLabel': 'Strings tuned this session',
++  /** A chip's accessible name: "Low E string, in tune", "A string, not yet tuned". */
++  'tuner.chipLabel': (string: StringNo, ticked: boolean) =>
++    `${STRING_NAMES[string]} string, ${ticked ? 'in tune' : 'not yet tuned'}`,
++  /** Announced when a string enters In tune: "Low E string in tune". */
++  'tuner.stringInTune': (string: StringNo) => `${STRING_NAMES[string]} string in tune`,
++  'tuner.allInTune': 'All six strings in tune',
++  'tuner.done': 'Done — go to Record',
+   'settings.title': 'Settings',
+   'settings.about': 'About',
+   'settings.engineVersion': (version: string) => `Engine v${version}`,
+diff --git a/app/tests/e2e/tuner.dev.spec.ts b/app/tests/e2e/tuner.dev.spec.ts
+new file mode 100644
+index 0000000..437815c
+--- /dev/null
++++ b/app/tests/e2e/tuner.dev.spec.ts
+@@ -0,0 +1,209 @@
++import { expect, test, type Page } from '@playwright/test';
++import { countGetUserMedia, expectNoSeriousAxe, gumCalls } from './mic-helpers';
++
++// Runs in the `dev` project only: the fake mic (US-0.4) plays open_strings as the microphone,
++// six plucks low E → high E, each 900 ms, 1 s apart, from when the stream opens.
++
++const SETUP_TITLE = 'TabCreator needs your microphone';
++/**
++ * In tune needs 500 ms of readings. The page timestamps DOM changes, which trail the polls by a
++ * render each, so allow some jitter between the two ends.
++ */
++const IN_TUNE_MS = 500;
++const JITTER_MS = 40;
++
++const CHIP_NAMES = ['Low E', 'A', 'D', 'G', 'B', 'High E'];
++
++function collectErrors(page: Page): string[] {
++  const errors: string[] = [];
++  page.on('console', (msg) => {
++    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
++  });
++  page.on('pageerror', (err) => errors.push(err.message));
++  return errors;
++}
++
++const setupCard = (page: Page) => page.getByRole('region', { name: SETUP_TITLE });
++const meter = (page: Page) => page.getByRole('meter', { name: 'Input level' });
++const needle = (page: Page) => page.getByRole('img', { name: /^Tuning needle/ });
++const h1 = (page: Page) => page.getByRole('heading', { level: 1 });
++
++interface Entry {
++  t: number;
++  string: string | null;
++  cents: number | null;
++  inTune: boolean;
++}
++
++declare global {
++  interface Window {
++    __tunerLog?: Entry[];
++  }
++}
++
++/** Logs every change of the tuner readout with a page timestamp (a MutationObserver). */
++async function watchReadout(page: Page): Promise<void> {
++  await page.evaluate(() => {
++    const log: Entry[] = [];
++    window.__tunerLog = log;
++    const record = () => {
++      const readout = document.querySelector<HTMLElement>('[data-testid="tuner-readout"]');
++      if (!readout) return;
++      const entry = {
++        t: performance.now(),
++        string: readout.dataset.string ?? null,
++        cents: readout.dataset.cents === undefined ? null : Number(readout.dataset.cents),
++        inTune: readout.querySelector('[data-testid="tuner-in-tune"]') !== null,
++      };
++      const last = log[log.length - 1];
++      if (
++        last &&
++        last.string === entry.string &&
++        last.cents === entry.cents &&
++        last.inTune === entry.inTune
++      )
++        return;
++      log.push(entry);
++    };
++    new MutationObserver(record).observe(document.body, {
++      subtree: true,
++      childList: true,
++      attributes: true,
++      characterData: true,
++    });
++  });
++}
++
++test('open_strings on the Tuner ticks all six chips, In tune only after 500 ms in range', async ({
++  page,
++}) => {
++  const errors = collectErrors(page);
++  await countGetUserMedia(page);
++
++  // First visit: the setup card replaces the tuner, and nothing is requested before Allow.
++  await page.goto('./?fakeMic=open_strings#/tuner');
++  await expect(h1(page)).toHaveText('Tuner');
++  await expect(setupCard(page)).toBeVisible();
++  await expect(needle(page)).toHaveCount(0);
++  await expect(page.getByRole('link', { name: 'Done — go to Record' })).toHaveCount(0);
++  await page.waitForTimeout(200);
++  expect(await gumCalls(page)).toBe(0);
++  await expectNoSeriousAxe(page);
++
++  await watchReadout(page);
++  await page.getByRole('button', { name: 'Allow microphone' }).click();
++  await expect(needle(page)).toBeVisible();
++  await expect(meter(page)).toBeVisible();
++  expect(await gumCalls(page)).toBe(1);
++  for (const name of CHIP_NAMES) {
++    await expect(page.getByRole('listitem', { name: `${name} string, not yet tuned` })).toHaveCount(
++      1,
++    );
++  }
++  // Axe while live runs in the Tune first test: here it would delay renders during the plucks.
++
++  // All six tick as the plucks play (about 6.2 s of audio).
++  for (const name of CHIP_NAMES) {
++    await expect(page.getByRole('listitem', { name: `${name} string, in tune` })).toHaveCount(1, {
++      timeout: 15_000,
++    });
++  }
++  await expect(page.getByText('All six strings in tune', { exact: true })).toBeVisible();
++  // Then the input goes silent: after 3 s the no-pitch state, ticks kept.
++  await expect(page.getByText('Play a single open string')).toBeVisible({ timeout: 10_000 });
++  await expect(needle(page)).toHaveAccessibleName(
++    'Tuning needle, −50 to +50 cents: No pitch detected',
++  );
++  await expect(page.getByTestId('tuner-needle-mark')).toHaveCount(0);
++  await expect(page.locator('li[data-ticked]')).toHaveCount(6);
++  await expectNoSeriousAxe(page);
++
++  // In tune appeared only after 500 ms of in-range readings on the same string.
++  const log = await page.evaluate(() => window.__tunerLog ?? []);
++  const shown = new Set<string>();
++  for (let i = 0; i < log.length; i++) {
++    const entry = log[i]!;
++    if (!entry.inTune || log[i - 1]?.inTune) continue;
++    // The run of in-range readings on this string leading up to it.
++    let start = i;
++    while (start > 0) {
++      const prev = log[start - 1]!;
++      if (prev.string !== entry.string || prev.cents === null || Math.abs(prev.cents) > 3.05) break;
++      start--;
++    }
++    expect(entry.t - log[start]!.t, `In tune on string ${entry.string}`).toBeGreaterThanOrEqual(
++      IN_TUNE_MS - JITTER_MS,
++    );
++    shown.add(entry.string!);
++  }
++  expect([...shown].sort()).toEqual(['1', '2', '3', '4', '5', '6']);
++
++  expect(errors).toEqual([]);
++});
++
++test('a denied request shows the denied card on the Tuner; Try again recovers', async ({
++  page,
++}) => {
++  const errors = collectErrors(page);
++  await page.goto('./?fakeMic=open_strings#/tuner');
++  await expect(setupCard(page)).toBeVisible();
++  await page.evaluate(() => window.__fakeMic!.failNext('NotAllowedError'));
++  await page.getByRole('button', { name: 'Allow microphone' }).click();
++  const card = page.getByRole('region', { name: 'Microphone access is blocked' });
++  await expect(card).toBeVisible();
++  await expect(card.getByRole('heading', { name: 'Microphone access is blocked' })).toBeFocused();
++  await expectNoSeriousAxe(page);
++  await card.getByRole('button', { name: 'Try again' }).click();
++  await expect(needle(page)).toBeVisible();
++  await expect(card).toHaveCount(0);
++  // Focus followed the swap to the level meter.
++  await expect(meter(page)).toBeFocused();
++  expect(errors).toEqual([]);
++});
++
++test('Tune first opens the Tuner; Done — go to Record returns with the mic still live', async ({
++  page,
++}) => {
++  const errors = collectErrors(page);
++  await countGetUserMedia(page);
++  await page.goto('./?fakeMic=open_strings#/record');
++  await page.getByRole('button', { name: 'Allow microphone' }).click();
++  await expect(meter(page)).toBeVisible();
++
++  const tuneFirst = page.getByRole('link', { name: 'Tune first' });
++  await expect(tuneFirst).toHaveAttribute('href', '#/tuner');
++  await tuneFirst.click();
++  await expect(page).toHaveURL(/#\/tuner$/);
++  await expect(h1(page)).toHaveText('Tuner');
++  await expect(needle(page)).toBeVisible();
++  // Axe on the live Tuner, while the fixture plays.
++  await expectNoSeriousAxe(page);
++
++  const done = page.getByRole('link', { name: 'Done — go to Record' });
++  await expect(done).toHaveAttribute('href', '#/record');
++  await done.click();
++  await expect(page).toHaveURL(/#\/record$/);
++  await expect(h1(page)).toHaveText('Record');
++  await expect(meter(page)).toBeVisible();
++  await expect(setupCard(page)).toHaveCount(0);
++  expect(await gumCalls(page)).toBe(1);
++  expect(errors).toEqual([]);
++});
++
++test('ticks are kept when leaving the Tuner and coming back', async ({ page }) => {
++  const errors = collectErrors(page);
++  await page.goto('./?fakeMic=open_strings#/tuner');
++  await page.getByRole('button', { name: 'Allow microphone' }).click();
++  const ticked = page.locator('li[data-ticked]');
++  await expect(ticked.first()).toBeVisible({ timeout: 10_000 });
++  const names = await ticked.evaluateAll((items) => items.map((li) => li.ariaLabel));
++  const nav = page.getByRole('navigation');
++  await nav.getByRole('link', { name: 'Library' }).click();
++  await expect(h1(page)).toHaveText('Library');
++  await nav.getByRole('link', { name: 'Tuner' }).click();
++  await expect(needle(page)).toBeVisible();
++  for (const name of names) {
++    await expect(page.getByRole('listitem', { name: name! })).toHaveAttribute('data-ticked');
++  }
++  expect(errors).toEqual([]);
++});
+diff --git a/app/tests/unit/recording-session.test.ts b/app/tests/unit/recording-session.test.ts
+index 4881cc0..1d6318e 100644
+--- a/app/tests/unit/recording-session.test.ts
++++ b/app/tests/unit/recording-session.test.ts
+@@ -1,9 +1,13 @@
+ import { describe, expect, it, vi } from 'vitest';
+ import { AppError } from '../../src/model/errors';
++import { OPEN_STRING_HZ } from '../../src/audio/tuner';
++import type { StringNo } from '../../src/model/types';
+ import { createRecordingSession, type RecordingDeps } from '../../src/session/recording-session';
+ 
+ const stream = {} as MediaStream;
+-const analyser = {} as AnalyserNode;
++const RATE = 48_000;
++/** The tuner reads only the analyser's context sample rate. */
++const analyser = { context: { sampleRate: RATE } } as unknown as AnalyserNode;
+ /** The frame the fake input returns; tests fill it per reading. */
+ let frame = new Float32Array(4096);
+ const SILENT = { peakDb: -Infinity, rmsDb: -Infinity };
+@@ -16,6 +20,7 @@ const IDLE = {
+   activeDeviceId: null,
+   inputQualityPoor: false,
+   inputQualityDismissed: false,
++  tunedStrings: [],
+ };
+ 
+ /** Lets pending promise callbacks and timers at 0 ms run. */
+@@ -26,6 +31,22 @@ function level(amplitude: number) {
+   frame = new Float32Array(4096).fill(amplitude);
+ }
+ 
++/** A sine frame at `cents` from open string `s` (−12 dBFS peak). */
++function tone(s: StringNo, cents = 0) {
++  const hz = OPEN_STRING_HZ[s] * 2 ** (cents / 1200);
++  frame = new Float32Array(4096).map((_, i) => 0.25 * Math.sin((2 * Math.PI * hz * i) / RATE));
++}
++
++/** Reads the tuner every 50 ms from `from` up to and including `to`; returns the last reading. */
++function tuneEvery(
++  session: { readTuner(now: number): unknown },
++  from: number,
++  to: number,
++): unknown {
++  for (let t = from; t < to; t += 50) session.readTuner(t);
++  return session.readTuner(to);
++}
++
+ /** Reads levels every 16 ms from `from` up to and including `to`, as the meter's frames do. */
+ function readEvery(session: { readLevels(now: number): unknown }, from: number, to: number) {
+   for (let t = from; t < to; t += 16) session.readLevels(t);
+@@ -852,6 +873,112 @@ describe('recording session', () => {
+     });
+   });
+ 
++  describe('tuner', () => {
++    it('gives no reading when not live, and never reads the input', async () => {
++      const { session, deps, input } = setup({
++        requestMic: vi.fn(() => Promise.reject(new AppError('mic-denied', 'no'))),
++      });
++      expect(session.readTuner(0)).toBeNull();
++      await session.allowMic();
++      expect(session.getSnapshot().mic).toBe('error');
++      expect(session.readTuner(50)).toBeNull();
++      expect(input.readFrame).not.toHaveBeenCalled();
++      expect(deps.openInput).not.toHaveBeenCalled();
++    });
++
++    it('reads the string and cents of the live frame at the analyser rate', async () => {
++      const { session } = setup();
++      await session.allowMic();
++      tone(5, 12);
++      const shown = session.readTuner(0) as { reading: { string: number; cents: number } };
++      expect(shown.reading.string).toBe(5);
++      expect(shown.reading.cents).toBeCloseTo(12, 0);
++    });
++
++    it('silence from the start is no pitch', async () => {
++      const { session } = setup();
++      await session.allowMic();
++      expect(tuneEvery(session, 0, 1000)).toEqual({ reading: null, inTune: false });
++    });
++
++    it('ticks a string at 500 ms In tune, notifying once; ticks persist and grow', async () => {
++      const { session, listener } = setup();
++      await session.allowMic();
++      listener.mockClear();
++      tone(6);
++      expect(tuneEvery(session, 0, 450)).toMatchObject({ inTune: false });
++      expect(session.getSnapshot().tunedStrings).toEqual([]);
++      expect(session.readTuner(500)).toMatchObject({ inTune: true });
++      expect(session.getSnapshot().tunedStrings).toEqual([6]);
++      expect(listener).toHaveBeenCalledTimes(1);
++      // Staying In tune, or re-tuning a ticked string, does not notify again.
++      tuneEvery(session, 550, 2000);
++      expect(listener).toHaveBeenCalledTimes(1);
++      tone(5);
++      tuneEvery(session, 2050, 3000);
++      expect(session.getSnapshot().tunedStrings).toEqual([6, 5]);
++      expect(listener).toHaveBeenCalledTimes(2);
++    });
++
++    it('never notifies per poll', async () => {
++      const { session, listener } = setup();
++      await session.allowMic();
++      listener.mockClear();
++      tone(4, 20);
++      tuneEvery(session, 0, 3000);
++      level(0);
++      tuneEvery(session, 3050, 8000);
++      expect(listener).not.toHaveBeenCalled();
++    });
++
++    it('a gap of more than 500 ms between reads restarts the machine', async () => {
++      const { session } = setup();
++      await session.allowMic();
++      tone(3, 20);
++      tuneEvery(session, 0, 400);
++      // Silence after the gap would hold the reading; a restarted machine has none to hold.
++      level(0);
++      expect(session.readTuner(901)).toEqual({ reading: null, inTune: false });
++      // In tune needs 500 ms of reads after the gap, not counting time before it.
++      tone(3);
++      tuneEvery(session, 950, 1300);
++      expect(session.readTuner(2000)).toMatchObject({ reading: { string: 3 }, inTune: false });
++      expect(session.getSnapshot().tunedStrings).toEqual([]);
++    });
++
++    it('a gap of exactly 500 ms keeps the timing', async () => {
++      const { session } = setup();
++      await session.allowMic();
++      tone(2);
++      session.readTuner(0);
++      expect(session.readTuner(500)).toMatchObject({ inTune: true });
++    });
++
++    it('keeps the ticks across mic transitions and restarts the machine', async () => {
++      const { session, endTrack } = setup();
++      await session.allowMic();
++      tone(1);
++      tuneEvery(session, 0, 500);
++      expect(session.getSnapshot().tunedStrings).toEqual([1]);
++      await endTrack();
++      expect(session.getSnapshot()).toMatchObject({ mic: 'error', tunedStrings: [1] });
++      await session.allowMic();
++      expect(session.getSnapshot()).toMatchObject({ mic: 'live', tunedStrings: [1] });
++      // A fresh machine: the first read after going live is not yet In tune.
++      expect(session.readTuner(550)).toMatchObject({ inTune: false });
++    });
++
++    it('never saves the ticks to prefs', async () => {
++      const { session, deps } = setup();
++      await session.allowMic();
++      vi.mocked(deps.updatePrefs).mockClear();
++      tone(6);
++      tuneEvery(session, 0, 600);
++      expect(session.getSnapshot().tunedStrings).toEqual([6]);
++      expect(deps.updatePrefs).not.toHaveBeenCalled();
++    });
++  });
++
+   it('stops notifying after unsubscribe', async () => {
+     const { session } = setup();
+     const listener = vi.fn();
+diff --git a/app/tests/unit/tuner-screen.test.tsx b/app/tests/unit/tuner-screen.test.tsx
+new file mode 100644
+index 0000000..437b4c9
+--- /dev/null
++++ b/app/tests/unit/tuner-screen.test.tsx
+@@ -0,0 +1,68 @@
++import { cleanup, render, screen } from '@testing-library/react';
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
++import type { StringNo } from '../../src/model/types';
++import { recordingSession, type RecordingSnapshot } from '../../src/session/recording-session';
++import { Tuner } from '../../src/ui/screens/Tuner';
++
++// The Tuner's rendering of one reading (plan I/O matrix: off by 12, flat, beyond range), with
++// the store stubbed live and `readTuner` returning a fixed reading.
++
++const LIVE: RecordingSnapshot = {
++  mic: 'live',
++  levelWarning: null,
++  devices: [],
++  activeDeviceId: null,
++  inputQualityPoor: false,
++  inputQualityDismissed: false,
++  tunedStrings: [],
++};
++
++function renderReading(string: StringNo, cents: number) {
++  vi.spyOn(recordingSession, 'readTuner').mockReturnValue({
++    reading: { string, cents },
++    inTune: false,
++  });
++  render(<Tuner />);
++}
++
++const readout = () => screen.getByTestId('tuner-readout');
++/** The needle's left offset, in % of the track. */
++const needleLeft = () => parseFloat(screen.getByTestId('tuner-needle-mark').style.left);
++
++describe('Tuner reading display', () => {
++  beforeEach(() => {
++    vi.spyOn(recordingSession, 'getSnapshot').mockReturnValue(LIVE);
++    vi.spyOn(recordingSession, 'resume').mockResolvedValue();
++    vi.spyOn(recordingSession, 'readLevels').mockReturnValue({
++      peakDb: -Infinity,
++      rmsDb: -Infinity,
++    });
++  });
++  afterEach(() => {
++    cleanup();
++    vi.restoreAllMocks();
++  });
++
++  it('off by 12 cents: "+12 cents", sharp, needle right of centre at 62 %', () => {
++    renderReading(5, 12);
++    expect(screen.getByText('A', { selector: 'p' })).toBeTruthy();
++    expect(readout().textContent).toBe('+12 cents♯ Sharp — tune down');
++    expect(needleLeft()).toBeCloseTo(62, 6);
++    expect(screen.getByRole('img', { name: /^Tuning needle/ }).getAttribute('aria-label')).toBe(
++      'Tuning needle, −50 to +50 cents: +12 cents',
++    );
++  });
++
++  it('flat: "−7 cents" with U+2212 and "♭ Flat — tune up"', () => {
++    renderReading(4, -7);
++    expect(readout().textContent).toBe('−7 cents♭ Flat — tune up');
++    expect(screen.queryByText('♯ Sharp — tune down')).toBeNull();
++    expect(needleLeft()).toBeCloseTo(43, 6);
++  });
++
++  it('beyond range: +80 cents clamps the needle to the +50 end; the readout says "+80 cents"', () => {
++    renderReading(3, 80);
++    expect(readout().textContent).toBe('+80 cents♯ Sharp — tune down');
++    expect(needleLeft()).toBe(100);
++  });
++});

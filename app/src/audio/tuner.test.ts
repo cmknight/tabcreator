@@ -2,18 +2,25 @@
 import { describe, expect, it } from 'vitest';
 import type { StringNo } from '../model/types';
 import {
+  INITIAL_TUNER_STATE,
+  IN_TUNE_CENTS,
+  IN_TUNE_MS,
   MAX_HZ,
   MEDIAN_SIZE,
   MIN_HZ,
   OPEN_STRING_HZ,
+  NO_PITCH_HOLD_MS,
   SILENCE_DBFS,
+  TUNER_POLL_MS,
   TUNER_WINDOW,
   YIN_THRESHOLD,
   detectPitch,
   median,
   nearestString,
+  nextTuner,
   pushEstimate,
   rmsDbfs,
+  type TunerState,
 } from './tuner';
 
 const STRINGS: StringNo[] = [1, 2, 3, 4, 5, 6];
@@ -213,5 +220,197 @@ describe('nearestString', () => {
   it('maps out-of-range pitches to the outer strings', () => {
     expect(nearestString(70).string).toBe(6);
     expect(nearestString(400).string).toBe(1);
+  });
+});
+
+describe('tuner machine', () => {
+  /** The pitch `cents` from open string `s`. */
+  const at = (s: StringNo, cents: number) => OPEN_STRING_HZ[s] * 2 ** (cents / 1200);
+
+  /** Feeds `hz` every poll from `from` up to and including `to`; returns the last state. */
+  function feed(state: TunerState, hz: number | null, from: number, to: number): TunerState {
+    for (let t = from; t <= to; t += TUNER_POLL_MS) state = nextTuner(state, hz, t);
+    return state;
+  }
+
+  it('has the timing constants of US-2.1', () => {
+    expect([IN_TUNE_CENTS, IN_TUNE_MS, NO_PITCH_HOLD_MS, TUNER_POLL_MS]).toEqual([
+      3, 500, 3000, 50,
+    ]);
+    expect(INITIAL_TUNER_STATE.reading).toBeNull();
+    expect(INITIAL_TUNER_STATE.inTune).toBe(false);
+  });
+
+  it('reads the nearest string of the median of the last five estimates', () => {
+    let s = INITIAL_TUNER_STATE;
+    for (const c of [10, 12, 40, 11, 13]) s = nextTuner(s, at(5, c), 0);
+    expect(s.history).toHaveLength(MEDIAN_SIZE);
+    expect(s.reading!.string).toBe(5);
+    expect(s.reading!.cents).toBeCloseTo(12, 6);
+    expect(s.inTune).toBe(false);
+  });
+
+  it('a steady in-tune tone: not In tune at 499 ms, In tune at 500 ms', () => {
+    let s = nextTuner(INITIAL_TUNER_STATE, at(5, 0), 1000);
+    s = nextTuner(s, at(5, 0), 1499);
+    expect(s.inTune).toBe(false);
+    s = nextTuner(s, at(5, 0), 1500);
+    expect(s.inTune).toBe(true);
+    expect(s.reading!.string).toBe(5);
+  });
+
+  it('±3 cents counts as in range; beyond does not', () => {
+    for (const c of [2.9999, -2.9999]) {
+      const s = feed(INITIAL_TUNER_STATE, at(4, c), 0, 500);
+      expect(s.inTune).toBe(true);
+    }
+    for (const c of [3.2, -3.2, 12]) {
+      const s = feed(INITIAL_TUNER_STATE, at(4, c), 0, 2000);
+      expect(s.inTune).toBe(false);
+      expect(s.reading!.cents).toBeCloseTo(c, 6);
+    }
+  });
+
+  it('jitter across 3 cents clears In tune and restarts the timer', () => {
+    let s = feed(INITIAL_TUNER_STATE, at(3, 2), 0, 600);
+    expect(s.inTune).toBe(true);
+    // Sharp estimates move the median out of range on the third one.
+    let t = 650;
+    while (Math.abs(s.reading!.cents) <= IN_TUNE_CENTS) {
+      s = nextTuner(s, at(3, 4), t);
+      if (Math.abs(s.reading!.cents) <= IN_TUNE_CENTS) expect(s.inTune).toBe(true);
+      t += TUNER_POLL_MS;
+    }
+    expect(s.reading!.cents).toBeCloseTo(4, 6);
+    expect(s.inTune).toBe(false);
+    // Back in range: a full 500 ms again from the first in-range reading.
+    let back = -1;
+    while (back < 0) {
+      s = nextTuner(s, at(3, 0), t);
+      if (Math.abs(s.reading!.cents) <= IN_TUNE_CENTS) back = t;
+      t += TUNER_POLL_MS;
+    }
+    s = nextTuner(s, at(3, 0), back + IN_TUNE_MS - 1);
+    expect(s.inTune).toBe(false);
+    s = nextTuner(s, at(3, 0), back + IN_TUNE_MS);
+    expect(s.inTune).toBe(true);
+  });
+
+  it('a dropout keeps the last reading but clears In tune, the history and the timer', () => {
+    let s = feed(INITIAL_TUNER_STATE, at(2, 1), 0, 600);
+    expect(s.inTune).toBe(true);
+    const shown = s.reading;
+    s = nextTuner(s, null, 650);
+    expect(s.reading).toEqual(shown);
+    expect(s.inTune).toBe(false);
+    expect(s.history).toEqual([]);
+    // Pitch back at 700: the timer starts there.
+    s = nextTuner(s, at(2, 1), 700);
+    s = nextTuner(s, at(2, 1), 1199);
+    expect(s.inTune).toBe(false);
+    s = nextTuner(s, at(2, 1), 1200);
+    expect(s.inTune).toBe(true);
+  });
+
+  it('holds the last reading for under 3 s with no pitch, then shows no pitch', () => {
+    let s = feed(INITIAL_TUNER_STATE, at(6, -7), 0, 200); // last pitch at 200
+    s = feed(s, null, 250, 200 + NO_PITCH_HOLD_MS - 50);
+    s = nextTuner(s, null, 200 + NO_PITCH_HOLD_MS - 1);
+    expect(s.reading!.string).toBe(6);
+    expect(s.reading!.cents).toBeCloseTo(-7, 6);
+    s = nextTuner(s, null, 200 + NO_PITCH_HOLD_MS);
+    expect(s.reading).toBeNull();
+    expect(s.inTune).toBe(false);
+  });
+
+  it('no pitch from the start is the no-pitch state', () => {
+    const s = feed(INITIAL_TUNER_STATE, null, 0, 5000);
+    expect(s.reading).toBeNull();
+    expect(s.inTune).toBe(false);
+  });
+
+  it('a string change restarts the timer', () => {
+    let s = feed(INITIAL_TUNER_STATE, at(5, 0), 0, 400);
+    expect(s.inTune).toBe(false);
+    // A null frame between strings would clear the history; here the pitch jumps straight to D:
+    // the median switches string once three D estimates are in.
+    let t = 450;
+    while (s.reading!.string === 5) {
+      s = nextTuner(s, at(4, 0), t);
+      t += TUNER_POLL_MS;
+    }
+    const changedAt = t - TUNER_POLL_MS;
+    expect(s.reading!.string).toBe(4);
+    expect(s.inTune).toBe(false);
+    s = nextTuner(s, at(4, 0), changedAt + IN_TUNE_MS - 1);
+    expect(s.inTune).toBe(false);
+    s = nextTuner(s, at(4, 0), changedAt + IN_TUNE_MS);
+    expect(s.inTune).toBe(true);
+  });
+
+  it('a string change while In tune clears it', () => {
+    let s = feed(INITIAL_TUNER_STATE, at(5, 0), 0, 600);
+    expect(s.inTune).toBe(true);
+    let t = 650;
+    while (s.reading!.string === 5) {
+      s = nextTuner(s, at(4, 0), t);
+      t += TUNER_POLL_MS;
+    }
+    expect(s.inTune).toBe(false);
+  });
+
+  it('a held reading is marked held and is never In tune; a new pitch clears it', () => {
+    let s = feed(INITIAL_TUNER_STATE, at(2, 1), 0, 600);
+    expect(s).toMatchObject({ held: false, inTune: true });
+    s = nextTuner(s, null, 650);
+    expect(s.held).toBe(true);
+    expect(s.inTune).toBe(false);
+    expect(s.reading!.string).toBe(2);
+    s = feed(s, null, 700, 2000);
+    expect(s).toMatchObject({ held: true, inTune: false });
+    s = nextTuner(s, at(2, 1), 2050);
+    expect(s.held).toBe(false);
+    // Past the hold, no pitch is not held: there is no reading.
+    s = feed(s, null, 2100, 2050 + NO_PITCH_HOLD_MS);
+    expect(s).toMatchObject({ reading: null, held: false });
+    expect(INITIAL_TUNER_STATE.held).toBe(false);
+  });
+
+  it('settles on a new string within 300 ms of 50 ms polls, and stays on it', () => {
+    const pairs: [StringNo, StringNo][] = [
+      [5, 4],
+      [6, 1],
+      [1, 6],
+      [3, 2],
+    ];
+    for (const [from, to] of pairs) {
+      let s = feed(INITIAL_TUNER_STATE, at(from, 0), 0, 1000);
+      let settledAt: number | null = null;
+      for (let t = 1050; t <= 2000; t += TUNER_POLL_MS) {
+        s = nextTuner(s, at(to, 8), t);
+        if (s.reading!.string === to) settledAt ??= t;
+        else expect(settledAt, `${from}→${to} flipped back at ${t}`).toBeNull();
+      }
+      expect(settledAt, `${from}→${to}`).not.toBeNull();
+      expect(settledAt! - 1050, `${from}→${to}`).toBeLessThanOrEqual(300);
+      expect(s.reading!.cents).toBeCloseTo(8, 6);
+    }
+  });
+
+  it('a steady in-tune tone stays In tune on every poll after 500 ms', () => {
+    const wobble = [1.5, -2, 0.5, 2.5, -1.5, 0];
+    let s = INITIAL_TUNER_STATE;
+    for (let i = 0, t = 0; t <= 10_000; i++, t += TUNER_POLL_MS) {
+      s = nextTuner(s, at(4, wobble[i % wobble.length]!), t);
+      expect(s.inTune, `at ${t} ms`).toBe(t >= IN_TUNE_MS);
+    }
+  });
+
+  it('does not mutate the state it is given', () => {
+    const s = feed(INITIAL_TUNER_STATE, at(1, 0), 0, 100);
+    const copy = structuredClone(s);
+    nextTuner(s, at(1, 0), 150);
+    nextTuner(s, null, 150);
+    expect(s).toEqual(copy);
   });
 });

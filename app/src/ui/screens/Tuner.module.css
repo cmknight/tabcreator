@@ -1,0 +1,213 @@
+/* Tuner screen (US-2.1, mockup tuner.html). */
+
+/* Display panel: surface + hairline, like other panels. */
+.panel {
+  margin-block-start: var(--space-4);
+  padding: var(--space-8) var(--space-6) var(--space-6);
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-align: center;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+}
+
+.stringName {
+  margin: 0;
+  font: var(--font-display);
+}
+
+.none {
+  color: var(--color-text-muted);
+}
+
+.hint {
+  margin: var(--space-2) 0 0;
+}
+
+/* Needle track: −50 … +50 cents, max 640 px. */
+.needleWrap {
+  max-width: 640px;
+  margin: var(--space-6) auto 0;
+}
+
+.track {
+  position: relative;
+  height: 44px;
+}
+
+.line {
+  position: absolute;
+  top: 21px;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background: var(--color-border);
+}
+
+.tick {
+  position: absolute;
+  top: 14px;
+  width: 2px;
+  height: 16px;
+  margin-inline-start: -1px;
+  background: var(--color-border);
+}
+
+.tick.mid {
+  top: 6px;
+  height: 32px;
+  background: var(--color-text);
+}
+
+.needle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  margin-inline-start: -2px;
+  background: var(--color-primary);
+  border-radius: 2px;
+  transition: left 50ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .needle {
+    transition: none;
+  }
+}
+
+.scale {
+  position: relative;
+  height: 18px;
+  font: var(--font-numeric);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.scale span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/* Keeps its height when empty (no pitch) so the layout does not jump. */
+.readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: center;
+  align-items: baseline;
+  min-height: 24px;
+  margin-block-start: var(--space-3);
+}
+
+.cents {
+  font: var(--font-numeric);
+}
+
+.direction {
+  font-weight: 600;
+}
+
+.inTune,
+.allSet {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--color-success);
+  font-weight: 600;
+}
+
+.inTuneIcon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.allSet {
+  margin: var(--space-4) 0 0;
+}
+
+/* Six string chips: rounded.full; ticked ones fill with success and get a check badge. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: center;
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chip {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-ui);
+  font-weight: 600;
+  line-height: 1;
+  border: 2px solid var(--color-border);
+  border-radius: 9999px;
+}
+
+.chip.ticked {
+  background: var(--color-success);
+  color: var(--color-surface);
+  border-color: var(--color-success);
+}
+
+.badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  background: var(--color-surface);
+  color: var(--color-success);
+  border: 2px solid var(--color-success);
+  border-radius: 9999px;
+}
+
+.badgeIcon {
+  width: 11px;
+  height: 11px;
+}
+
+/* Level meter + microphone select row. */
+.inputs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-8);
+  align-items: flex-start;
+  margin-block-start: var(--space-6);
+}
+
+.meterBlock {
+  flex: 1 1 360px;
+  min-width: 0;
+}
+
+.micBlock {
+  flex: 0 1 300px;
+  min-width: 0;
+}
+
+.micBlock:empty {
+  display: none;
+}
+
+.doneRow {
+  margin-block-start: var(--space-6);
+  padding-block-start: var(--space-4);
+  border-block-start: 1px solid var(--color-border);
+}

@@ -1,0 +1,22 @@
+/* Primary button (DESIGN.md button-primary), shared by the mic setup card and the Tuner's
+   "Done — go to Record" link. */
+.primary {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding-inline: var(--space-3);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font: var(--font-ui);
+  font-weight: 500;
+  text-decoration: none;
+  border: 1px solid var(--color-primary);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.primary[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

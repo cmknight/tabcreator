@@ -1,6 +1,8 @@
-// Tuner pitch core (US-2.1, CAP-4): pure, stateless functions over one AnalyserNode frame.
-// No browser APIs, no module state, no timers; the Tuner screen (story 9) owns polling,
-// the estimate history and the In tune timing. Imports model/ only (AD-1).
+// Tuner core (US-2.1, CAP-4): pure functions over one AnalyserNode frame, and the pure tuner
+// machine (`nextTuner`) that owns the estimate history, the In tune timing and the no-pitch hold.
+// No browser APIs, no module state, no timers: recording-session drives the machine with each
+// polled frame's pitch and a timestamp, and the Tuner screen only polls the store. Imports
+// model/ only (AD-1).
 
 import { OPEN_MIDI, type StringNo } from '../model/types';
 
@@ -107,4 +109,79 @@ export function nearestString(hz: number): { string: StringNo; targetHz: number;
       best = { string: s, targetHz, cents };
   }
   return best as { string: StringNo; targetHz: number; cents: number };
+}
+
+/** In tune: the reading stays within this many cents (inclusive) of its string… */
+export const IN_TUNE_CENTS = 3;
+/** …on the same string for this long, continuously. */
+export const IN_TUNE_MS = 500;
+/** After the last pitch, the last reading stays on screen this long, then the no-pitch state. */
+export const NO_PITCH_HOLD_MS = 3000;
+/** How often the Tuner screen polls a reading. */
+export const TUNER_POLL_MS = 50;
+
+/** The smoothed string and its offset in cents (unrounded). */
+export interface TunerReading {
+  string: StringNo;
+  cents: number;
+}
+
+export interface TunerState {
+  /** The last `MEDIAN_SIZE` pitch estimates, Hz; emptied by a frame with no pitch. */
+  readonly history: readonly number[];
+  /** What the screen shows; null is the no-pitch state. */
+  readonly reading: TunerReading | null;
+  /** `reading` is kept from an earlier frame: the latest frame had no pitch. */
+  readonly held: boolean;
+  /** The reading has held within `IN_TUNE_CENTS` on its string for `IN_TUNE_MS`. */
+  readonly inTune: boolean;
+  /** When the current in-range run on `reading.string` began; null when not in range. */
+  readonly inRangeSince: number | null;
+  /** When the last pitch arrived; null before any. */
+  readonly lastPitchAt: number | null;
+}
+
+export const INITIAL_TUNER_STATE: TunerState = Object.freeze({
+  history: [],
+  reading: null,
+  held: false,
+  inTune: false,
+  inRangeSince: null,
+  lastPitchAt: null,
+});
+
+/**
+ * Advances the tuner by one polled frame: `hz` is that frame's `detectPitch` result and `now` a
+ * monotonic clock in ms. A pitch joins the median history and the reading is the open string
+ * nearest the median. In tune needs |cents| ≤ `IN_TUNE_CENTS` on the same string for `IN_TUNE_MS`
+ * without a break; a reading out of range, a string change or a frame with no pitch restarts that
+ * timer. A frame with no pitch also empties the history but keeps the last reading for up to
+ * `NO_PITCH_HOLD_MS` after the last pitch (`held`); after that the reading is null (no pitch).
+ */
+export function nextTuner(state: TunerState, hz: number | null, now: number): TunerState {
+  if (hz === null) {
+    const held = state.lastPitchAt !== null && now - state.lastPitchAt < NO_PITCH_HOLD_MS;
+    const reading = held ? state.reading : null;
+    return {
+      history: [],
+      reading,
+      held: reading !== null,
+      inTune: false,
+      inRangeSince: null,
+      lastPitchAt: state.lastPitchAt,
+    };
+  }
+  const history = pushEstimate(state.history, hz);
+  const { string, cents } = nearestString(median(history)!); // history is not empty
+  const inRange = Math.abs(cents) <= IN_TUNE_CENTS;
+  const sameRun = state.inRangeSince !== null && state.reading?.string === string;
+  const inRangeSince = !inRange ? null : sameRun ? state.inRangeSince : now;
+  return {
+    history,
+    reading: { string, cents },
+    held: false,
+    inTune: inRangeSince !== null && now - inRangeSince >= IN_TUNE_MS,
+    inRangeSince,
+    lastPitchAt: now,
+  };
 }

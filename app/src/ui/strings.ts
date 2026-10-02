@@ -1,3 +1,21 @@
+import type { StringNo } from '../model/types';
+
+/** The tuner's spoken string names, `StringNo` 1 = high e … 6 = low E. */
+const STRING_NAMES: Readonly<Record<StringNo, string>> = {
+  1: 'High E',
+  2: 'B',
+  3: 'G',
+  4: 'D',
+  5: 'A',
+  6: 'Low E',
+};
+
+/** Signed, rounded cents with U+2212 for minus: "+12", "−1", "0". */
+function signedCents(cents: number): string {
+  const n = Math.round(cents);
+  return n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0';
+}
+
 /**
  * Every user-visible string (spine AD-12). One flat object; keys are
  * `<screen|global>.<camelCase>`. Parameterised strings are typed functions.
@@ -35,6 +53,7 @@ export const strings = {
   'record.micSetupText': 'Audio is analysed on this computer and never uploaded.',
   'record.allowMic': 'Allow microphone',
   'record.tryAgain': 'Try again',
+  'record.tuneFirst': 'Tune first',
   'record.micError.mic-denied.title': 'Microphone access is blocked',
   'record.micError.mic-denied.body':
     'Chrome is blocking the microphone for this site. To allow it:',
@@ -69,6 +88,27 @@ export const strings = {
   'tab.title': 'Tab',
   'library.title': 'Library',
   'tuner.title': 'Tuner',
+  /** The string name in display type; both E strings show "E". */
+  'tuner.stringLetter': (string: StringNo) =>
+    string === 1 || string === 6 ? 'E' : STRING_NAMES[string],
+  'tuner.noPitch': '—',
+  'tuner.noPitchHint': 'Play a single open string',
+  /** The cents readout: "+12 cents", "−1 cents", "0 cents". */
+  'tuner.cents': (cents: number) => `${signedCents(cents)} cents`,
+  'tuner.sharp': '♯ Sharp — tune down',
+  'tuner.flat': '♭ Flat — tune up',
+  'tuner.inTune': 'In tune',
+  /** The needle's accessible name; `cents` null is no pitch. */
+  'tuner.needleLabel': (cents: number | null) =>
+    `Tuning needle, −50 to +50 cents: ${cents === null ? 'No pitch detected' : `${signedCents(cents)} cents`}`,
+  'tuner.chipsLabel': 'Strings tuned this session',
+  /** A chip's accessible name: "Low E string, in tune", "A string, not yet tuned". */
+  'tuner.chipLabel': (string: StringNo, ticked: boolean) =>
+    `${STRING_NAMES[string]} string, ${ticked ? 'in tune' : 'not yet tuned'}`,
+  /** Announced when a string enters In tune: "Low E string in tune". */
+  'tuner.stringInTune': (string: StringNo) => `${STRING_NAMES[string]} string in tune`,
+  'tuner.allInTune': 'All six strings in tune',
+  'tuner.done': 'Done — go to Record',
   'settings.title': 'Settings',
   'settings.about': 'About',
   'settings.engineVersion': (version: string) => `Engine v${version}`,

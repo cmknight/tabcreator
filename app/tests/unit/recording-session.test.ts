@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../src/model/errors';
+import { OPEN_STRING_HZ } from '../../src/audio/tuner';
+import type { StringNo } from '../../src/model/types';
 import { createRecordingSession, type RecordingDeps } from '../../src/session/recording-session';
 
 const stream = {} as MediaStream;
-const analyser = {} as AnalyserNode;
+const RATE = 48_000;
+/** The tuner reads only the analyser's context sample rate. */
+const analyser = { context: { sampleRate: RATE } } as unknown as AnalyserNode;
 /** The frame the fake input returns; tests fill it per reading. */
 let frame = new Float32Array(4096);
 const SILENT = { peakDb: -Infinity, rmsDb: -Infinity };
@@ -16,6 +20,7 @@ const IDLE = {
   activeDeviceId: null,
   inputQualityPoor: false,
   inputQualityDismissed: false,
+  tunedStrings: [],
 };
 
 /** Lets pending promise callbacks and timers at 0 ms run. */
@@ -24,6 +29,22 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 /** A constant frame at `amplitude`: peak and RMS both `20·log10(amplitude)`. */
 function level(amplitude: number) {
   frame = new Float32Array(4096).fill(amplitude);
+}
+
+/** A sine frame at `cents` from open string `s` (−12 dBFS peak). */
+function tone(s: StringNo, cents = 0) {
+  const hz = OPEN_STRING_HZ[s] * 2 ** (cents / 1200);
+  frame = new Float32Array(4096).map((_, i) => 0.25 * Math.sin((2 * Math.PI * hz * i) / RATE));
+}
+
+/** Reads the tuner every 50 ms from `from` up to and including `to`; returns the last reading. */
+function tuneEvery(
+  session: { readTuner(now: number): unknown },
+  from: number,
+  to: number,
+): unknown {
+  for (let t = from; t < to; t += 50) session.readTuner(t);
+  return session.readTuner(to);
 }
 
 /** Reads levels every 16 ms from `from` up to and including `to`, as the meter's frames do. */
@@ -849,6 +870,120 @@ describe('recording session', () => {
       answerOld([A]);
       await flush();
       expect(session.getSnapshot().devices).toEqual([A, B, C]);
+    });
+  });
+
+  describe('tuner', () => {
+    it('gives no reading when not live, and never reads the input', async () => {
+      const { session, deps, input } = setup({
+        requestMic: vi.fn(() => Promise.reject(new AppError('mic-denied', 'no'))),
+      });
+      expect(session.readTuner(0)).toBeNull();
+      await session.allowMic();
+      expect(session.getSnapshot().mic).toBe('error');
+      expect(session.readTuner(50)).toBeNull();
+      expect(input.readFrame).not.toHaveBeenCalled();
+      expect(deps.openInput).not.toHaveBeenCalled();
+    });
+
+    it('reads the string and cents of the live frame at the analyser rate', async () => {
+      const { session } = setup();
+      await session.allowMic();
+      tone(5, 12);
+      const shown = session.readTuner(0) as { reading: { string: number; cents: number } };
+      expect(shown.reading.string).toBe(5);
+      expect(shown.reading.cents).toBeCloseTo(12, 0);
+    });
+
+    it('silence from the start is no pitch', async () => {
+      const { session } = setup();
+      await session.allowMic();
+      expect(tuneEvery(session, 0, 1000)).toEqual({ reading: null, held: false, inTune: false });
+    });
+
+    it('ticks a string at 500 ms In tune, notifying once; ticks persist and grow', async () => {
+      const { session, listener } = setup();
+      await session.allowMic();
+      listener.mockClear();
+      tone(6);
+      expect(tuneEvery(session, 0, 450)).toMatchObject({ inTune: false });
+      expect(session.getSnapshot().tunedStrings).toEqual([]);
+      expect(session.readTuner(500)).toMatchObject({ inTune: true });
+      expect(session.getSnapshot().tunedStrings).toEqual([6]);
+      expect(listener).toHaveBeenCalledTimes(1);
+      // Staying In tune, or re-tuning a ticked string, does not notify again.
+      tuneEvery(session, 550, 2000);
+      expect(listener).toHaveBeenCalledTimes(1);
+      tone(5);
+      tuneEvery(session, 2050, 3000);
+      expect(session.getSnapshot().tunedStrings).toEqual([6, 5]);
+      expect(listener).toHaveBeenCalledTimes(2);
+    });
+
+    it('never notifies per poll', async () => {
+      const { session, listener } = setup();
+      await session.allowMic();
+      listener.mockClear();
+      tone(4, 20);
+      tuneEvery(session, 0, 3000);
+      level(0);
+      tuneEvery(session, 3050, 8000);
+      expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('a gap of more than 500 ms between reads restarts the machine', async () => {
+      const { session } = setup();
+      await session.allowMic();
+      tone(3, 20);
+      tuneEvery(session, 0, 400);
+      // Silence after the gap would hold the reading; a restarted machine has none to hold.
+      level(0);
+      expect(session.readTuner(901)).toEqual({ reading: null, held: false, inTune: false });
+    });
+
+    it('after a gap, In tune needs 500 ms of reads from the gap on', async () => {
+      const { session } = setup();
+      await session.allowMic();
+      tone(3);
+      tuneEvery(session, 0, 400); // in range since 0: In tune at 500 without the gap
+      // 550 ms gap: the run restarts at 950, so In tune comes at 1450, polled every 50 ms.
+      expect(session.readTuner(950)).toMatchObject({ reading: { string: 3 }, inTune: false });
+      expect(tuneEvery(session, 1000, 1400)).toMatchObject({ inTune: false });
+      expect(session.getSnapshot().tunedStrings).toEqual([]);
+      expect(session.readTuner(1450)).toMatchObject({ inTune: true });
+      expect(session.getSnapshot().tunedStrings).toEqual([3]);
+    });
+
+    it('a gap of exactly 500 ms keeps the timing', async () => {
+      const { session } = setup();
+      await session.allowMic();
+      tone(2);
+      session.readTuner(0);
+      expect(session.readTuner(500)).toMatchObject({ inTune: true });
+    });
+
+    it('keeps the ticks across mic transitions and restarts the machine', async () => {
+      const { session, endTrack } = setup();
+      await session.allowMic();
+      tone(1);
+      tuneEvery(session, 0, 500);
+      expect(session.getSnapshot().tunedStrings).toEqual([1]);
+      await endTrack();
+      expect(session.getSnapshot()).toMatchObject({ mic: 'error', tunedStrings: [1] });
+      await session.allowMic();
+      expect(session.getSnapshot()).toMatchObject({ mic: 'live', tunedStrings: [1] });
+      // A fresh machine: the first read after going live is not yet In tune.
+      expect(session.readTuner(550)).toMatchObject({ inTune: false });
+    });
+
+    it('never saves the ticks to prefs', async () => {
+      const { session, deps } = setup();
+      await session.allowMic();
+      vi.mocked(deps.updatePrefs).mockClear();
+      tone(6);
+      tuneEvery(session, 0, 600);
+      expect(session.getSnapshot().tunedStrings).toEqual([6]);
+      expect(deps.updatePrefs).not.toHaveBeenCalled();
     });
   });
 
