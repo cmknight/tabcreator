@@ -239,7 +239,7 @@ Visual references (light + dark, with alternate states): [`mockups/record.html`]
 
 - **Mic setup card** — inline panel, max 560 px, mic icon, heading + one line of body text + primary button; error variants add a `{colors.danger}` left edge and numbered recovery steps.
 - **Record button** — 88 px red circle with a white dot (idle) or white rounded square (recording), label "Record"/"Stop" below ("Cancel" during count-in). The only large control on the Record screen, centred in a 640 px column. The timer above it uses `{typography.display}` size in the `{typography.numeric}` font, muted when idle.
-- **Level meter** — labelled "Input level"; horizontal 12 px bar, −60 to 0 dBFS with scale labels and a current dBFS readout in `{typography.numeric}`; fill segmented into green / amber / red zones; 1.5 s peak-hold tick in `{colors.text}`. Warning text with icon sits directly under it.
+- **Level meter** — labelled "Input level"; horizontal 12 px bar, −60 to 0 dBFS with scale labels and the unit "dBFS" (no numeric readout); fill segmented into green / amber / red zones; 1.5 s peak-hold tick in `{colors.text}`. Warning text with icon sits directly under it.
 
 ### Tab
 
@@ -259,7 +259,7 @@ Visual references (light + dark, with alternate states): [`mockups/record.html`]
 
 ### Tuner
 
-- **Tuner** — large string name in `{typography.display}` ("—" when no signal); horizontal needle track −50 to +50 cents (max 640 px) with tick marks, blue needle and the numeric cents readout; green check + "In tune" in `{colors.success}` while the pitch holds in tune; six round string chips labelled E A D G B e that fill with `{colors.success}` and show a check badge when ticked.
+- **Tuner** — large string name in `{typography.display}` ("—" when no signal); horizontal needle track −50 to +50 cents (max 640 px) with tick marks, blue needle and the numeric cents readout; green check + "In tune" in `{colors.success}` while the pitch holds in tune; six round string chips labelled E A D G B E (both E strings show "E"; their accessible names say "Low E" and "High E") that fill with `{colors.success}` and show a check badge when ticked.
 
 ### Library
 
