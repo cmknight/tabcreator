@@ -85,16 +85,16 @@ test('first visit, Allow, re-enter and return', async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test('a rejected request leaves the card with the button enabled', async ({ page }) => {
+test('a rejected request shows the error card with Try again enabled', async ({ page }) => {
   const errors = collectErrors(page);
   await countGetUserMedia(page);
   // An unknown fixture: the fake mic rejects with NotFoundError.
   await page.goto('./?fakeMic=nope#/record');
 
-  const allow = page.getByRole('button', { name: 'Allow microphone' });
-  await allow.click();
-  await expect(allow).toBeEnabled();
-  await expect(setupCard(page)).toBeVisible();
+  await page.getByRole('button', { name: 'Allow microphone' }).click();
+  const errorCard = page.getByRole('region', { name: 'No microphone found' });
+  await expect(errorCard).toBeVisible();
+  await expect(errorCard.getByRole('button', { name: 'Try again' })).toBeEnabled();
   await expect(meter(page)).toHaveCount(0);
   expect(await gumCalls(page)).toBe(1);
   // No retry loop.

@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ANALYSER_FFT_SIZE, openInput, requestMic } from '../../src/audio/mic';
+import {
+  ANALYSER_FFT_SIZE,
+  micErrorCode,
+  micPermission,
+  openInput,
+  requestMic,
+} from '../../src/audio/mic';
 import { AppError } from '../../src/model/errors';
 
 // jsdom has no media devices or Web Audio: these stubs stand in for them.
@@ -14,8 +20,16 @@ function stubGetUserMedia(impl: (c: MediaStreamConstraints) => Promise<MediaStre
 }
 
 function fakeStream() {
-  const track = { stop: vi.fn() };
-  return { stream: { getTracks: () => [track] } as unknown as MediaStream, track };
+  const track = Object.assign(new EventTarget(), {
+    stop: vi.fn(),
+    readyState: 'live' as MediaStreamTrackState,
+  });
+  /** Ends the track on its own, as a revoke or unplug does. */
+  const end = () => {
+    track.readyState = 'ended';
+    track.dispatchEvent(new Event('ended'));
+  };
+  return { stream: { getTracks: () => [track] } as unknown as MediaStream, track, end };
 }
 
 class FakeAnalyser {
@@ -51,8 +65,12 @@ class FakeAudioContext {
   }
 }
 
+const permissionsDescriptor = Object.getOwnPropertyDescriptor(navigator, 'permissions');
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  if (permissionsDescriptor) Object.defineProperty(navigator, 'permissions', permissionsDescriptor);
+  else delete (navigator as { permissions?: unknown }).permissions;
   FakeAudioContext.failSource = false;
   FakeAudioContext.last = null;
 });
@@ -81,13 +99,63 @@ describe('requestMic', () => {
     });
   });
 
-  it('rejects with AppError mic-failed carrying the cause', async () => {
-    const cause = new DOMException('no', 'NotAllowedError');
+  it.each([
+    ['NotAllowedError', 'mic-denied'],
+    ['SecurityError', 'mic-denied'],
+    ['NotFoundError', 'mic-no-device'],
+    ['OverconstrainedError', 'mic-no-device'],
+    ['NotReadableError', 'mic-in-use'],
+    ['AbortError', 'mic-in-use'],
+    ['TypeError', 'mic-failed'],
+    ['SomethingNew', 'mic-failed'],
+  ])('rejects %s as AppError %s carrying the cause', async (name, code) => {
+    const cause = new DOMException('no', name);
     stubGetUserMedia(() => Promise.reject(cause));
     const err = await requestMic().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(AppError);
-    expect((err as AppError).code).toBe('mic-failed');
+    expect((err as AppError).code).toBe(code);
     expect((err as AppError).cause).toBe(cause);
+  });
+});
+
+describe('micErrorCode', () => {
+  it('maps by name, whatever the error class', () => {
+    expect(micErrorCode(new TypeError('x'))).toBe('mic-failed');
+    expect(micErrorCode({ name: 'OverconstrainedError', constraint: 'deviceId' })).toBe(
+      'mic-no-device',
+    );
+    expect(micErrorCode('NotAllowedError')).toBe('mic-failed');
+    expect(micErrorCode(null)).toBe('mic-failed');
+    expect(micErrorCode({ name: 'toString' })).toBe('mic-failed');
+  });
+});
+
+describe('micPermission', () => {
+  function stubPermissions(query: (d: PermissionDescriptor) => Promise<unknown>) {
+    const fn = vi.fn(query);
+    Object.defineProperty(navigator, 'permissions', { value: { query: fn }, configurable: true });
+    return fn;
+  }
+
+  it.each(['granted', 'prompt', 'denied'] as const)('reports %s', async (state) => {
+    const query = stubPermissions(() => Promise.resolve({ state }));
+    await expect(micPermission()).resolves.toBe(state);
+    expect(query).toHaveBeenCalledWith({ name: 'microphone' });
+  });
+
+  it('reports unknown when the query rejects', async () => {
+    stubPermissions(() => Promise.reject(new TypeError('microphone is not a valid name')));
+    await expect(micPermission()).resolves.toBe('unknown');
+  });
+
+  it('reports unknown for an undefined state', async () => {
+    stubPermissions(() => Promise.resolve({ state: 'weird' }));
+    await expect(micPermission()).resolves.toBe('unknown');
+  });
+
+  it('reports unknown without the Permissions API', async () => {
+    Object.defineProperty(navigator, 'permissions', { value: undefined, configurable: true });
+    await expect(micPermission()).resolves.toBe('unknown');
   });
 });
 
@@ -109,6 +177,38 @@ describe('openInput', () => {
     input.close();
     expect(track.stop).toHaveBeenCalled();
     expect(ctx.closed).toBe(true);
+  });
+
+  it('calls onEnded once with mic-lost when a track ends on its own', () => {
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    const { stream, end } = fakeStream();
+    const onEnded = vi.fn();
+    openInput(stream, onEnded);
+    end();
+    end();
+    expect(onEnded).toHaveBeenCalledTimes(1);
+    const error = onEnded.mock.calls[0]?.[0] as AppError;
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.code).toBe('mic-lost');
+  });
+
+  it('does not call onEnded for a track ended after close', () => {
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    const { stream, end } = fakeStream();
+    const onEnded = vi.fn();
+    openInput(stream, onEnded).close();
+    end();
+    expect(onEnded).not.toHaveBeenCalled();
+  });
+
+  it('reports a track that had already ended', async () => {
+    vi.stubGlobal('AudioContext', FakeAudioContext);
+    const { stream, track } = fakeStream();
+    track.readyState = 'ended';
+    const onEnded = vi.fn();
+    openInput(stream, onEnded);
+    await Promise.resolve();
+    expect(onEnded).toHaveBeenCalledTimes(1);
   });
 
   it('stops the stream and throws mic-failed when the graph cannot be built', () => {
