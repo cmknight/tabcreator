@@ -3,7 +3,7 @@ title: 'Tuner pitch core'
 type: 'feature'
 ticket: '4'
 created: '2026-10-02'
-status: 'built'
+status: done
 baseline_revision: '59b6d9cc0ceb9d520565a4eebed773e2ebcc92d3'
 route: 'full'
 route_source: 'auto'

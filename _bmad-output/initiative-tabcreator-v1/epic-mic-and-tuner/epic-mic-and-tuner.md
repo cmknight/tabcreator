@@ -6,6 +6,7 @@ covers: [CAP-1, CAP-2, CAP-3, CAP-4, CAP-26, CAP-25]
 after: []
 assignee: ""
 risk: medium
+status: in-progress
 ---
 
 # Mic and tuner
