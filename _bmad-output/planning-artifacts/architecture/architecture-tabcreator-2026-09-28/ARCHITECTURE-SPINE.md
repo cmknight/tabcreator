@@ -155,6 +155,7 @@ flowchart TD
 - **Binds:** all (NFR-06)
 - **Prevents:** a dependency or feature sending audio, tabs, analytics or crash data anywhere, or loading remote assets.
 - **Rule:** No cross-origin request of any kind. Same-origin fetches are allowed only for the app's own precached assets (the wasm module, service-worker precache). Every build ships the CSP meta tag `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; media-src 'self' blob:; connect-src 'self'`; `build.assetsInlineLimit` is 0 and the PWA registers with an external script, so nothing needs inline code or `data:` URLs. Playwright asserts zero CSP violations and zero non-self requests across the core flow. A new dependency that performs network I/O is rejected.
+- **Accepted limitation (2026-10-02):** a meta-tag CSP does not apply to workers, and GitHub Pages cannot send CSP headers, so the engine and OPFS workers run without a CSP and `'wasm-unsafe-eval'` is not enforced. Accepted by the owner; the no-cross-origin rule still binds worker code; the Playwright request-origin checks cover the page and are not proven to see every worker request.
 
 ### AD-14 — Take field ownership and patch writes
 

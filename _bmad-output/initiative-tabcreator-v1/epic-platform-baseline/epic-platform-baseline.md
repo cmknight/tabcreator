@@ -53,3 +53,4 @@ Scaffold, CI, deployment, the engine bridge, the storage layer and test tooling 
 - Decision: tracer bullet is entry 1; entries 2, 3 and 4 run in parallel after it (user approved, 2026-09-28).
 - Decision: entry 1 creates every shared type and error code so entries 2 and 3 only read them; entry 2 is the only parallel entry that edits the CI workflow (2026-09-28).
 - Decision: refactor sweep closes the epic (2026-09-28).
+- Decision: accept that the engine and OPFS workers run with no CSP on GitHub Pages — the meta-tag CSP does not reach workers and Pages cannot send headers; resolves story 1.5's deferred item (user approved, 2026-10-02).
