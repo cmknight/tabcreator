@@ -76,6 +76,15 @@
   }
 }
 
+/* A held reading (the latest frame had no pitch): string name, cents and needle muted. */
+.held {
+  color: var(--color-text-muted);
+}
+
+.needle.held {
+  background: var(--color-text-muted);
+}
+
 .scale {
   position: relative;
   height: 18px;

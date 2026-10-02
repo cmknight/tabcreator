@@ -124,7 +124,7 @@ test('open_strings on the Tuner ticks all six chips, In tune only after 500 ms i
   const politeLog = () => page.evaluate(() => window.__politeLog ?? []);
   await expect.poll(politeLog).toContain('All six strings in tune');
   const said = await politeLog();
-  expect(said).toContain('Low E string in tune');
+  for (const name of CHIP_NAMES) expect(said).toContain(`${name} string in tune`);
   expect(said.indexOf('All six strings in tune')).toBeGreaterThan(
     said.indexOf('High E string in tune'),
   );
@@ -175,8 +175,8 @@ test('a denied request shows the denied card on the Tuner; Try again recovers', 
   await card.getByRole('button', { name: 'Try again' }).click();
   await expect(needle(page)).toBeVisible();
   await expect(card).toHaveCount(0);
-  // Focus followed the swap to the level meter.
-  await expect(meter(page)).toBeFocused();
+  // Focus followed the swap to the tuner panel, the first thing below the h1.
+  await expect(page.getByTestId('tuner-panel')).toBeFocused();
   expect(errors).toEqual([]);
 });
 
@@ -222,6 +222,8 @@ test('ticks are kept when leaving the Tuner and coming back', async ({ page }) =
   await nav.getByRole('link', { name: 'Tuner' }).click();
   // At once on return, before any re-tick could happen (In tune needs 500 ms of new readings).
   await expect(needle(page)).toBeVisible({ timeout: 300 });
-  expect(await ticked.evaluateAll((items) => items.map((li) => li.ariaLabel))).toEqual(names);
+  // A subset: another string may tick between capturing the set and leaving.
+  const back = await ticked.evaluateAll((items) => items.map((li) => li.ariaLabel));
+  expect(back).toEqual(expect.arrayContaining(names));
   expect(errors).toEqual([]);
 });

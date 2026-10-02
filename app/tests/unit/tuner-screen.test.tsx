@@ -73,5 +73,16 @@ describe('Tuner reading display', () => {
     expect(readout().textContent).toBe('+12 cents');
     expect(needleLeft()).toBeCloseTo(62, 6);
     expect(screen.queryByTestId('tuner-in-tune')).toBeNull();
+    // Drawn muted: string name, cents and needle carry the held class.
+    for (const id of ['tuner-string', 'tuner-cents', 'tuner-needle-mark']) {
+      expect(screen.getByTestId(id).className, id).toMatch(/held/);
+    }
+  });
+
+  it('a live reading is not drawn muted', () => {
+    renderReading(5, 12);
+    for (const id of ['tuner-string', 'tuner-cents', 'tuner-needle-mark']) {
+      expect(screen.getByTestId(id).className, id).not.toMatch(/held/);
+    }
   });
 });

@@ -112,6 +112,9 @@ function TunerPanel() {
     let inTune = false;
     let allSixAt: number | null = null;
     const poll = () => {
+      // A hidden tab throttles timers past the store's 500 ms gap, so every read would only
+      // restart the machine: skip polling until the tab is visible again.
+      if (document.hidden) return;
       const now = performance.now();
       const before = recordingSession.getSnapshot().tunedStrings.length;
       const next = recordingSession.readTuner(now) ?? NO_PITCH;
@@ -142,13 +145,18 @@ function TunerPanel() {
   }, []);
 
   const { reading, held, inTune } = display;
+  /** A held reading (no pitch in the latest frame) is drawn muted. */
+  const heldClass = held ? ` ${tunerStyles.held}` : '';
   const rounded = reading ? Math.round(reading.cents) : 0;
   const allSix = CHIPS.every((s) => tunedStrings.includes(s));
 
   return (
-    <div className={tunerStyles.panel} data-testid="tuner-panel">
+    // The first focus target in MicGate: focus lands here when the panel replaces a focused card.
+    <div className={tunerStyles.panel} data-testid="tuner-panel" tabIndex={-1} data-focus-target="">
       {reading ? (
-        <p className={tunerStyles.stringName}>{strings['tuner.stringLetter'](reading.string)}</p>
+        <p className={`${tunerStyles.stringName}${heldClass}`} data-testid="tuner-string">
+          {strings['tuner.stringLetter'](reading.string)}
+        </p>
       ) : (
         <>
           <p className={`${tunerStyles.stringName} ${tunerStyles.none}`} aria-hidden="true">
@@ -174,7 +182,7 @@ function TunerPanel() {
           ))}
           {reading && (
             <span
-              className={tunerStyles.needle}
+              className={`${tunerStyles.needle}${heldClass}`}
               style={{ left: `${needlePercent(reading.cents).toFixed(2)}%` }}
               data-testid="tuner-needle-mark"
             />
@@ -196,7 +204,9 @@ function TunerPanel() {
       >
         {reading && (
           <>
-            <span className={tunerStyles.cents}>{strings['tuner.cents'](reading.cents)}</span>
+            <span className={`${tunerStyles.cents}${heldClass}`} data-testid="tuner-cents">
+              {strings['tuner.cents'](reading.cents)}
+            </span>
             {/* A held reading (no pitch in the latest frame) gives no advice. */}
             {held ? null : inTune ? (
               <span className={tunerStyles.inTune} data-testid="tuner-in-tune">

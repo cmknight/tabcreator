@@ -9,8 +9,8 @@ route_source: 'auto'
 review: 'thorough'
 review_source: 'auto'
 lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
-review_loop_iteration: 1
-followup_review_recommended: true
+review_loop_iteration: 0
+followup_review_recommended: false
 baseline_revision: 'bdd8fa65254392ecb8c59c3d5ee0161d07eb4a22'
 context:
   - '{project-root}/_bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md'
@@ -170,6 +170,41 @@ Builds on 2.1–2.8 (`bdd8fa6`).
   - `low` `reject` (blind) `tuneEvery` returns `unknown` — test ergonomics only.
   - `false` `reject` (blind) the plan is missing from the diff, and so is the ticket status — the plan is the claims file, and status is set at finalize.
 
+### 2026-10-02 — Review pass (follow-up)
+- verdicts: 31 findings — high 0, medium 0, low 26, false 5, maybe-false 0
+- findings:
+  - `low` `patch` (verif) the "All six after High E" check passes when "High E string in tune" is lost (indexOf -1) — the test now requires all six string announcements.
+  - `low` `reject` (verif) `sameDisplay` dedupe is not pinned at 0.1 cents — a render optimisation; it needs fake-timer component tests the suite lacks.
+  - `low` `reject` (verif, other) the all-six announcement on unmount is untested — rare path; low.
+  - `low` `reject` (intent) settling is tested on the machine, not on screen — carried reasoning: the render adds one poll plus a 50 ms transition.
+  - `low` `reject` (intent) In tune timing and no-flicker are checked at the machine, with only a lower bound in e2e — carried: the e2e allows 40 ms of jitter on the 500 ms rule.
+  - `low` `reject` (intent) no axe run is guaranteed to cover the In tune state — it adds only a check icon and success text, both in passing contrast.
+  - `low` `reject` (intent) signed cents and direction words are tested with a stubbed reading — carried: the screen tests cover only sharp and flat.
+  - `low` `reject` (intent) nothing checks the real 50 ms poll rate — the store and machine are driven at 50 ms; low.
+  - `low` `reject` (intent) the banner and select on the Tuner are untested there — store-driven components, tested on Record.
+  - `false` `reject` (intent) Record's card behaviour after the MicGate refactor is unprotected — mic-errors.dev.spec.ts focus assertions cover it (confirmed by the verification lens).
+  - `false` `reject` (intent) the ticket's unknown is resolved by widening recording-session — carried: the decision is in the epic notes.
+  - `low` `reject` (blind) "+3 cents" can mean In tune or Sharp — carried: the rounded value can read "+3" while In tune.
+  - `false` `reject` (blind) "Sharp — tune down" inside ±3 before 500 ms invites over-correction — tuning from +2 toward 0 improves the tuning; the direction is accurate.
+  - `low` `patch` (blind) a held reading looks live — dimmed with a `held` class.
+  - `low` `reject` (blind) every re-entry into In tune announces again — carried: no hysteresis; the contract's rule.
+  - `low` `patch` (blind) "ticks are kept" can flake when a new tick lands between capture and leaving — subset check instead of equality.
+  - `low` `reject` (blind) the e2e bounds In tune only from below — the 15 s chip timeout and the machine tests bound it from above.
+  - `low` `reject` (blind) TunerPanel's logic has thin unit coverage — carried: the screen tests cover only sharp and flat.
+  - `low` `reject` (blind) MicGate has no direct tests — covered by e2e on both screens.
+  - `low` `patch` (blind) after Try again on the Tuner, focus lands on the meter below the panel — the panel is the first focus target.
+  - `false` `reject` (blind) `.primary` and the new links have no focus style — theme.css has a global `:focus-visible` outline; the missing hover style is cosmetic.
+  - `low` `reject` (blind) both E strings show "E" — the contract specifies "E A D G B E"; DESIGN.md's lowercase "e" is flagged to the user.
+  - `low` `reject` (blind) YIN runs on the main thread every 50 ms, and the needle animates `left` — US-2.1 mandates main-thread YIN; CPU budgets belong to the budgets epic.
+  - `low` `reject` (blind) constants-restating test, `TUNER_POLL_MS` in audio/, "1 cents" — hygiene; "1 cents" is carried (verbatim from the mockup).
+  - `low` `reject` (edge) readout "+3" Sharp between 3 and 3.5 — carried (same as the blind row).
+  - `low` `reject` (edge) during a device switch `readTuner` returns null and flashes no-pitch — brief and rare; a new input restarts the tuner anyway.
+  - `low` `reject` (edge) a read during goLive's await advances the machine before set() resets it — milliseconds of discarded progress; harmless.
+  - `low` `reject` (edge) re-entering within 500 ms while In tune announces again — rare; consistent with once per occurrence.
+  - `low` `reject` (edge) all-six can be announced alongside a mic-lost error on unmount — needs the mic lost within 1 s of the sixth tick; rare.
+  - `low` `patch` (edge) a hidden tab throttles polling past 500 ms, so every poll resets while detection runs — the poll is skipped when `document.hidden`.
+  - `false` `reject` (edge, claim) the e2e accepts In tune at 460 ms — carried: the exact boundary is tested on the machine.
+
 ## Verification
 
 **Commands:**
@@ -204,3 +239,23 @@ Builds on 2.1–2.8 (`bdd8fa6`).
   - open_strings leaves about 250 ms of slack per pluck for In tune, so a heavily loaded machine can miss a tick (about 1 in 30 under repeated parallel runs).
   - The e2e allows 40 ms of render jitter on the 500 ms rule.
   - Chips use "E A D G B E", following the plan; DESIGN.md shows a lowercase high "e".
+
+### Follow-up pass (2026-10-02)
+
+- **Summary:** an independent re-review of the whole story diff, including the in-place held-reading fix from loop 1.
+- **Review:** 31 findings (low 26, false 5); none high or medium. Five low entries were patched:
+  - the e2e now requires all six "<name> string in tune" announcements before the ordering check;
+  - a held reading is drawn in the muted colour;
+  - "ticks are kept" checks a subset, not equality;
+  - after Try again, focus lands on the tuner panel instead of the meter below it;
+  - polling is skipped in a hidden tab.
+
+  Nothing was deferred. Rejections and their reasons are in the follow-up Review Triage Log.
+- **Follow-up review recommended:** false. Patched by verdict: high 0, medium 0, low 5; the work has converged.
+- **Verification:**
+  - The full plan command exited 0: 453 unit tests and 74 Playwright tests, none flaky.
+  - `app/dist` has no dev-only strings.
+- **Residual risks:**
+  - Both E strings show "E" (plan); DESIGN.md uses a lowercase "e" for high E.
+  - The needle-dedupe resolution is untested.
+  - Pitch detection runs on the main thread, with no measured cost (budgets epic).
