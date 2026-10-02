@@ -7,6 +7,7 @@ import {
   parsePrefs,
   PREFS_KEY,
   savePrefs,
+  updatePrefs,
 } from '../../src/storage/prefs';
 import { fenceWrites, resetFenceForTests } from '../../src/storage/write-guard';
 
@@ -122,5 +123,53 @@ describe('prefs', () => {
     expect((caught as AppError).code).toBe('instance-taken');
     expect(localStorage.getItem(PREFS_KEY)).toBeNull();
     expect(loadPrefs()).toEqual(DEFAULT_PREFS);
+  });
+
+  it('updatePrefs writes only the patched fields over the stored prefs', () => {
+    savePrefs({ ...DEFAULT_PREFS, theme: 'dark', countIn: { on: true, bpm: 90 } });
+    const result = updatePrefs({ micGranted: true });
+    const expected = {
+      ...DEFAULT_PREFS,
+      theme: 'dark',
+      countIn: { on: true, bpm: 90 },
+      micGranted: true,
+    };
+    expect(result).toEqual(expected);
+    expect(JSON.parse(localStorage.getItem(PREFS_KEY)!)).toEqual(expected);
+  });
+
+  it('updatePrefs starts from defaults when nothing is stored', () => {
+    updatePrefs({ micGranted: true });
+    expect(loadPrefs()).toEqual({ ...DEFAULT_PREFS, micGranted: true });
+  });
+
+  it('updatePrefs maps storage failures and fencing as savePrefs does', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem');
+    setItem.mockImplementation(() => {
+      throw new DOMException('full', 'QuotaExceededError');
+    });
+    expect(() => updatePrefs({ micGranted: true })).toThrow(
+      expect.objectContaining({ code: 'storage-full' }),
+    );
+    setItem.mockRestore();
+    fenceWrites();
+    expect(() => updatePrefs({ micGranted: true })).toThrow(
+      expect.objectContaining({ code: 'instance-taken' }),
+    );
+    expect(localStorage.getItem(PREFS_KEY)).toBeNull();
+  });
+
+  it('updatePrefs sanitises the patch, so it returns what loadPrefs reads back', () => {
+    savePrefs(CUSTOM);
+    const result = updatePrefs({
+      countIn: undefined as unknown as Prefs['countIn'],
+      analysisDefaults: { sensitivity: 5, minNoteMs: 60, maxFret: 20 },
+    });
+    expect(result).toEqual({
+      ...CUSTOM,
+      countIn: DEFAULT_PREFS.countIn,
+      analysisDefaults: { sensitivity: 0.5, minNoteMs: 60, maxFret: 20 },
+    });
+    expect(loadPrefs()).toEqual(result);
   });
 });

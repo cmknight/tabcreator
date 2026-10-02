@@ -115,3 +115,18 @@ export function savePrefs(prefs: Prefs): void {
     throw toStorageError(err, 'Save prefs');
   }
 }
+
+/** The prefs fields a caller may patch (the version belongs to this module). */
+export type PrefsPatch = Partial<Omit<Prefs, 'version'>>;
+
+/**
+ * Re-reads the stored prefs and writes back only the patched fields, so callers holding an
+ * older copy cannot overwrite each other's fields. Throws as `savePrefs` does.
+ */
+export function updatePrefs(patch: PrefsPatch): Prefs {
+  assertWritable();
+  // Sanitised like a load, so the saved and returned value is what `loadPrefs` reads back.
+  const next = sanitize({ ...loadPrefs(), ...patch, version: 1 });
+  savePrefs(next);
+  return next;
+}
