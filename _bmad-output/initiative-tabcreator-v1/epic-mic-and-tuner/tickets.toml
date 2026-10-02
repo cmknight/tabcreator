@@ -1,0 +1,125 @@
+# tickets.toml — Mic and tuner's stories in build order. tickets.py reads it.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Mic setup card to live meter (tracer)"
+description = "Adds audio/mic.ts requestMic with processing off, session/recording-session.ts holding mic state, the stream and one AnalyserNode with fftSize 4096 created in audio/ for slices 6 and 9, the setup card on Record whose Allow microphone is the only getUserMedia caller, micGranted saved through a new read-modify-write updatePrefs in storage/prefs.ts, and a plain RMS level bar that slice 6 replaces, so audio, session and UI connect end to end."
+verify = "Vitest shows requestMic passes echoCancellation, noiseSuppression and autoGainControl false, channelCount 1 and deviceId exact when given, and dev Playwright with ?fakeMic=open_strings shows no getUserMedia call before Allow microphone and the bar moving within 1 s of the click."
+covers = ["CAP-1", "CAP-3"]
+after = ["1.1", "1.3"]
+hitl = false
+risk = "medium"
+unknown = "Planned: recording-session writes micGranted and micDeviceId through storage/prefs.ts although AD-3 names settings-session as the prefs store; updatePrefs keeps other stores' fields."
+references = ["TabCreator-User-Stories.md, US-1.1, US-1.3", "_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/mockups/record.html, setup card"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Fake mic for devices, loss and input quality"
+description = "Test support for slices 5, 7 and 8: extends the dev-only fake mic with ?fakeMic=a,b as two devices, deviceId honoured with OverconstrainedError for unknown exact ids, hooks to unplug a device (devicechange plus track ended) and to revoke access (track ends, device stays listed), a hook making the next getUserMedia fail with a chosen DOMException, per-device sample-rate and label overrides, and the fixture restarting per stream."
+verify = "Fake-mic dev specs show two listed devices, an unplug that fires devicechange and ends the track, a revoke that ends the track while the device stays listed, an injected NotReadableError, a 16 kHz device labelled AirPods reporting those settings, and a second stream hearing the fixture from its start; the production bundle check still finds no fake mic."
+covers = []
+after = ["1.4"]
+hitl = false
+risk = "medium"
+references = ["testdata/README.md", "app/src/audio/fake-mic.ts"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Announcer and toast"
+description = "AD-18 plumbing used by slices 5 to 9: ui/a11y/announcer.ts as the single polite and assertive live region mounted once in the shell, and a toast component per DESIGN.md (bottom-centre, auto-dismiss after 4 s, one optional action), with their strings; after slice 1 because both edit the shell and strings.ts."
+verify = "Vitest shows announce() writes to the one live region and repeats identical messages, and a dev Playwright check shows a toast whose action is reachable by keyboard and that passes axe with no serious or critical violations."
+covers = []
+after = [1]
+hitl = false
+risk = "low"
+references = ["_bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-18", "_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Toast", "_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/DESIGN.md, Components, Toast"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Tuner pitch core"
+description = "Builds audio/tuner.ts as pure functions slice 9 drives from slice 1's 4096-sample AnalyserNode: YIN with threshold 0.15, parabolic interpolation, 70 to 400 Hz, frames below -50 dBFS ignored, a median of five estimates, and nearest-open-string cents."
+verify = "Vitest on generated sines at each open string offset by 0, 3, 10 and 25 cents reads within 1 cent, names the string for generated Karplus-Strong tones, and returns no pitch below -50 dBFS."
+covers = ["CAP-4"]
+after = ["1.1"]
+hitl = false
+risk = "high"
+unknown = "Whether YIN on main-thread AnalyserNode frames reaches 1 cent on Karplus-Strong tones without the window size or threshold changing."
+references = ["TabCreator-User-Stories.md, US-2.1", "testdata/synth/open_strings.json"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Mic errors and recovery"
+description = "Maps getUserMedia failures to mic-denied, mic-no-device, mic-in-use and mic-failed and shows each in the setup card with its message, numbered recovery steps and a Try again that works without reload, shows Microphone access was lost when access is revoked or the only device goes, re-requests on return only when navigator.permissions.query for the microphone (called in audio/, AD-2) reports granted and shows the card otherwise, announces errors through slice 3's announcer, and is tested with slice 2's fake-mic hooks."
+verify = "Dev Playwright shows each injected error's message and a working Try again with no prompt loop, a fake revoke or unplugging the only device shows the lost card, and on the production build a getUserMedia spy shows no call before Allow microphone."
+covers = ["CAP-1", "CAP-25"]
+after = [2, 3]
+hitl = false
+risk = "medium"
+unknown = "Copy for no device, in use and failed is not in EXPERIENCE.md; the builder writes it in its Voice and Tone for review."
+references = ["_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, State Patterns (first visit, denied/no device/in use, access lost)", "_bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-10"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Level meter with warnings"
+description = "Builds audio/level-meter.ts peak and RMS in dBFS from slice 1's AnalyserNode and the meter component replacing slice 1's plain bar: -60 to 0 dBFS scale, RMS fill, 1.5 s peak hold, meter colours, at least 30 fps, no easing under reduced motion, role meter with value text, Too loud at peak at or above -1 dBFS clearing after 2 s, and Too quiet after 3 s below -45 dBFS RMS, as text announced through slice 3's announcer, on Record and reusable on Tuner; after slice 5 because both edit recording-session, Record and strings.ts."
+verify = "Vitest proves the dBFS maths on a full-scale sine, and dev Playwright shows Too loud within 200 ms on level_too_hot, Too quiet after 3 s on silence_60s and no warning on open_strings, with axe clean."
+covers = ["CAP-3"]
+after = [5]
+hitl = false
+risk = "medium"
+unknown = "Planned: Too quiet also shows on Record before recording, following CAP-3 over EXPERIENCE.md's Level meter row (logged as a Source conflict); the under-2% CPU target is left to the budgets epic."
+references = ["TabCreator-User-Stories.md, US-1.3", "_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/mockups/record.html, meter"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Choose the microphone"
+description = "Adds the Microphone select (hidden with one device) on Record, persists micDeviceId through updatePrefs and falls back to the default when it is gone, refreshes on devicechange, switches the meter source by stopping the old tracks first, and shows Microphone disconnected — switched to <label> through slice 3's toast when the active device is unplugged, tested with slice 2's two-device and unplug hooks; the select is reusable on Tuner."
+verify = "Dev Playwright with ?fakeMic=open_strings,silence_60s lists both, switching changes the meter reading, the choice survives reload, and a fake unplug of the active device falls back with the toast."
+covers = ["CAP-2"]
+after = [6]
+hitl = false
+risk = "medium"
+references = ["TabCreator-User-Stories.md, US-1.2"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Input quality warning"
+description = "Shows the Bluetooth or low-rate warning banner when the active input runs below 44.1 kHz or its label matches the headset pattern, with a Dismiss that hides it for the session, on Record and reusable on Tuner, tested with slice 2's rate and label overrides."
+verify = "Dev Playwright shows the banner for a 16 kHz device and for one labelled AirPods, not for open_strings, and Dismiss hides it until reload."
+covers = ["CAP-26"]
+after = [7]
+hitl = false
+risk = "low"
+references = ["TabCreator-User-Stories.md, US-1.2, quality warning", "_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/mockups/record.html, Bluetooth banner"]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Tuner screen"
+description = "Builds the Tuner screen on slice 4's core reading slice 1's analyser every 50 ms: string name, needle of plus or minus 50 cents settling within 300 ms, signed cents with flat or sharp words, In tune after 500 ms within 3 cents without flicker, six chips ticked for the session, the no-pitch state, the setup card and error states from slices 1 and 5, the meter and select from slices 6 and 7, the quality banner from slice 8, and the Tune first and Done — go to Record links."
+verify = "Dev Playwright on ?fakeMic=open_strings opened from the Tuner ticks all six chips, shows In tune only after 500 ms, and passes axe with no serious or critical violations."
+covers = ["CAP-4"]
+after = [4, 8]
+hitl = false
+risk = "medium"
+unknown = "Planned: tuner readings come from recording-session's analyser; AD-3 names no tuner store."
+references = ["TabCreator-User-Stories.md, US-2.1", "_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/mockups/tuner.html"]
+
+[[entry]]
+id = 10
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what the build records and deferred review findings of stories 1 to 9 name; scope is set when it starts and takes cleanup only."
+verify = "CI stays green and every item in the sweep's agreed scope is closed or explicitly deferred."
+covers = []
+after = [9]
+hitl = false
+risk = "low"
