@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { recordingSession } from '../../session/recording-session';
+import { InputQualityBanner } from '../components/InputQualityBanner';
 import { LevelMeter } from '../components/LevelMeter';
 import { MicSelect } from '../components/MicSelect';
 import { micErrorCode, type MicErrorCode } from '../mic-error';
@@ -37,7 +38,11 @@ export function Record() {
 
   return (
     <section className={styles.screen}>
-      <h1 className={styles.title}>{strings['record.title']}</h1>
+      {/* First, above the h1 (mockup order); it renders only while the mic is live. */}
+      <InputQualityBanner />
+      <h1 className={styles.title} tabIndex={-1}>
+        {strings['record.title']}
+      </h1>
       <div
         ref={area}
         onFocus={() => (focusInside.current = true)}

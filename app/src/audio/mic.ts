@@ -126,6 +126,8 @@ export interface MicInput {
   readonly groupId: string | null;
   /** The track's label ("" when the browser gives none). */
   readonly label: string;
+  /** The track's `sampleRate` setting in Hz; null when it reports none. */
+  readonly sampleRate: number | null;
   /**
    * The analyser's current float time-domain frame (`ANALYSER_FFT_SIZE` samples). The array is
    * reused: it is overwritten by the next `readFrame` call.
@@ -135,14 +137,20 @@ export interface MicInput {
   close(): void;
 }
 
-/** The first audio track's device settings and label. */
-function trackDevice(stream: MediaStream): Pick<MicInput, 'deviceId' | 'groupId' | 'label'> {
+/** The first audio track's device settings, sample rate and label. */
+function trackDevice(
+  stream: MediaStream,
+): Pick<MicInput, 'deviceId' | 'groupId' | 'label' | 'sampleRate'> {
   const track = stream.getTracks()[0];
   const settings = track?.getSettings?.() ?? {};
   return {
     deviceId: settings.deviceId || null,
     groupId: settings.groupId || null,
     label: track?.label ?? '',
+    sampleRate:
+      typeof settings.sampleRate === 'number' && settings.sampleRate > 0
+        ? settings.sampleRate
+        : null,
   };
 }
 

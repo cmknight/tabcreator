@@ -247,12 +247,20 @@ describe('openInput', () => {
     expect(ctx.closed).toBe(true);
   });
 
-  it('reports the live track device id, group and label', () => {
+  it('reports the live track device id, group, label and sample rate', () => {
     vi.stubGlobal('AudioContext', FakeAudioContext);
-    const { stream } = fakeStream({ deviceId: 'usb', groupId: 'g1' }, 'USB');
-    expect(openInput(stream)).toMatchObject({ deviceId: 'usb', groupId: 'g1', label: 'USB' });
+    const { stream } = fakeStream({ deviceId: 'usb', groupId: 'g1', sampleRate: 16000 }, 'USB');
+    expect(openInput(stream)).toMatchObject({
+      deviceId: 'usb',
+      groupId: 'g1',
+      label: 'USB',
+      sampleRate: 16000,
+    });
     const bare = openInput(fakeStream().stream);
-    expect(bare).toMatchObject({ deviceId: null, groupId: null, label: '' });
+    expect(bare).toMatchObject({ deviceId: null, groupId: null, label: '', sampleRate: null });
+    expect(openInput(fakeStream({ sampleRate: 0 }).stream).sampleRate).toBeNull();
+    const odd = { sampleRate: '48000' } as unknown as MediaTrackSettings;
+    expect(openInput(fakeStream(odd).stream).sampleRate).toBeNull();
   });
 
   it('calls onEnded once with mic-lost when a track ends on its own', () => {

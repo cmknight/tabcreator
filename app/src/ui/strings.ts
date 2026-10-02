@@ -25,6 +25,11 @@ export const strings = {
     `${db < 0 ? `−${-db}` : `${db}`} dBFS${
       warning === 'loud' ? ', too loud' : warning === 'quiet' ? ', too quiet' : ''
     }`,
+  /** The input quality warning banner (EXPERIENCE.md Bluetooth / low-rate input). */
+  'global.inputQualityWarning':
+    'This microphone may be a Bluetooth headset in call mode — accuracy will be poor. Use the built-in or a wired mic.',
+  'global.dismiss': 'Dismiss',
+  'global.inputQualityDismissLabel': 'Dismiss Bluetooth warning for this session',
   'record.title': 'Record',
   'record.micSetupTitle': 'TabCreator needs your microphone',
   'record.micSetupText': 'Audio is analysed on this computer and never uploaded.',

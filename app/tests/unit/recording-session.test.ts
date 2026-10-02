@@ -7,8 +7,16 @@ const analyser = {} as AnalyserNode;
 /** The frame the fake input returns; tests fill it per reading. */
 let frame = new Float32Array(4096);
 const SILENT = { peakDb: -Infinity, rmsDb: -Infinity };
-/** The device fields of a snapshot when no device is listed (and always outside `live`). */
-const IDLE = { devices: [], activeDeviceId: null };
+/**
+ * The device and input quality fields of a snapshot when no device is listed and the input is
+ * fine (and always outside `live`, before any Dismiss).
+ */
+const IDLE = {
+  devices: [],
+  activeDeviceId: null,
+  inputQualityPoor: false,
+  inputQualityDismissed: false,
+};
 
 /** Lets pending promise callbacks and timers at 0 ms run. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -33,6 +41,7 @@ function setup(overrides: Partial<RecordingDeps> = {}) {
     deviceId: null,
     groupId: null,
     label: '',
+    sampleRate: null,
   };
   let onEnded: ((error: AppError) => void) | null = null;
   const deps = {
@@ -379,8 +388,16 @@ describe('recording session', () => {
      * A fake audio/ with listed devices: the default request opens the first listed device,
      * an exact id that is not listed rejects `mic-no-device`. Logs every call in order.
      */
-    function devicesSetup(options: { listed?: (typeof A)[]; saved?: string | null } = {}) {
+    function devicesSetup(
+      options: {
+        listed?: (typeof A)[];
+        saved?: string | null;
+        /** Track sample rates by device id; 48 000 for any other. */
+        rates?: Record<string, number>;
+      } = {},
+    ) {
       let listed = options.listed ?? [A, B];
+      const rates = options.rates ?? {};
       let saved = options.saved ?? null;
       const log: string[] = [];
       const inputs: {
@@ -411,6 +428,7 @@ describe('recording session', () => {
             deviceId,
             groupId: `g${deviceId}`,
             label: `track ${deviceId}`,
+            sampleRate: rates[deviceId] ?? 48_000,
           };
         }),
         listMics: vi.fn(() => Promise.resolve([...listed])),
@@ -473,6 +491,7 @@ describe('recording session', () => {
         deviceId: 'default',
         groupId: 'gb',
         label: 'Default - Mic B',
+        sampleRate: 48_000,
       }));
       const s2 = createRecordingSession(deps);
       await s2.allowMic();
@@ -632,6 +651,7 @@ describe('recording session', () => {
         deviceId,
         groupId: null,
         label: '',
+        sampleRate: null,
       }));
       const session = createRecordingSession(setup.deps);
       await session.allowMic();
@@ -683,6 +703,137 @@ describe('recording session', () => {
       await revoke();
       expect(hasDeviceChangeListener()).toBe(false);
       expect(session.getSnapshot().devices).toEqual([]);
+    });
+
+    describe('input quality', () => {
+      const HEADSET = { deviceId: 'h', label: 'AirPods Pro (Hands-Free)', groupId: 'gh' };
+      const quality = (session: { getSnapshot(): { inputQualityPoor: boolean } }) =>
+        session.getSnapshot().inputQualityPoor;
+
+      it('a normal input at 48 kHz is fine', async () => {
+        const { session } = devicesSetup();
+        await session.allowMic();
+        expect(session.getSnapshot()).toMatchObject({
+          mic: 'live',
+          inputQualityPoor: false,
+          inputQualityDismissed: false,
+        });
+      });
+
+      it('a rate below 44.1 kHz is poor; exactly 44 100 is fine', async () => {
+        const low = devicesSetup({ rates: { a: 16_000 } });
+        await low.session.allowMic();
+        expect(quality(low.session)).toBe(true);
+        const edge = devicesSetup({ rates: { a: 44_100 } });
+        await edge.session.allowMic();
+        expect(quality(edge.session)).toBe(false);
+      });
+
+      it('an unknown rate with a normal label is fine', async () => {
+        const { session } = await liveUnresolved('a');
+        // liveUnresolved's track reports no rate, no label and a listed id 'a' ("Mic A").
+        expect(session.getSnapshot()).toMatchObject({ mic: 'live', activeDeviceId: 'a' });
+        expect(quality(session)).toBe(false);
+      });
+
+      it("a headset label on the listed device is poor, even with the track's label fine", async () => {
+        const { session } = devicesSetup({ listed: [HEADSET, A] });
+        await session.allowMic();
+        expect(session.getSnapshot()).toMatchObject({
+          activeDeviceId: 'h',
+          inputQualityPoor: true,
+        });
+      });
+
+      it('falls back to the track label when the input is not listed', async () => {
+        const { deps } = devicesSetup();
+        deps.openInput = vi.fn(() => ({
+          analyser,
+          readFrame: () => frame,
+          close: vi.fn(),
+          deviceId: 'default',
+          groupId: null,
+          label: 'Bluetooth Headset',
+          sampleRate: null,
+        }));
+        const s2 = createRecordingSession(deps);
+        await s2.allowMic();
+        expect(s2.getSnapshot()).toMatchObject({
+          activeDeviceId: 'default',
+          inputQualityPoor: true,
+        });
+      });
+
+      it('switching away from a poor input clears it; switching to one sets it', async () => {
+        const { session } = devicesSetup({ listed: [HEADSET, A] });
+        await session.allowMic();
+        expect(quality(session)).toBe(true);
+        const switching = session.selectMic('a');
+        // Kept while the new input opens.
+        expect(quality(session)).toBe(true);
+        await switching;
+        expect(quality(session)).toBe(false);
+        await session.selectMic('h');
+        expect(quality(session)).toBe(true);
+      });
+
+      it('recomputes on devicechange when the active input is relabelled', async () => {
+        const { session, setListed, fireDeviceChange } = devicesSetup();
+        const listener = vi.fn();
+        session.subscribe(listener);
+        await session.allowMic();
+        expect(quality(session)).toBe(false);
+        listener.mockClear();
+        setListed([{ ...A, label: 'Headset' }, B]);
+        await fireDeviceChange();
+        expect(quality(session)).toBe(true);
+        expect(listener).toHaveBeenCalledTimes(1);
+        setListed([A, B]);
+        await fireDeviceChange();
+        expect(quality(session)).toBe(false);
+      });
+
+      it('is false whenever the mic is not live', async () => {
+        const { session, revoke } = devicesSetup({ listed: [HEADSET, A] });
+        expect(quality(session)).toBe(false);
+        await session.allowMic();
+        expect(quality(session)).toBe(true);
+        await revoke();
+        expect(session.getSnapshot()).toMatchObject({ mic: 'error', inputQualityPoor: false });
+      });
+
+      it('Dismiss lasts for the session, across switches and mic transitions, notifying once', async () => {
+        const { session, revoke } = devicesSetup({ listed: [HEADSET, A], rates: { a: 16_000 } });
+        const listener = vi.fn();
+        session.subscribe(listener);
+        await session.allowMic();
+        listener.mockClear();
+        session.dismissInputQuality();
+        session.dismissInputQuality();
+        expect(listener).toHaveBeenCalledTimes(1);
+        expect(session.getSnapshot()).toMatchObject({
+          inputQualityPoor: true,
+          inputQualityDismissed: true,
+        });
+        // Another poor device: still dismissed.
+        await session.selectMic('a');
+        expect(session.getSnapshot()).toMatchObject({
+          activeDeviceId: 'a',
+          inputQualityPoor: true,
+          inputQualityDismissed: true,
+        });
+        await revoke();
+        await session.allowMic();
+        expect(session.getSnapshot().inputQualityDismissed).toBe(true);
+      });
+
+      it('Dismiss is never saved to prefs', async () => {
+        const { session, deps } = devicesSetup({ listed: [HEADSET] });
+        await session.allowMic();
+        vi.mocked(deps.updatePrefs).mockClear();
+        session.dismissInputQuality();
+        expect(deps.updatePrefs).not.toHaveBeenCalled();
+      });
     });
 
     it('an older device list answer never replaces a newer one', async () => {

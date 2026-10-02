@@ -7,6 +7,10 @@
 // It also owns the input device list (refreshed on `devicechange` while live), the chosen
 // device (`micDeviceId`) and the fallback to the default input when the active one is unplugged.
 //
+// While live it also derives the input quality warning (story 2.8) from the live track's sample
+// rate and the active input's label; Dismiss hides it for the rest of the page session (memory
+// only, never prefs).
+//
 // Decision (epic 2, 2026-10-02): this store writes `micGranted` and `micDeviceId` through
 // storage/prefs.ts, although AD-3 names settings-session as the prefs store.
 
@@ -23,6 +27,7 @@ import {
   type MicPermission,
 } from '../audio/mic';
 import { AppError, isAppError, type AppErrorCode } from '../model/errors';
+import { isPoorInput } from '../model/input-quality';
 import {
   INITIAL_LEVEL_WARNING_STATE,
   nextWarning,
@@ -54,6 +59,13 @@ export interface RecordingSnapshot {
   activeDeviceId: string | null;
   /** The latest notice; kept until the next one replaces it. */
   notice?: MicNotice;
+  /**
+   * The live input is likely a Bluetooth headset in call mode or runs below 44.1 kHz. False
+   * unless `live`; kept through a device switch until the new input opens.
+   */
+  inputQualityPoor: boolean;
+  /** The quality warning was dismissed; in memory only, for the rest of the page session. */
+  inputQualityDismissed: boolean;
 }
 
 /** A longer pause between level reads resets the warning machine. */
@@ -89,11 +101,13 @@ export interface RecordingSession {
   readLevels(now: number): LevelsDbfs;
   /** The live input's analyser, for the meter and tuner slices; null when not live. */
   getAnalyser(): AnalyserNode | null;
+  /** Hides the input quality warning until the page reloads, whatever input is chosen. */
+  dismissInputQuality(): void;
 }
 
 type OpenedInput = Pick<
   MicInput,
-  'analyser' | 'readFrame' | 'close' | 'deviceId' | 'groupId' | 'label'
+  'analyser' | 'readFrame' | 'close' | 'deviceId' | 'groupId' | 'label' | 'sampleRate'
 >;
 
 /** The shell functions the store drives; injected so tests can fake audio/ and storage/. */
@@ -118,6 +132,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     levelWarning: null,
     devices: [],
     activeDeviceId: null,
+    inputQualityPoor: false,
+    inputQualityDismissed: false,
   };
   let input: OpenedInput | null = null;
   let warnings = INITIAL_LEVEL_WARNING_STATE;
@@ -148,17 +164,25 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     lastReadAt = null;
     const live = next.mic === 'live';
     const notice = next.notice ?? snapshot.notice;
+    const devices = live ? (next.devices ?? snapshot.devices) : [];
     notify({
       mic: next.mic,
       ...(next.errorCode ? { errorCode: next.errorCode } : {}),
       levelWarning: null,
-      devices: live ? (next.devices ?? snapshot.devices) : [],
+      devices,
       activeDeviceId: !live
         ? null
         : 'activeDeviceId' in next
           ? (next.activeDeviceId ?? null)
           : snapshot.activeDeviceId,
       ...(notice ? { notice } : {}),
+      // While a switch runs there is no input: keep the last answer until the new one opens.
+      inputQualityPoor: !live
+        ? false
+        : input
+          ? poorInput(input, devices)
+          : snapshot.inputQualityPoor,
+      inputQualityDismissed: snapshot.inputQualityDismissed,
     });
     if (live && !stopDeviceChange) stopDeviceChange = deps.onDeviceChange(refreshDevices);
     if (!live && stopDeviceChange) {
@@ -195,13 +219,30 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   const activeId = (opened: OpenedInput, devices: readonly MicDevice[]) =>
     activeDevice(opened, devices)?.deviceId ?? opened.deviceId;
 
-  /** Re-reads the device list while live (a `devicechange`), keeping the active id resolved. */
+  /** The quality rule on `opened`'s rate and label: the listed device's, else the track's. */
+  const poorInput = (opened: OpenedInput, devices: readonly MicDevice[]) =>
+    isPoorInput({
+      sampleRate: opened.sampleRate,
+      label: activeDevice(opened, devices)?.label || opened.label,
+    });
+
+  /**
+   * Re-reads the device list while live (a `devicechange`), keeping the active id resolved and
+   * the quality warning current (a relabelled input).
+   */
   async function refreshDevices() {
     const seq = ++listSeq;
     const devices = await listDevices();
     if (seq !== listSeq || snapshot.mic !== 'live') return;
-    const activeDeviceId = input && !busy ? activeId(input, devices) : snapshot.activeDeviceId;
-    notify({ ...snapshot, devices, activeDeviceId });
+    const settled = input && !busy ? input : null;
+    const activeDeviceId = settled ? activeId(settled, devices) : snapshot.activeDeviceId;
+    const inputQualityPoor = settled ? poorInput(settled, devices) : snapshot.inputQualityPoor;
+    notify({ ...snapshot, devices, activeDeviceId, inputQualityPoor });
+  }
+
+  function dismissInputQuality() {
+    if (snapshot.inputQualityDismissed) return;
+    notify({ ...snapshot, inputQualityDismissed: true });
   }
 
   /** Opens `stream` as the live input, then lists the devices. Throws `AppError`. */
@@ -376,6 +417,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     selectMic,
     readLevels,
     getAnalyser: () => input?.analyser ?? null,
+    dismissInputQuality,
   };
 }
 
