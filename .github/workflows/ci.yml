@@ -70,6 +70,32 @@ jobs:
         working-directory: engine
         run: cargo test --locked
 
+      # US-8.4: the fixture accuracy report (thresholds shown, not enforced), built in release
+      # so its analyze timing is meaningful. Published to the job summary and as an artifact
+      # even when a later step fails.
+      - name: Accuracy report
+        working-directory: engine
+        env:
+          ACCURACY_REPORT: ${{ runner.temp }}/accuracy-report.md
+        run: cargo test --release --locked --test fixtures
+
+      - name: Accuracy report to job summary
+        if: always()
+        env:
+          ACCURACY_REPORT: ${{ runner.temp }}/accuracy-report.md
+        run: |
+          if [ -f "$ACCURACY_REPORT" ]; then
+            cat "$ACCURACY_REPORT" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload accuracy report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: accuracy-report
+          path: ${{ runner.temp }}/accuracy-report.md
+          if-no-files-found: ignore
+
       # Lint and typecheck need the generated app/src/engine/pkg/.
       - name: Build engine
         run: pnpm build:engine
