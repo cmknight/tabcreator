@@ -6,7 +6,7 @@ import { AppError } from '../../src/model/errors';
 import type { Tab, Take } from '../../src/model/types';
 import { createTakeDb, type ConnectionState, type TakeDb } from '../../src/storage/db';
 import { subscribe, type StorageEvent } from '../../src/storage/events';
-import { MIGRATIONS, type Migration } from '../../src/storage/migrations';
+import { DB_VERSION, MIGRATIONS, type Migration } from '../../src/storage/migrations';
 import { resetFenceForTests } from '../../src/storage/write-guard';
 
 const NAME = 'tabcreator-test';
@@ -399,8 +399,8 @@ describe('connection state', () => {
     db.onConnectionState((s) => states.push(s));
     await db.createTake(makeTake());
     // Another tab opens a newer version: ours must close so its upgrade can proceed.
-    const newer = await openDB(NAME, 2);
-    expect(newer.version).toBe(2);
+    const newer = await openDB(NAME, DB_VERSION + 1);
+    expect(newer.version).toBe(DB_VERSION + 1);
     newer.close();
     expect(states).toEqual(['versionchange']);
     expect((await rejection(db.getTake('take-1'))).code).toBe('storage-failed');

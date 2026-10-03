@@ -711,3 +711,196 @@ test('the Microphone select is disabled with its reason during the count-in and 
   await expect(select).not.toHaveAttribute('aria-describedby');
   expect(errors).toEqual([]);
 });
+
+// Story 3.9: failure stops keep the take. A mic loss mid-take saves it as `mic-lost` and stays
+// on Record; a full disk (the dev `__storageFullHook`) saves it as `storage-full` with a banner.
+
+const OPEN_DEVICE = 'fake-mic-open_strings';
+const LOST_TITLE = 'Microphone access was lost';
+const STORAGE_FULL = 'Storage is full — recording stopped and saved';
+const storageBanner = (page: Page) => page.getByTestId('storage-full-banner');
+
+/** The ids of every saved take. */
+function takeIds(page: Page): Promise<string[]> {
+  return page.evaluate(
+    () =>
+      new Promise<string[]>((resolve, reject) => {
+        const open = indexedDB.open('tabcreator');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const keys = db.transaction('takes').objectStore('takes').getAllKeys();
+          keys.onsuccess = () => {
+            resolve(keys.result as string[]);
+            db.close();
+          };
+          keys.onerror = () => reject(keys.error);
+        };
+      }),
+  );
+}
+
+/**
+ * Waits until the take has `ms` of audio-clock time, then runs `then` (by name) at once. Rejects
+ * when that time is not reached within 15 s (the take stopped early).
+ */
+async function atElapsed(
+  page: Page,
+  ms: number,
+  then: 'unplug' | 'revoke' | 'storageFull',
+): Promise<void> {
+  await page.evaluate(
+    async ([at, action, device]) => {
+      const path = '/src/session/recording-session.ts';
+      const { recordingSession } = (await import(
+        /* @vite-ignore */ path
+      )) as typeof import('../../src/session/recording-session');
+      const deadline = Date.now() + 15_000;
+      await new Promise<void>((resolve, reject) => {
+        const id = setInterval(() => {
+          if (recordingSession.readElapsedMs() < at) {
+            if (Date.now() > deadline) {
+              clearInterval(id);
+              reject(new Error(`atElapsed: the take never reached ${at} ms (did it stop early?)`));
+            }
+            return;
+          }
+          clearInterval(id);
+          if (action === 'unplug') window.__fakeMic!.unplug(device);
+          else if (action === 'revoke') window.__fakeMic!.revoke();
+          else (window as unknown as { __storageFullHook: boolean }).__storageFullHook = true;
+          resolve();
+        }, 2);
+      });
+    },
+    [ms, then, OPEN_DEVICE] as const,
+  );
+}
+
+/** Waits for the one saved take to be `recorded` and returns it. */
+async function savedTake(page: Page): Promise<SavedTake> {
+  await expect.poll(() => takeIds(page)).toHaveLength(1);
+  const [id] = await takeIds(page);
+  await expect.poll(async () => (await readSaved(page, id!)).take?.status).toBe('recorded');
+  return readSaved(page, id!);
+}
+
+test('unplug mid-take: the take is saved as mic-lost, a toast, the mic live on the other input', async ({
+  page,
+}) => {
+  const errors = await goLive(page, 'open_strings,silence_60s');
+  await recordButton(page).click();
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
+  await atElapsed(page, 3_000, 'unplug');
+
+  await expect(page.getByTestId('toast')).toHaveText(
+    'Microphone disconnected — recording stopped and saved',
+    { timeout: 5_000 },
+  );
+  await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  // Live on the silent input left.
+  await expect(page.getByRole('meter', { name: 'Input level' })).toHaveAttribute(
+    'aria-valuenow',
+    '-60',
+  );
+  await expect(page.getByRole('region', { name: LOST_TITLE })).toHaveCount(0);
+  await expect(page).toHaveURL(/#\/record$/);
+
+  const saved = await savedTake(page);
+  expect(saved.take).toMatchObject({ status: 'recorded', stopReason: 'mic-lost', audioMime: MIME });
+  expect(Math.abs(saved.take!.durationMs - 3_000)).toBeLessThanOrEqual(500);
+  expect(saved.rawSamples).not.toBeNull();
+  expect(saved.decodedSeconds).not.toBeNull();
+  // Recording did not continue on the fallback input.
+  await page.waitForTimeout(500);
+  expect(await takeIds(page)).toHaveLength(1);
+  await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
+  expect(errors).toEqual([]);
+});
+
+test('revoke mid-take: the take is saved as mic-lost, then the lost card', async ({ page }) => {
+  const errors = await goLive(page, 'open_strings,silence_60s');
+  await recordButton(page).click();
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
+  await atElapsed(page, 3_000, 'revoke');
+
+  await expect(page.getByRole('region', { name: LOST_TITLE })).toBeVisible({ timeout: 5_000 });
+  await expect(page).toHaveURL(/#\/record$/);
+  await expect(page.getByTestId('toast')).toHaveCount(0);
+  const saved = await savedTake(page);
+  expect(saved.take).toMatchObject({ status: 'recorded', stopReason: 'mic-lost', audioMime: MIME });
+  expect(Math.abs(saved.take!.durationMs - 3_000)).toBeLessThanOrEqual(500);
+  expect(errors).toEqual([]);
+});
+
+test('storage full mid-take: saved as storage-full, the error banner with a Library link, mic live; the next take clears it', async ({
+  page,
+}) => {
+  const errors = await goLive(page);
+  await recordButton(page).click();
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
+  await atElapsed(page, 2_000, 'storageFull');
+
+  await expect(storageBanner(page)).toBeVisible({ timeout: 5_000 });
+  await expect(storageBanner(page)).toContainText(STORAGE_FULL);
+  const link = storageBanner(page).getByRole('link', { name: 'Go to Library' });
+  await expect(link).toHaveAttribute('href', '#/library');
+  await expect(storageBanner(page)).not.toHaveAttribute('aria-live');
+  await expect(page.locator('[aria-live="assertive"]')).toHaveText(STORAGE_FULL);
+  // Above the h1, no Dismiss.
+  await expect(storageBanner(page).getByRole('button')).toHaveCount(0);
+  const order = await page.evaluate(() => {
+    const banner = document.querySelector('[data-testid="storage-full-banner"]')!;
+    const h1 = document.querySelector('h1')!;
+    return banner.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING;
+  });
+  expect(order).toBeTruthy();
+  await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  await expect(page).toHaveURL(/#\/record$/);
+  await expectNoSeriousAxe(page);
+
+  const saved = await savedTake(page);
+  expect(saved.take).toMatchObject({
+    status: 'recorded',
+    stopReason: 'storage-full',
+    audioMime: MIME,
+  });
+  // Only the samples actually written: up to the last full chunk before the hook.
+  const { durationMs, sampleRate } = saved.take!;
+  expect(durationMs).toBeGreaterThanOrEqual(1_000);
+  expect(durationMs).toBeLessThanOrEqual(3_000);
+  expect(Math.abs(durationMs - (saved.rawSamples! / sampleRate) * 1000)).toBeLessThan(50);
+
+  // Record remounting with the banner showing announces it again: via its link to the Library
+  // and back.
+  await page.evaluate(() => {
+    const w = window as unknown as { __assertive: string[] };
+    w.__assertive = [];
+    const region = document.querySelector('[role="alert"][aria-live="assertive"]')!;
+    new MutationObserver(() => {
+      const text = region.textContent ?? '';
+      if (text) w.__assertive.push(text);
+    }).observe(region, { childList: true, characterData: true, subtree: true });
+  });
+  await link.click();
+  await expect(page).toHaveURL(/#\/library$/);
+  await page.getByRole('link', { name: 'Record', exact: true }).click();
+  await expect(page).toHaveURL(/#\/record$/);
+  await expect(storageBanner(page)).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __assertive: string[] }).__assertive))
+    .toEqual([STORAGE_FULL]);
+
+  // The banner shows until the next take starts.
+  await page.evaluate(() => {
+    (window as unknown as { __storageFullHook: boolean }).__storageFullHook = false;
+  });
+  await recordButton(page).click();
+  await expect(storageBanner(page)).toHaveCount(0);
+  await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
+  await stopButton(page).click();
+  await tabTakeId(page);
+  expect(errors).toEqual([]);
+});

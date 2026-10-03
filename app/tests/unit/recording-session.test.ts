@@ -27,6 +27,7 @@ const IDLE = {
   countIn: { on: false, bpm: 100 },
   nearLimit: false,
   savedSeq: 0,
+  storageFull: false,
 };
 
 /** The prefs' analysis defaults the fakes return; `record()` copies them into the take. */

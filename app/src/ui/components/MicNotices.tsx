@@ -5,7 +5,8 @@ import { strings } from '../strings';
 
 /**
  * Shows a toast for each new recording-session notice (a new `notice.seq`): the input switched
- * after an unplug, or a too-short take discarded. On whatever screen the player is: the store
+ * after an unplug, a take stopped and saved after its input was unplugged, or a too-short take
+ * discarded. On whatever screen the player is: the store
  * emits, the shell shows (spine AD-3, AD-18). Renders nothing. Mount exactly once, in the shell.
  */
 export function MicNotices() {
@@ -17,6 +18,10 @@ export function MicNotices() {
       seen = notice.seq;
       if (notice.kind === 'too-short') {
         showToast({ message: strings['record.tooShort'] });
+        return;
+      }
+      if (notice.kind === 'stopped-saved') {
+        showToast({ message: strings['global.micStoppedSaved'] });
         return;
       }
       // An unlabelled input is named as the Microphone select names it.

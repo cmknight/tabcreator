@@ -4,6 +4,7 @@ import { LevelMeter } from '../components/LevelMeter';
 import { MicGate } from '../components/MicGate';
 import { MicSelect } from '../components/MicSelect';
 import { RecordButton } from '../components/RecordButton';
+import { StorageFullBanner } from '../components/StorageFullBanner';
 import { strings } from '../strings';
 import styles from './Screen.module.css';
 import recordStyles from './Record.module.css';
@@ -11,6 +12,8 @@ import recordStyles from './Record.module.css';
 export function Record() {
   return (
     <section className={styles.screen}>
+      {/* Above the h1: shown after a take stopped because storage is full, until the next take. */}
+      <StorageFullBanner />
       {/* First, above the h1 (mockup order); it renders only while the mic is live. */}
       <InputQualityBanner />
       {/* The h1 with "Tune first" at the row's right end (mockup record.html rec-head). */}

@@ -27,8 +27,12 @@ export interface Note extends DetectedNote {
 
 export type TakeStatus = 'recording' | 'recorded' | 'analyzed';
 
-/** Why a recording ended (spine take lifecycle: stop / mic lost / max length / instance lost / recovery). */
-export type StopReason = 'user' | 'max-length' | 'mic-lost' | 'instance-lost' | 'recovered';
+/**
+ * Why a recording ended (spine take lifecycle: stop / mic lost / max length / storage full /
+ * instance lost / recovery).
+ */
+export type StopReason =
+  'user' | 'max-length' | 'mic-lost' | 'storage-full' | 'instance-lost' | 'recovered';
 
 export interface Take {
   id: string;

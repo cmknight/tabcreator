@@ -27,6 +27,7 @@ const LIVE: RecordingSnapshot = {
   countIn: { on: false, bpm: 100 },
   nearLimit: false,
   savedSeq: 0,
+  storageFull: false,
 };
 
 describe('unnamed microphone label', () => {

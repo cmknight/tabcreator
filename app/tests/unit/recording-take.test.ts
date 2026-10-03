@@ -401,21 +401,293 @@ describe('recording a take', () => {
       activeTakeId: null,
     });
   });
+});
 
-  it('leaves the take recording, with its raw chunks, when the track ends mid-take', async () => {
+// Story 3.9: failure stops keep the take. A mic loss mid-take saves it as `mic-lost` before the
+// idle rule decides the mic; a `storage-full` append saves it as `storage-full` with the banner.
+describe('failure stops', () => {
+  const SAVED_LOG = [
+    'createTake take-1',
+    'openRawWriter take-1',
+    'capture.stop',
+    'writeCompressed take-1 audio/webm;codecs=opus',
+    'writer.close after 3 appends',
+    'patchTake take-1',
+  ];
+
+  /** The input's device is gone from the list; `others` remain. */
+  function unplugged(t: ReturnType<typeof setup>, others = [{ ...DEVICE, deviceId: 'mic-b' }]) {
+    vi.mocked(t.deps.listMics).mockResolvedValue(others);
+  }
+
+  const storageFull = () => Promise.reject(new AppError('storage-full', 'quota exceeded'));
+
+  it('unplug mid-take: saved as mic-lost, the input closed after, the default opened, stopped-saved notice', async () => {
+    const t = await recording();
+    unplugged(t);
+    await t.endTrack();
+    await flush();
+    // The capture is stopped and the take saved before the input is released.
+    expect(t.log).toEqual([...SAVED_LOG, 'input.close']);
+    expect(t.deps.patchTake).toHaveBeenCalledWith(
+      'take-1',
+      {
+        status: 'recorded',
+        durationMs: 2500,
+        audioMime: 'audio/webm;codecs=opus',
+        stopReason: 'mic-lost',
+        clipped: false,
+      },
+      'recording-session',
+    );
+    expect(t.capture.abort).not.toHaveBeenCalled();
+    expect(t.deps.navigate).not.toHaveBeenCalled();
+    // One default request after the allow: the fallback; recording does not continue on it.
+    expect(t.deps.requestMic).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(t.deps.requestMic).mock.calls[1]).toEqual([]);
+    expect(t.input.capture).toHaveBeenCalledTimes(1);
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'live',
+      recording: 'idle',
+      activeTakeId: null,
+      notice: { kind: 'stopped-saved' },
+      savedSeq: 1,
+      storageFull: false,
+    });
+  });
+
+  it('a mid-take mic loss keeps the clipped count', async () => {
+    const t = await recording();
+    t.emit(chunk(3), 2);
+    await t.endTrack();
+    await flush();
+    expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
+      stopReason: 'mic-lost',
+      clipped: true,
+    });
+  });
+
+  it('revoke mid-take (devices still listed): saved as mic-lost, then the lost card', async () => {
     const t = await recording();
     await t.endTrack();
-    expect(t.capture.abort).toHaveBeenCalledTimes(1);
-    expect(t.writer.close).toHaveBeenCalledTimes(1);
-    expect(t.appended).toEqual([1, 2]);
-    expect(t.deps.patchTake).not.toHaveBeenCalled();
-    expect(t.deps.writeCompressed).not.toHaveBeenCalled();
+    await flush();
+    expect(t.log).toEqual([...SAVED_LOG, 'input.close']);
+    expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
+      status: 'recorded',
+      stopReason: 'mic-lost',
+      durationMs: 2500,
+    });
     expect(t.deps.navigate).not.toHaveBeenCalled();
-    expect(t.session.getSnapshot()).toMatchObject({ recording: 'idle', activeTakeId: null });
-    // A later chunk from the torn-down capture is dropped.
+    expect(t.deps.requestMic).toHaveBeenCalledTimes(1);
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'error',
+      errorCode: 'mic-lost',
+      recording: 'idle',
+      activeTakeId: null,
+      savedSeq: 1,
+    });
+    expect(t.session.getSnapshot().notice).toBeUndefined();
+    // A later chunk from the stopped capture is dropped.
     t.emit(chunk(5));
     await flush();
-    expect(t.appended).toEqual([1, 2]);
+    expect(t.appended).toEqual([1, 2, 9]);
+  });
+
+  it('the only device unplugged mid-take: saved as mic-lost, then the lost card', async () => {
+    const t = await recording();
+    unplugged(t, []);
+    await t.endTrack();
+    await flush();
+    expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
+      stopReason: 'mic-lost',
+    });
+    expect(t.deps.requestMic).toHaveBeenCalledTimes(1);
+    expect(t.session.getSnapshot()).toMatchObject({ mic: 'error', errorCode: 'mic-lost' });
+    expect(t.session.getSnapshot().notice).toBeUndefined();
+  });
+
+  it('a short mic-lost take (0.2 s) is deleted; the unplug still switches with its notice', async () => {
+    const t = setup();
+    await t.session.allowMic();
+    const started = t.session.record();
+    t.created.resolve();
+    await started;
+    vi.mocked(t.capture.stop).mockImplementation(async () => {
+      t.log.push('capture.stop');
+      t.emit(chunk(1, RATE / 5));
+      return { parts: [new Blob(['webm'])] };
+    });
+    unplugged(t);
+    await t.endTrack();
+    await flush();
+    expect(t.deps.deleteTake).toHaveBeenCalledWith('take-1', 'recording-session');
+    expect(t.deps.writeCompressed).not.toHaveBeenCalled();
+    expect(t.deps.patchTake).not.toHaveBeenCalled();
+    expect(t.deps.navigate).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'live',
+      recording: 'idle',
+      // Nothing was saved, so the toast is the plain switch.
+      notice: { kind: 'switched' },
+      savedSeq: 0,
+    });
+  });
+
+  it('a mic loss whose save fails leaves the take recording, with no error card for it', async () => {
+    const t = await recording({ writeCompressed: vi.fn(storageFull) });
+    unplugged(t);
+    await t.endTrack();
+    await flush();
+    expect(t.deps.patchTake).not.toHaveBeenCalled();
+    expect(t.deps.deleteTake).not.toHaveBeenCalled();
+    expect(t.writer.close).toHaveBeenCalledTimes(1);
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'live',
+      recording: 'idle',
+      notice: { kind: 'switched' },
+      savedSeq: 0,
+    });
+  });
+
+  it('storage full mid-take: no more appends, saved as storage-full, mic live, the banner on', async () => {
+    const t = await recording();
+    const listener = vi.fn();
+    t.session.subscribe(listener);
+    vi.mocked(t.writer.append).mockImplementation(storageFull);
+    t.emit(chunk(3));
+    await flush();
+    await flush();
+    // The rejected chunk 3 is the last append tried; the final chunk at stop is not sent.
+    expect(t.writer.append).toHaveBeenCalledTimes(3);
+    expect(t.log).toEqual([
+      'createTake take-1',
+      'openRawWriter take-1',
+      'capture.stop',
+      'writeCompressed take-1 audio/webm;codecs=opus',
+      'writer.close after 2 appends',
+      'patchTake take-1',
+    ]);
+    expect(t.deps.patchTake).toHaveBeenCalledWith(
+      'take-1',
+      {
+        status: 'recorded',
+        // Only the samples actually written: chunks 1 and 2.
+        durationMs: 2000,
+        audioMime: 'audio/webm;codecs=opus',
+        stopReason: 'storage-full',
+        clipped: false,
+      },
+      'recording-session',
+    );
+    expect(t.deps.navigate).not.toHaveBeenCalled();
+    expect(t.input.close).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'live',
+      recording: 'idle',
+      activeTakeId: null,
+      savedSeq: 1,
+      storageFull: true,
+    });
+    expect(t.session.getSnapshot().errorCode).toBeUndefined();
+    // stopping, then idle with the banner in one notify.
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it('storage full and the save fails too: the take stays recording, the banner, no error card', async () => {
+    const t = await recording({ writeCompressed: vi.fn(storageFull) });
+    vi.mocked(t.writer.append).mockImplementation(storageFull);
+    t.emit(chunk(3));
+    await flush();
+    await flush();
+    expect(t.deps.patchTake).not.toHaveBeenCalled();
+    expect(t.deps.deleteTake).not.toHaveBeenCalled();
+    expect(t.writer.close).toHaveBeenCalledTimes(1);
+    expect(t.deps.navigate).not.toHaveBeenCalled();
+    expect(t.input.close).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'live',
+      recording: 'idle',
+      activeTakeId: null,
+      savedSeq: 0,
+      storageFull: true,
+    });
+    expect(t.session.getSnapshot().errorCode).toBeUndefined();
+  });
+
+  it('the banner clears when the next take starts', async () => {
+    const t = await recording();
+    vi.mocked(t.writer.append).mockImplementation(storageFull);
+    t.emit(chunk(3));
+    await flush();
+    await flush();
+    expect(t.session.getSnapshot().storageFull).toBe(true);
+    vi.mocked(t.writer.append).mockImplementation(async () => {});
+    vi.mocked(t.deps.newId).mockReturnValue('take-2');
+    const started = t.session.record();
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'starting', storageFull: false });
+    await started;
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'recording', storageFull: false });
+  });
+
+  it('a short storage-full take (0.2 s) is deleted with the too-short notice, and the banner on', async () => {
+    const t = setup();
+    await t.session.allowMic();
+    const started = t.session.record();
+    t.created.resolve();
+    await started;
+    vi.mocked(t.capture.stop).mockImplementation(async () => {
+      t.log.push('capture.stop');
+      return { parts: [new Blob(['webm'])] };
+    });
+    // 0.2 s written, then the disk fills.
+    t.emit(chunk(1, RATE / 5));
+    await flush();
+    vi.mocked(t.writer.append).mockImplementation(storageFull);
+    t.emit(chunk(2));
+    await flush();
+    await flush();
+    expect(t.deps.deleteTake).toHaveBeenCalledWith('take-1', 'recording-session');
+    expect(t.deps.patchTake).not.toHaveBeenCalled();
+    expect(t.deps.navigate).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'live',
+      recording: 'idle',
+      notice: { kind: 'too-short' },
+      savedSeq: 0,
+      storageFull: true,
+    });
+  });
+
+  it('storage full during a Stop: saved as storage-full, no Tab', async () => {
+    const t = await recording();
+    vi.mocked(t.writer.append).mockImplementation(storageFull);
+    t.emit(chunk(3));
+    // The Stop comes before the rejection lands.
+    await t.session.stop('user');
+    await flush();
+    expect(t.deps.patchTake).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
+      stopReason: 'storage-full',
+      durationMs: 2000,
+    });
+    expect(t.deps.navigate).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot()).toMatchObject({ mic: 'live', storageFull: true });
+  });
+
+  it("another append failure keeps today's behaviour: the take goes on and Stop saves it", async () => {
+    const t = await recording();
+    vi.mocked(t.writer.append).mockImplementationOnce(() =>
+      Promise.reject(new AppError('storage-failed', 'io')),
+    );
+    t.emit(chunk(3));
+    await flush();
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'recording', storageFull: false });
+    await t.session.stop('user');
+    expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
+      stopReason: 'user',
+      durationMs: 2500,
+    });
+    expect(t.deps.navigate).toHaveBeenCalledWith('take-1');
   });
 });
 
@@ -605,6 +877,34 @@ describe('count-in', () => {
     });
     expect(session.readCountInBeat()).toBeNull();
   }
+
+  it('a count-in take clears the storage-full banner: off at count-in and after beat five', async () => {
+    const t = await live(120);
+    // A take without the count-in first, stopped by a full disk.
+    t.session.setCountIn({ on: false });
+    const first = t.session.record();
+    await vi.advanceTimersByTimeAsync(0);
+    t.created.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await first;
+    vi.mocked(t.writer.append).mockImplementation(() =>
+      Promise.reject(new AppError('storage-full', 'quota exceeded')),
+    );
+    t.emit(chunk(1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'idle', storageFull: true });
+
+    vi.mocked(t.writer.append).mockImplementation(async () => {});
+    vi.mocked(t.deps.newId).mockReturnValue('take-2');
+    t.session.setCountIn({ on: true });
+    const second = t.session.record();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'count-in', storageFull: false });
+    await clockTo(t, 20);
+    await second;
+    expect(t.deps.createTake).toHaveBeenCalledTimes(2);
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'recording', storageFull: false });
+  });
 
   it('a capture that fails to start during the count-in shows the error', async () => {
     const t = await live(120);

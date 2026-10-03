@@ -24,8 +24,16 @@
 // those that arrive before the take and writer exist held and appended first. `stop('user')`
 // stops the capture, saves the compressed copy, closes the raw writer, patches the take
 // `recorded`, then navigates to its Tab. Both run through the transition queue, so an ended
-// track is handled only between them; one that ends mid-take leaves the take `recording` with
-// its raw chunks for recovery.
+// track is handled only between them.
+//
+// Failure stops (story 3.9, CAP-25, CAP-26): when the track of the input a take records ends
+// (unplug or revoke), its queued handling first runs the stop pipeline with `stopReason:
+// 'mic-lost'` (no navigation), then applies the idle rule for the mic; an unplug with another
+// input left posts a `stopped-saved` notice instead of `switched`. When a raw append rejects
+// with `storage-full`, nothing more is appended and the take is saved with `stopReason:
+// 'storage-full'`, the mic kept live and the snapshot's `storageFull` on (the Record banner)
+// until the next take starts; when that save fails too, the take stays `recording` with its
+// raw chunks for recovery, with no error card.
 //
 // Count-in (story 3.6, US-3.3, spine AD-9): with the `countIn` pref on, `record()` enters
 // `count-in`: it reads the click's audio-clock time, schedules four clicks on the input's clock
@@ -151,6 +159,14 @@ export type MicNotice =
       /** A take stopped under `MIN_TAKE_MS` was deleted. */
       kind: 'too-short';
       seq: number;
+    }
+  | {
+      /**
+       * The input a take was recording was unplugged: the take was saved (`mic-lost`) and the
+       * default input is now in use. Recording does not continue on it.
+       */
+      kind: 'stopped-saved';
+      seq: number;
     };
 
 /** The mic fields, plus the fields each input derivation owns (see input-derivation.ts). */
@@ -174,6 +190,11 @@ export interface RecordingSnapshot extends LevelFields, InputQualityFields, Tune
   nearLimit: boolean;
   /** How many takes this store has saved (`recorded`); grows by one with each. */
   savedSeq: number;
+  /**
+   * A take was stopped because storage is full (the Record screen's error banner); on until the
+   * next take starts.
+   */
+  storageFull: boolean;
 }
 
 export interface RecordingSession {
@@ -280,7 +301,7 @@ export interface RecordingDeps {
 /** A take from `record()` until it is saved, fails or is abandoned. */
 interface ActiveTake {
   id: string;
-  /** The input it records; an ended track of this input abandons it. */
+  /** The input it records; an ended track of this input stops and saves it (`mic-lost`). */
   input: OpenedInput;
   capture: Capture | null;
   writer: RawWriter | null;
@@ -294,6 +315,8 @@ interface ActiveTake {
   clipCount: number;
   /** Set when the take is given up; later chunks are dropped. */
   abandoned: boolean;
+  /** A raw append rejected with `storage-full`: nothing more is appended; it stops and saves. */
+  storageFull: boolean;
   /** The warning's watch while recording. */
   limitTimer: ReturnType<typeof setTimeout> | undefined;
 }
@@ -365,6 +388,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     countIn: loadCountIn(deps),
     nearLimit: false,
     savedSeq: 0,
+    storageFull: false,
     ...levels.transition(idle),
     ...quality.transition(idle),
     ...tuning.transition(idle),
@@ -434,6 +458,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       countIn: snapshot.countIn,
       nearLimit: nearLimit(),
       savedSeq: snapshot.savedSeq,
+      storageFull: snapshot.storageFull,
       ...levels.transition(t),
       ...quality.transition(t),
       ...tuning.transition(t),
@@ -655,15 +680,27 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
 
   /**
    * A track ended on its own (queued: runs after the transition in progress). When the input
-   * is no longer the store's, it is only closed. Otherwise, when its device is no longer listed
-   * and another remains (an unplug), open the default input and post a `switched` notice; else
-   * (a revoke, the only device gone, or a device that cannot be resolved) close the input and
-   * show the lost card.
+   * is no longer the store's, it is only closed. A take recording on it is first stopped and
+   * saved as `mic-lost` (the stop pipeline, before the input is released, with no navigation;
+   * under `MIN_TAKE_MS` it is deleted). Then, when its device is no longer listed and another
+   * remains (an unplug), open the default input and post a `switched` notice (`stopped-saved`
+   * when a take was saved); else (a revoke, the only device gone, or a device that cannot be
+   * resolved) close the input and show the lost card.
    */
   async function ended(endedInput: OpenedInput) {
     if (!holds(endedInput)) return;
-    // Mid-take mic loss is story 3.9's; for now the take stays `recording` for recovery.
-    if (active?.input === endedInput) abandon(active);
+    let saved = false;
+    const take = active;
+    if (take?.input === endedInput) {
+      if (recording === 'recording' || recording === 'stopping') {
+        // Already inside the queue: the pipeline runs here, not re-enqueued.
+        stopWatchingLimits(take);
+        setRecording('stopping');
+        saved = (await finishTake('mic-lost')) === 'saved';
+      } else {
+        abandon(take);
+      }
+    }
     const endedId = endedDeviceId(endedInput);
     input = null;
     release(endedInput);
@@ -688,11 +725,13 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       mic: 'live',
       devices: live.devices,
       activeDeviceId: live.activeDeviceId,
-      notice: {
-        kind: 'switched',
-        label: now?.label || live.opened.label || '',
-        seq: ++noticeSeq,
-      },
+      notice: saved
+        ? { kind: 'stopped-saved', seq: ++noticeSeq }
+        : {
+            kind: 'switched',
+            label: now?.label || live.opened.label || '',
+            seq: ++noticeSeq,
+          },
     });
   }
 
@@ -731,7 +770,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       if (active !== take || take.abandoned || recording !== 'recording') return;
       stopWatchingLimits(take);
       setRecording('stopping');
-      enqueue(() => finishTake('max-length')).catch(() => {});
+      enqueue(() => finishTake('max-length').then(() => {})).catch(() => {});
     });
   }
 
@@ -742,7 +781,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
 
   /** A captured chunk: counted, then appended (or held until the writer exists). */
   function onChunk(take: ActiveTake, samples: Float32Array, clipped: number) {
-    if (take.abandoned) return;
+    // A chunk after the take was saved, deleted or given up is dropped.
+    if (take.abandoned || active !== take) return;
     take.clipCount += clipped;
     if (take.writer) appendRaw(take, take.writer, samples);
     else take.held.push(samples);
@@ -750,14 +790,31 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
 
   function appendRaw(take: ActiveTake, writer: RawWriter, samples: Float32Array) {
     take.appends = take.appends
-      .then(() => writer.append(samples))
-      // Counted once written, so `durationMs` never exceeds the raw file.
-      .then(() => {
+      .then(async () => {
+        // Once storage is full nothing more is written, so `durationMs` is what reached the file.
+        if (take.storageFull) return;
+        await writer.append(samples);
+        // Counted once written, so `durationMs` never exceeds the raw file.
         take.samples += samples.length;
       })
-      .catch(() => {
-        // Failure stops are a later story; the chain goes on with the next chunk.
+      .catch((err: unknown) => {
+        if (isAppError(err) && err.code === 'storage-full') onStorageFull(take);
+        // Any other failure: the chain goes on with the next chunk (a residual of story 3.9).
       });
+  }
+
+  /**
+   * The first `storage-full` append of `take`: no more appends, and the take stops and is saved
+   * as `storage-full` (through the queue). A stop already under way (Stop, the cap, a mic loss)
+   * saves it instead, reading the flag.
+   */
+  function onStorageFull(take: ActiveTake) {
+    if (take.storageFull) return;
+    take.storageFull = true;
+    if (active !== take || take.abandoned || recording !== 'recording') return;
+    stopWatchingLimits(take);
+    setRecording('stopping');
+    enqueue(() => finishTake('storage-full').then(() => {})).catch(() => {});
   }
 
   /** Gives the take up (its input is going away): drops the capture, closes the writer. */
@@ -848,6 +905,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       samples: 0,
       clipCount: 0,
       abandoned: false,
+      storageFull: false,
       limitTimer: undefined,
     };
     active = take;
@@ -856,7 +914,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       await countInThenStart(take, opened, bpm);
       return;
     }
-    setRecording('starting');
+    // A new take: the storage-full banner of an earlier one goes.
+    setRecording('starting', { storageFull: false });
     let captured: PromiseSettledResult<Capture>;
     let opening: PromiseSettledResult<RawWriter>;
     try {
@@ -922,7 +981,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       ci.beats = schedule.beats;
       captureStart = schedule.captureStart;
       countIn = ci;
-      setRecording('count-in');
+      setRecording('count-in', { storageFull: false });
       ci.cancelClicks = opened.clicks(schedule.beats);
       capturing = opened.capture(
         (samples, clipped) => onChunk(take, samples, clipped),
@@ -1057,24 +1116,30 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     if (recording !== 'recording') return Promise.resolve();
     if (active) stopWatchingLimits(active);
     setRecording('stopping');
-    return enqueue(() => finishTake(reason)).catch(() => {});
+    return enqueue(() => finishTake(reason).then(() => {})).catch(() => {});
   }
 
   /**
    * The stop pipeline: stops the capture (already stopped at the cap for `max-length`), then
-   * saves the take and opens its Tab, or deletes it when it is under `MIN_TAKE_MS`.
+   * saves the take, or deletes it when it is under `MIN_TAKE_MS`. A take whose raw appends hit
+   * `storage-full` is saved as `storage-full` whatever `reason` asked. A `user` or `max-length`
+   * save opens its Tab; a failure stop (`mic-lost`, `storage-full`) stays on Record, and when
+   * its save fails the take is left `recording` for recovery with no error card (the
+   * `storage-full` banner still shows). Settles as what became of the take.
    */
-  async function finishTake(reason: StopReason) {
+  async function finishTake(reason: StopReason): Promise<'saved' | 'short' | 'failed' | 'none'> {
     const take = active;
-    if (!take || take.abandoned || !take.capture || !take.writer) return;
+    if (!take || take.abandoned || !take.capture || !take.writer) return 'none';
     const { capture, writer } = take;
     stopWatchingLimits(take);
+    let stopReason = reason;
     try {
       const { parts } = await capture.stop();
       await take.appends;
+      if (take.storageFull) stopReason = 'storage-full';
       const durationMs = Math.round((take.samples / capture.sampleRate) * 1000);
       // A max-length stop is never short; any other stop under 0.5 s keeps nothing (AD-9).
-      if (reason !== 'max-length' && durationMs < MIN_TAKE_MS) {
+      if (stopReason !== 'max-length' && durationMs < MIN_TAKE_MS) {
         try {
           await writer.close();
           await deps.deleteTake(take.id, 'recording-session');
@@ -1083,8 +1148,12 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
           // remove (story 3.11); the take is discarded all the same.
         }
         active = null;
-        setRecording('idle', { notice: { kind: 'too-short', seq: ++noticeSeq } });
-        return;
+        // A short take that hit storage-full still raises the banner: the disk is full.
+        setRecording('idle', {
+          notice: { kind: 'too-short', seq: ++noticeSeq },
+          ...(take.storageFull ? { storageFull: true } : {}),
+        });
+        return 'short';
       }
       await deps.writeCompressed(take.id, new Blob(parts, { type: RECORDING_MIME }));
       await writer.close();
@@ -1094,7 +1163,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
           status: 'recorded',
           durationMs,
           audioMime: RECORDING_MIME,
-          stopReason: reason,
+          stopReason,
           clipped: take.clipCount > 0,
         },
         'recording-session',
@@ -1102,14 +1171,25 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     } catch (err) {
       take.abandoned = true;
       capture.abort();
-      // The raw file keeps what was written; recovery (a later story) rebuilds the take.
+      // The raw file keeps what was written; recovery (story 3.11) rebuilds the take.
       void take.appends.then(() => writer.close()).catch(() => {});
+      if (take.storageFull || stopReason === 'mic-lost') {
+        // A failure stop: the mic is handled by its own path (kept live, or the idle rule).
+        active = null;
+        setRecording('idle', take.storageFull ? { storageFull: true } : {});
+        return 'failed';
+      }
       failRecording(err);
-      return;
+      return 'failed';
     }
     active = null;
-    setRecording('idle', { savedSeq: snapshot.savedSeq + 1 });
-    deps.navigate(take.id);
+    const full = stopReason === 'storage-full';
+    setRecording('idle', {
+      savedSeq: snapshot.savedSeq + 1,
+      ...(full ? { storageFull: true } : {}),
+    });
+    if (stopReason === 'user' || stopReason === 'max-length') deps.navigate(take.id);
+    return 'saved';
   }
 
   let resuming = false;

@@ -40,7 +40,10 @@ function setup() {
   return { store, workers };
 }
 
-afterEach(() => resetFenceForTests());
+afterEach(() => {
+  resetFenceForTests();
+  delete (globalThis as { __storageFullHook?: boolean }).__storageFullHook;
+});
 
 describe('raw writer client', () => {
   it('opens, appends and closes through one lazily created worker', async () => {
@@ -83,6 +86,22 @@ describe('raw writer client', () => {
       code: 'storage-failed',
       message: 'Raw audio write: Raw file for t1 is not open',
     });
+  });
+
+  it('dev storage-full hook: while set, every append rejects with storage-full unsent', async () => {
+    const { store, workers } = setup();
+    const writer = await store.openRawWriter('t1');
+    const hook = globalThis as { __storageFullHook?: boolean };
+    hook.__storageFullHook = true;
+    await expect(writer.append(new Float32Array(4))).rejects.toMatchObject({
+      code: 'storage-full',
+    });
+    await expect(writer.append(new Float32Array(4))).rejects.toMatchObject({
+      code: 'storage-full',
+    });
+    hook.__storageFullHook = false;
+    await writer.append(new Float32Array(4));
+    expect(workers[0]!.posted.map((m) => m.type)).toEqual(['open', 'append']);
   });
 
   it('lets close() be retried after the close request fails', async () => {

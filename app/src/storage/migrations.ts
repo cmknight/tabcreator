@@ -34,6 +34,9 @@ export const MIGRATIONS: readonly Migration[] = [
     takes.createIndex('createdAt', 'createdAt');
     db.createObjectStore('tabs', { keyPath: 'takeId' });
   },
+  // 2: no schema or record change. `Take.stopReason` gained `'storage-full'` (story 3.9); the
+  // stored v1 records are already valid v2 records.
+  () => {},
 ];
 
 export const DB_VERSION = MIGRATIONS.length;

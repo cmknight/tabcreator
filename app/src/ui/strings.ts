@@ -36,6 +36,8 @@ export const strings = {
   'global.microphoneBusy': "Can't change the microphone while recording",
   /** Toast when the active input is unplugged and another one takes over (EXPERIENCE.md). */
   'global.micSwitched': (label: string) => `Microphone disconnected — switched to ${label}`,
+  /** Toast when the input a take was recording is unplugged; the take is saved (EXPERIENCE.md). */
+  'global.micStoppedSaved': 'Microphone disconnected — recording stopped and saved',
   'global.inputLevel': 'Input level',
   'global.levelUnit': 'dBFS',
   'global.levelTooLoud': 'Too loud — move back or lower the input',
@@ -68,6 +70,10 @@ export const strings = {
   'record.started': 'Recording started',
   /** Announced when a take is saved. */
   'record.stopped': 'Recording stopped',
+  /** The error banner after a take is stopped because storage is full (story 3.9). */
+  'record.storageFull': 'Storage is full — recording stopped and saved',
+  /** The storage-full banner's link to the Library. */
+  'record.storageFullLibrary': 'Go to Library',
   /** The recording timer's accessible name: "Elapsed time 0:42". */
   'record.elapsed': (time: string) => `Elapsed time ${time}`,
   /** The Space shortcut's description in the keyboard shortcuts dialog (EXPERIENCE.md). */
