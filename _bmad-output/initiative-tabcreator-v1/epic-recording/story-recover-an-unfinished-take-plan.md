@@ -3,7 +3,7 @@ title: 'Recover an unfinished take'
 type: 'feature'
 ticket: '11'
 created: '2026-10-03'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
