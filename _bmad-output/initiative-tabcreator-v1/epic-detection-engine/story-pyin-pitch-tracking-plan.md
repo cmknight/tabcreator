@@ -3,7 +3,7 @@ title: 'pYIN pitch tracking'
 type: 'feature'
 ticket: '4'
 created: '2026-10-03'
-status: 'built'
+status: done
 baseline_revision: '43bf43ebfa6bf2dafc064b297025fd08d45c8c49'
 route: 'full'
 route_source: 'auto'
