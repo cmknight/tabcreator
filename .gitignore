@@ -5,3 +5,6 @@ playwright-report/
 coverage/
 engine/target/
 app/src/engine/pkg/
+
+# Personal Claude Code settings
+.claude/settings.local.json
