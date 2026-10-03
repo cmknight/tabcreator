@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ReactNode } from 'react';
 import styles from './App.module.css';
 import { Announcer } from './ui/a11y/announcer';
+import { ShortcutListener } from './ui/a11y/shortcuts';
 import { MicErrorAnnouncer } from './ui/components/MicErrorAnnouncer';
 import { MicNotices } from './ui/components/MicNotices';
 import { ToastHost } from './ui/components/ToastHost';
@@ -70,7 +71,10 @@ function RoutedScreen() {
   return renderScreen(useRoute());
 }
 
-/** The app frame: top bar, main content, and the one announcer and toast host (spine AD-18). */
+/**
+ * The app frame: top bar, main content, and the one announcer, shortcut listener and toast host
+ * (spine AD-18).
+ */
 function Shell({ current, children }: { current: Route['name'] | null; children: ReactNode }) {
   return (
     <>
@@ -99,6 +103,7 @@ function Shell({ current, children }: { current: Route['name'] | null; children:
         {children}
       </main>
       <Announcer />
+      <ShortcutListener />
       <MicErrorAnnouncer />
       <MicNotices />
       <ToastHost />

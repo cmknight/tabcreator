@@ -202,3 +202,64 @@ test('no Record button without a live mic', async ({ page }) => {
   await expect(page.getByRole('timer')).toHaveCount(0);
   expect(errors.filter((e) => !e.includes('NotAllowedError'))).toEqual([]);
 });
+
+// Story 3.5: Space on Record (ui/a11y/shortcuts.ts).
+test('Space with focus on the page starts the take, and Space again stops it', async ({ page }) => {
+  const errors = await goLive(page);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+  await page.keyboard.press('Space');
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
+  await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+
+  await page.keyboard.press('Space');
+  const id = await tabTakeId(page);
+  const saved = await readSaved(page, id);
+  expect(saved.take).toMatchObject({ status: 'recorded', stopReason: 'user' });
+  expect(errors).toEqual([]);
+});
+
+test('Space on the focused Record button toggles once (its own click)', async ({ page }) => {
+  const errors = await goLive(page);
+  await recordButton(page).focus();
+
+  await page.keyboard.press('Space');
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
+  // Not toggled twice: still recording a moment later, focus kept on the button.
+  await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
+  await expect(stopButton(page)).toBeFocused();
+  await expect(page).toHaveURL(/#\/record$/);
+
+  await page.keyboard.press('Space');
+  const id = await tabTakeId(page);
+  expect((await readSaved(page, id)).take?.status).toBe('recorded');
+  expect(errors).toEqual([]);
+});
+
+test('Space does nothing off Record, held Space toggles once', async ({ page }) => {
+  const errors = await goLive(page);
+  await page.getByRole('link', { name: 'Library' }).click();
+  await expect(page).toHaveURL(/#\/library$/);
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press('Space');
+  await page.getByRole('link', { name: 'Record' }).click();
+  await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
+
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  // A held key: one keydown, then auto-repeats.
+  await page.keyboard.down('Space');
+  for (let i = 0; i < 5; i++) {
+    await page.evaluate(() =>
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true, cancelable: true }),
+      ),
+    );
+  }
+  await page.keyboard.up('Space');
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
+  await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
+  await stopButton(page).click();
+  await tabTakeId(page);
+  expect(errors).toEqual([]);
+});

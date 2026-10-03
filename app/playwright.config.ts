@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 
 const PORT = 4173;
@@ -8,6 +9,21 @@ const SUBPATH_PORT = 4174;
 const DEV_SPECS = /.*\.dev\.spec\.ts/;
 /** The sub-path spec runs against the build served under /tabcreator/, as on GitHub Pages. */
 const SUBPATH_SPECS = /.*subpath\.spec\.ts/;
+/** Specs that need a microphone in the production build run in the production-mic lane. */
+const PROD_SPECS = /.*\.prod\.spec\.ts/;
+
+/**
+ * What Chromium's fake capture device plays, looped, in the production-mic lane: a noisy C major
+ * scale. Chrome's fake-audio file reader takes a PCM WAV; this one is already 16-bit PCM mono at
+ * 48 kHz, so it is used as generated (tools/make_fixtures.py), with no converted copy.
+ */
+const MIC_FIXTURE = resolve(
+  import.meta.dirname,
+  '..',
+  'testdata',
+  'synth',
+  'c_major_scale_pos1_noisy.wav',
+);
 
 /**
  * Locally, build the engine wasm (so Rust edits are never served stale) and the app first. In
@@ -27,8 +43,27 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      testIgnore: [DEV_SPECS, SUBPATH_SPECS],
+      testIgnore: [DEV_SPECS, SUBPATH_SPECS, PROD_SPECS],
       use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${PORT}/` },
+    },
+    {
+      // The production build with a realistic mic: Chromium's fake device plays MIC_FIXTURE, the
+      // permission is granted with no prompt, and the autoplay policy is Chrome's own (no
+      // override), so an AudioContext runs only after a user gesture, as for a player.
+      name: 'prod-mic',
+      testMatch: PROD_SPECS,
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: `http://localhost:${PORT}/`,
+        permissions: ['microphone'],
+        launchOptions: {
+          args: [
+            '--use-fake-ui-for-media-stream',
+            '--use-fake-device-for-media-stream',
+            `--use-file-for-fake-audio-capture=${MIC_FIXTURE}`,
+          ],
+        },
+      },
     },
     {
       name: 'subpath',

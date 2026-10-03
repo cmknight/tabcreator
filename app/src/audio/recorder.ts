@@ -54,6 +54,21 @@ export function loadRecorderWorklet(ctx: BaseAudioContext): Promise<void> {
   return promise;
 }
 
+/**
+ * The latency mark set when the worklet copies its first frame (story 3.5, Done when 1: Space
+ * to capture start within 100 ms, read against `record-keydown`). Set in every build; nothing
+ * in the app reads it.
+ */
+export const CAPTURE_START_MARK = 'record-capture-start';
+
+function markCaptureStart(): void {
+  try {
+    performance.mark(CAPTURE_START_MARK);
+  } catch {
+    // No User Timing (never in the supported Chrome): the mark is only a measurement.
+  }
+}
+
 /** How long `startCapture` waits for a suspended context to resume. */
 const RESUME_TIMEOUT_MS = 1000;
 
@@ -141,6 +156,7 @@ export async function startCapture(
     worklet.port.onmessage = (event: MessageEvent<{ type: string; samples?: Float32Array }>) => {
       const { type, samples } = event.data;
       if (type === 'chunk' && samples) onChunk(samples);
+      else if (type === 'started') markCaptureStart();
       else if (type === 'stopped') resolveStopped();
     };
     gate = ctx.createGain();

@@ -60,6 +60,8 @@ export const strings = {
   'record.recording': 'Recording',
   /** The recording timer's accessible name: "Elapsed time 0:42". */
   'record.elapsed': (time: string) => `Elapsed time ${time}`,
+  /** The Space shortcut's description in the keyboard shortcuts dialog (EXPERIENCE.md). */
+  'record.shortcutRecordStop': 'Record / stop',
   'record.micError.mic-denied.title': 'Microphone access is blocked',
   'record.micError.mic-denied.body':
     'Chrome is blocking the microphone for this site. To allow it:',

@@ -3,10 +3,13 @@
 //
 // It copies the mono input from a start frame up to a stop frame (both on the audio clock, so
 // they are sample-exact) and posts it in 1 s chunks (`sampleRate` samples, the context's rate).
-// After the stop frame it posts the final partial chunk, then `stopped`, and ends.
+// It posts `started` once, in the block that copies the first frame (the start frame), so the
+// main thread learns when capture began without waiting for the first 1 s chunk. After the stop
+// frame it posts the final partial chunk, then `stopped`, and ends.
 //
 // Port messages in:  { type: 'start', frame }  { type: 'stop', frame }
-// Port messages out: { type: 'chunk', samples: Float32Array }  { type: 'stopped' }
+// Port messages out: { type: 'started' }  { type: 'chunk', samples: Float32Array }
+//                    { type: 'stopped' }
 
 const CHUNK_SAMPLES = Math.max(1, Math.round(sampleRate));
 
@@ -16,6 +19,7 @@ class RecorderProcessor extends AudioWorkletProcessor {
   private chunk = new Float32Array(CHUNK_SAMPLES);
   private filled = 0;
   private done = false;
+  private started = false;
 
   constructor() {
     super();
@@ -43,6 +47,10 @@ class RecorderProcessor extends AudioWorkletProcessor {
     const blockEnd = blockStart + length;
     const from = Math.max(this.startFrame, blockStart);
     const to = Math.min(this.stopFrame, blockEnd);
+    if (!this.started && from < to) {
+      this.started = true;
+      this.port.postMessage({ type: 'started' });
+    }
     for (let f = from; f < to; f++) {
       // A disconnected input (no channel) records silence, so the timeline never shrinks.
       this.chunk[this.filled++] = channel ? (channel[f - blockStart] ?? 0) : 0;
