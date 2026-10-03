@@ -38,7 +38,7 @@ and a `{name}.json` answer file:
   pink noise at 30 dB SNR and the same answers.
 
 In the dev server, `?fakeMic=<name>[,<name>…]` serves fixtures as microphones
-(`app/src/audio/fake-mic.ts`): one input device per fixture, in list order, labelled
+(`app/src/dev/fake-mic.ts`): one input device per fixture, in list order, labelled
 `Fake mic: <name>` with id `fake-mic-<name>` (unknown names are dropped, duplicates collapsed).
 `getUserMedia` honours `deviceId` constraints and defaults to the first device. Every stream
 plays its fixture once from the start, then silence. The audio can only start after a user
