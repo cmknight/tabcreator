@@ -27,7 +27,7 @@ Detection quality is proven by numbers in CI before any screen depends on it.
 
 ## Boundaries
 
-`engine/src/` and `engine/tests/` only. CAP-11: default mapping and lock support in `map_frets`; the app-side re-fit belongs to epic Tab view and editor. No app screens.
+`engine/src/`, `engine/tests/` and `engine/Cargo.toml`; `tools/reference_pyin.py` (and `tools/make_fixtures.py` only if a fixture proves unfit, with the user's agreement); `testdata/`; the engine and accuracy steps in `.github/workflows/ci.yml`; and `app/tests/e2e/engine.spec.ts`, which drives the production engine worker. CAP-11: default mapping and lock support in `map_frets`; the app-side re-fit belongs to epic Tab view and editor. CAP-23: the accuracy measures and gates; the analysis-speed, editor-latency and bundle gates (AD-17) belong to epic Offline, accessibility and budgets. No app screens.
 
 ## References
 
@@ -35,7 +35,21 @@ Detection quality is proven by numbers in CI before any screen depends on it.
 - pipeline — _bmad-output/specs/spec-tabcreator/detection-pipeline.md
 - architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-7, AD-8, AD-17
 - stories — TabCreator-User-Stories.md, US-4.1–US-4.4, US-5.1, US-8.4
+- failure modes — _bmad-output/specs/spec-tabcreator/failure-modes.md
+- fixtures — testdata/README.md
+- deferred — _bmad-output/implementation-artifacts/deferred-work.md, the real Rust panic check (US-0.2) and the legato_slurs 2nd harmonic
 
 ## Notes
 
 - Waits on epic 1 because: needs engine crate, worker bridge, fixtures.
+- Decision: tracer bullet is entry 1, the accuracy harness, CI report and production worker test; the pYIN chain follows as the least certain work (2026-10-03).
+- Decision: two lanes — detection (3 → 4 → 6 → 7 → 8 → 9) and fret mapping (5, beside 3, 4 and 6, touching only `fretmap.rs` and one delegation line in `lib.rs`); entry 7 waits on 5 so the committed hash files change in order (2026-10-03).
+- Decision: every entry that changes fixture output bumps `engine_version()` and regenerates the committed baseline and output hashes (2026-10-03).
+- Decision: gate sets are fixtures with `tempoBpm` ≤ 120 or null, clean and their noisy twins; faster fixtures and real-room rows are reported. F1 is pooled over notes across a set, with per-fixture rows reported; ground-truth notes below E2 are left out of F1 (2026-10-03).
+- Decision: an octave error is a detected note at a matched onset that is 12 semitones off, counted over detected notes, per SPEC Constraints over US-4.4's "matched notes" (2026-10-03).
+- Decision: the accuracy report is published as a CI artifact and in the job summary; the gate against main compares with main's committed baseline read through `git show` (2026-10-03).
+- Decision: the pYIN oracle lives in `testdata/pyin/`, because `tools/make_fixtures.py` deletes other files in `testdata/synth/` (2026-10-03).
+- Decision: US-4.2's 1.2 s pYIN browser sub-budget is dropped; epic Offline, accessibility and budgets gates 60 s analysis at 2 s, and the report shows native timing as an early warning (2026-10-03).
+- Decision: the real Rust panic check deferred from epic 1 is settled in entry 10 (user, 2026-10-03).
+- Decision: deferred scope — human recordings in `testdata/real` wait until the Tab editor and Library backup export can produce ground truth; the harness reads the folder from entry 1 (user, 2026-10-03).
+- Decision: no plan or done checkpoints set (user approved the breakdown as is, 2026-10-03).

@@ -45,5 +45,5 @@ after = [{ epic = 5, needs = "tab layout and toText, the Tab screen" }]
 id = 7
 slug = "epic-offline-accessibility-budgets"
 title = "Offline, accessibility and budgets"
-covers = ["CAP-20", "CAP-21", "CAP-22", "CAP-25"]
+covers = ["CAP-20", "CAP-21", "CAP-22", "CAP-23", "CAP-25"]
 after = [{ epic = 6, needs = "every screen in place" }]

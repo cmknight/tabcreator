@@ -2,7 +2,7 @@
 type: epic
 title: "Offline, accessibility and budgets"
 parent: initiative-tabcreator-v1
-covers: [CAP-20, CAP-21, CAP-22, CAP-25]
+covers: [CAP-20, CAP-21, CAP-22, CAP-23, CAP-25]
 after: []
 assignee: ""
 risk: medium
@@ -27,7 +27,7 @@ The finished app works for everyone, anywhere, at the speed the spec promises.
 
 ## Boundaries
 
-PWA config and service worker, `ui/a11y/`, dark mode, the capability check, CI budgets, and the final CAP-25 sweep across screens.
+PWA config and service worker, `ui/a11y/`, dark mode, the capability check, CI budgets, and the final CAP-25 sweep across screens. CAP-23: the analysis-speed, editor-latency and bundle gates (AD-17); the accuracy measures and gates belong to epic Detection engine. US-4.2's 1.2 s pYIN sub-budget is dropped; the 60 s analysis ≤ 2 s gate stands (decided at Detection engine inception, 2026-10-03).
 
 ## References
 

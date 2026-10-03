@@ -1,0 +1,162 @@
+# tickets.toml — a container's agreed children. tickets.py reads it.
+# The order of the tables is the build order: move a table to reorder. `id` names a child for good and is never reused.
+# Status never lives here: an entry's plan beside it carries `status`.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Accuracy harness and report (tracer)"
+description = "Adds engine/tests/fixtures.rs, which reads every testdata/synth fixture (and testdata/real when present) with a small in-test WAV reader, runs analyze_core and map_frets on it and computes note F1 (onset within 50 ms, exact MIDI, one-to-one matching, missed and phantom notes both counted), octave-error rate and string/fret agreement on matched notes (ground-truth notes with no standard-tuning position, such as drop_d's fret -2, are skipped), pooled over the clean <= 120 BPM set and the noisy set and per fixture, with native analyze time for 60 s of audio; the gate sets are fixtures with tempoBpm <= 120 or null (clean, and their noisy twins), ground-truth notes below E2 are left out of F1, countin_bleed runs with skipStartMs 100, silence_60s and noise_room_-50dbfs report phantom counts, and an octave error is a detected note at a matched onset that is 12 semitones off, counted over detected notes (SPEC Constraints); writes accuracy-report.md, which CI uploads as an artifact and appends to the job summary on every push and pull request; adds a meta-test feeding known-wrong outputs to the metric functions; and extends app/tests/e2e/engine.spec.ts (chromium project, served from dist/) with a test that sends a fixture's PCM and ground-truth notes to the Settings screen's engine worker. Thresholds are reported here and become gates in entry 9."
+verify = "On a pull request CI shows the accuracy report in the job summary and as an artifact with a row for every synth fixture (F1 0 under the stub), the meta-test passes, and the new engine.spec.ts test gets a valid empty AnalysisResult for c_major_scale_pos1 and one position per ground-truth note from the worker."
+covers = ["CAP-23"]
+after = ["1.2", "1.4"]
+hitl = false
+risk = "medium"
+unknown = "How Playwright reaches the production worker without a dev hook; page.workers() with worker.evaluate() posting a request and capturing the reply is the likely path."
+references = [
+  "stories — TabCreator-User-Stories.md, US-8.4",
+  "fixtures — testdata/README.md",
+]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Output hashes and the gate against main"
+description = "Makes the harness from entry 1 check two committed files, engine/tests/accuracy-baseline.json (pooled and per-fixture metrics with engine_version) and engine/tests/fixture-outputs.json (engine_version and a hash of each fixture's analyze and map_frets JSON), failing cargo test when the build's results differ from them unless an update variable rewrites them, and adds a CI step that reads main's copies with git show and fails when any accuracy metric is more than 1 point below main's or any fixture hash differs from main's while engine_version() is unchanged; it also adds each metric's change against main to accuracy-report.md; with no baseline on main the step passes."
+verify = "On a scratch branch, a change to the stub's output without a version bump fails CI naming the fixture, the same change with a bumped Cargo.toml version and regenerated files passes, a baseline lowering one metric by more than 1 point against main fails with the drop shown in the report's change column, and analyze run twice on one fixture gives byte-identical JSON."
+covers = ["CAP-23"]
+after = [1]
+hitl = false
+risk = "medium"
+unknown = "Whether the pull-request checkout has main available (fetch-depth or an explicit fetch of origin/main), and what a push to main compares against."
+references = ["architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-7"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Pre-processing and Params"
+description = "Adds rubato =5.0.0 and engine/src/preprocess.rs (trim, zero the first skipStartMs measured from untrimmed 0, resample to 22 050 Hz with a 128-tap sinc, zero-phase 2nd-order Butterworth high-pass at 60 Hz, peak-normalise to -1 dBFS unless the peak is below -60 dBFS and the signal is flagged silent, and per-frame RMS in dBFS at frame 2048, hop 256 for the gate entries 6 and 7 use), adds Params::from_settings in lib.rs (k = 2.0 - 1.0*s, c = 0.7 - 0.4*s, g = -40 - 20*s dBFS, minNoteMs, maxFret) as the only home of detection tunables, and calls preprocess from analyze_core with progress 0 to 0.111; analyze still returns no notes."
+verify = "cargo test shows a 48 kHz 440 Hz sine at 440 +/- 0.1 Hz after resampling, 50 Hz attenuated by >= 6 dB and 82 Hz by <= 3 dB, output length round(duration * 22 050) +/- 1, the skip measured from untrimmed 0 when a trim is set, and Params::from_settings at sensitivity 0, 0.5 and 1."
+covers = ["CAP-9"]
+after = [2]
+hitl = false
+risk = "low"
+unknown = "The rubato 5.0.0 sinc settings that give 128 taps, and what the crate adds to the wasm size."
+references = [
+  "stories — TabCreator-User-Stories.md, US-4.1, and US-4.6 for the Params mapping",
+  "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-7, AD-8",
+]
+
+[[entry]]
+id = 4
+type = "story"
+title = "pYIN pitch tracking"
+description = "Adds rustfft =6.4.1 and engine/src/pyin.rs, probabilistic YIN matching librosa.pyin with US-4.2's parameters (difference function by FFT, Viterbi over pitch bins x voiced/unvoiced), returning f0, voiced and voiced_prob per frame with progress to 0.778, plus tools/reference_pyin.py (librosa pinned in a uv lock) writing the oracle to testdata/pyin/<set>/<name>.pyin.json, outside testdata/synth/ because make_fixtures.py deletes other files there, regenerated and diffed in CI's fixtures job."
+verify = "cargo test compares every synth fixture with its oracle: voiced/unvoiced agrees on >= 97% of frames and, where both are voiced, f0 is within 10 cents on >= 99%; the accuracy report shows native analyze time for 60 s of audio."
+covers = ["CAP-9"]
+after = [2, 3]
+hitl = false
+risk = "high"
+unknown = "Whether librosa should run on the engine's own preprocessed signal exported from Rust or on audio resampled in Python (rubato and librosa resample differently, which threatens the 97% match), whether librosa's output is byte-stable for CI's diff, and whether the Viterbi decode (about 1 000 states over 5 000 frames for 60 s) fits US-4.2's 1.2 s in wasm; the browser benchmark is epic 7's, so until then only the native time in the report warns."
+references = [
+  "stories — TabCreator-User-Stories.md, US-4.2",
+  "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-17",
+]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Viterbi fret mapping with locks"
+description = "Adds engine/src/fretmap.rs behind map_frets in place of the lowest-fret stub: candidates within maxFret (null when none), unary cost 0.02*f + 0.3*max(0, f - 12), transition cost from hand shift (zero when either fret is open), jumps beyond 3 frets and string skips, shift terms halved across gaps over 500 ms, weights in FretWeights, Viterbi over the whole sequence with ties to the lower fret then the lower string, and a lock restricting its note to exactly its position, touching only fretmap.rs and a one-line delegation in lib.rs, bumping engine_version() and regenerating entry 2's committed files; the app-side phrase re-fit stays in the Tab view and editor epic."
+verify = "cargo test shows open_strings all on open strings, c_major_scale_pos1 matching its ground-truth string and fret exactly (so within frets 0-3), e_minor_pentatonic_pos12 within 12-15, >= 80% agreement with ground truth across all synth fixtures fed their ground-truth notes, a c_major_scale_pos1 note locked from fret 3 on A to fret 8 on low E pulling its neighbours toward it when cheaper, locked notes never changing, and 2 000 notes mapped in <= 50 ms."
+covers = ["CAP-11"]
+after = [2]
+hitl = false
+risk = "medium"
+unknown = "Whether US-5.1's default weights reach 80% on the synth set; retuning FretWeights is in scope, a different cost model is a question for the user."
+references = ["stories — TabCreator-User-Stories.md, US-5.1, US-5.2"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Onset detection"
+description = "Adds engine/src/onset.rs: spectral-flux onsets on pYIN's frames (Hann 2048, hop 256, ln(1 + 100*|X|), flux over 70 Hz-5 kHz normalised by its 99th percentile, peak picking with Params' k and gate g from entry 3, 40 ms minimum gap), pitch-change onsets for legato, no pitch-change onset inside a glide (bend or slide) or vibrato with the span marked as a glide for entry 9, and a 30 ms merge, labelling each onset as flux or pitch-change for entry 9's ring-over rule, with progress to 0.944."
+verify = "cargo test against fixture ground truth: repeated_notes_16th_120bpm has every onset within 30 ms and no extras, legato_slurs gets onsets on >= 90% of slurred notes, vibrato is not split, bend_up and slide_up get one onset per picked note, and noise_room_-50dbfs and silence_60s give zero onsets at sensitivity 0.5; repeated_notes_16th_160bpm is reported."
+covers = ["CAP-9", "CAP-28"]
+after = [4]
+hitl = false
+risk = "high"
+unknown = "How to tell a glide from a stepped legato change in the rounded pitch track; the legato_slurs pull-offs whose 2nd harmonic is about as loud as the fundamental may read as pitch steps."
+references = [
+  "stories — TabCreator-User-Stories.md, US-4.3",
+  "deferred — _bmad-output/implementation-artifacts/deferred-work.md, legato_slurs 2nd harmonic",
+]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Note building, tuning warnings and output"
+description = "Adds engine/src/notes.rs: a note spans an onset to the next onset or the first run of >= 5 unvoiced or gated frames, its pitch is the median MIDI of its voiced frames after 2 attack frames, its confidence is mean voiced_prob x voiced fraction, notes shorter than minNoteMs, under c or outside 40..64 + maxFret are dropped with confident ones below E2 counted as belowRangeNotes, tuningOffsetCents is the median voiced deviation from the A440 grid, and analyze returns AnalysisResult sorted by startMs with times relative to untrimmed 0 and floats rounded per AD-7, progress reaching 1; it bumps engine_version() (and the version test in lib.rs) and regenerates entry 2's committed files."
+verify = "cargo test shows silence_60s and noise_room_-50dbfs with zero notes, countin_bleed with skipStartMs 100 with no note before 100 ms, detuned_-45c with tuningOffsetCents within -45 +/- 5, drop_d with belowRangeNotes >= 1, c_major_scale_pos1 with neither warning, and a trimmed analyse keeping untrimmed note times; the accuracy report shows real per-fixture F1."
+covers = ["CAP-9", "CAP-27"]
+after = [6, 5]
+hitl = false
+risk = "medium"
+unknown = "pYIN's 10-cent bins may round detuned_-45c's median to the semitone below, failing exact-MIDI F1 on a gated fixture or pushing tuningOffsetCents outside -45 +/- 5."
+references = ["stories — TabCreator-User-Stories.md, US-4.4"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Confidence-gated octave correction"
+description = "Adds the octave fix to notes.rs: only a note with confidence < c + 0.15 moves by 12 toward the median MIDI m of up to 2 kept neighbours each side, when |midi - m| >= 10 and |(midi +/- 12) - m| <= 5, with confidence x 0.8, so confident leaps survive; and settles the legato_slurs pull-offs with a strong 2nd harmonic in the engine or, if the user agrees the fixture is unfit, in a regenerated fixture; it bumps engine_version() and regenerates entry 2's committed files."
+verify = "cargo test shows octave errors <= 2% of matched notes on octave_traps and its noisy twin and every genuine leap in octave_leaps surviving, and disabling the fix makes that test, and so CI, fail."
+covers = ["CAP-9", "CAP-23"]
+after = [7]
+hitl = false
+risk = "high"
+unknown = "Whether pYIN's octave slips on low E and A are low-confidence enough for the gated fix to reach them."
+references = [
+  "stories — TabCreator-User-Stories.md, US-4.4",
+  "deferred — _bmad-output/implementation-artifacts/deferred-work.md, legato_slurs 2nd harmonic",
+]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Unnotated techniques and the accuracy gates"
+description = "Adds ring-over removal (a note whose onset entry 6 labelled pitch-change, not flux, that repeats the pitch of the note before the previous one is dropped) and the glide rule (a note over entry 6's glide span keeps its starting pitch with confidence capped at c + 0.1), then turns entry 1's thresholds into gates: pooled note F1 >= 0.95 on clean synth fixtures at <= 120 BPM, >= 0.90 on the noisy set, octave errors <= 2% and full-pipeline fret agreement >= 80%, each pooled over entry 1's gate sets, with testdata/real gating only from 20 takes and the faster fixtures and real-room rows reported; it bumps engine_version() and regenerates entry 2's committed files."
+verify = "cargo test shows ringing_overlap with no duplicate notes, vibrato as one note, and bend_up and slide_up as their starting notes with confidence below c + 0.15, and CI is green with every gate on and the report marking each threshold met."
+covers = ["CAP-9", "CAP-11", "CAP-23", "CAP-28"]
+after = [8, 5]
+hitl = false
+risk = "high"
+unknown = "Whether the pooled F1 gates are met by US-4.4's rules as written; tuning goes through Params, and a rule change beyond them is a question for the user."
+references = ["stories — TabCreator-User-Stories.md, US-4.4, US-8.4"]
+
+[[entry]]
+id = 10
+type = "story"
+title = "Production worker on real detection"
+description = "Extends entry 1's test in app/tests/e2e/engine.spec.ts so the worker analyses c_major_scale_pos1 and maps it to the fixture's ground truth (onsets within 50 ms, exact MIDI, the fixture's string and fret) with progress monotone and ending at 1, and settles epic 1's open check that a real Rust panic rejects its request in the worker while the same instance serves the next one."
+verify = "engine.spec.ts passes against dist/: the worker returns c_major_scale_pos1's notes and positions, and after a triggered Rust panic rejects with analysis-failed, the next analyze on the same worker succeeds."
+covers = ["CAP-9", "CAP-11"]
+after = [9]
+hitl = false
+risk = "medium"
+unknown = "How to trigger a real panic without shipping a panic export in the production wasm; one option is a test-only wasm build served through a Playwright route."
+references = [
+  "deferred — _bmad-output/implementation-artifacts/deferred-work.md, real Rust panic in the worker (US-0.2)",
+  "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-8",
+]
+
+[[entry]]
+id = 11
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what the build records and deferred review findings of stories 1 to 10 name, after grepping every plan's triage log for sweep routings; scope is set when it starts and takes cleanup only."
+verify = "CI stays green and every item in the sweep's agreed scope is closed or explicitly deferred."
+covers = []
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+hitl = false
+risk = "low"
