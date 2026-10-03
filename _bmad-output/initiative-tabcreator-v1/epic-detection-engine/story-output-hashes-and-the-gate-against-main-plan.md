@@ -3,7 +3,7 @@ title: 'Output hashes and the gate against main'
 type: 'feature'
 ticket: '2'
 created: '2026-10-03'
-status: 'built'
+status: done
 baseline_revision: 'cbfd678a668de275a0babbdd5fbf16d3c4de0822'
 route: 'full'
 route_source: 'auto'
