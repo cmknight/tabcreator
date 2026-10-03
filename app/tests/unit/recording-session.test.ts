@@ -996,6 +996,158 @@ describe('recording session', () => {
       await flush();
       expect(session.getSnapshot().devices).toEqual([A, B, C]);
     });
+
+    describe('serialised transitions', () => {
+      const C = { deviceId: 'c', label: 'Mic C', groupId: 'gc' };
+
+      /**
+       * Holds the next call of `fn` until the returned release runs; it then answers as the
+       * fake would at release time.
+       */
+      function hold<A extends unknown[], R>(fn: (...args: A) => Promise<R>) {
+        const mock = vi.mocked(fn);
+        const real = mock.getMockImplementation()!;
+        let release: () => void = () => {};
+        mock.mockImplementationOnce(
+          (...args: A) => new Promise<R>((resolve) => (release = () => resolve(real(...args)))),
+        );
+        return () => release();
+      }
+
+      /** The fake inputs never closed, by device id. */
+      const openIds = (inputs: { deviceId: string; close: ReturnType<typeof vi.fn> }[]) =>
+        inputs.filter((i) => i.close.mock.calls.length === 0).map((i) => i.deviceId);
+
+      it('a choice during an unplug fallback is ignored; only the default ends open', async () => {
+        const { session, deps, inputs, unplug } = devicesSetup({ listed: [A, B, C] });
+        await session.allowMic();
+        const releaseRequest = hold(deps.requestMic);
+        await unplug('a');
+        await session.selectMic('c');
+        releaseRequest();
+        await flush();
+        expect(deps.requestMic).not.toHaveBeenCalledWith('c');
+        expect(session.getSnapshot()).toMatchObject({ mic: 'live', activeDeviceId: 'b' });
+        expect(openIds(inputs)).toEqual(['b']);
+      });
+
+      it('a track ending during a switch is handled after it; one input open at rest', async () => {
+        const { session, deps, inputs, unplug } = devicesSetup({ listed: [A, B, C] });
+        await session.allowMic();
+        const releaseList = hold(deps.listMics);
+        const switching = session.selectMic('b');
+        await flush();
+        // B's track ends while the post-switch device list is pending; the fallback's default
+        // request is held so a later choice could race it.
+        const releaseRequest = hold(deps.requestMic);
+        await unplug('b');
+        releaseList();
+        await switching;
+        await flush();
+        await session.selectMic('c');
+        releaseRequest();
+        await flush();
+        expect(deps.requestMic).not.toHaveBeenCalledWith('c');
+        expect(session.getSnapshot()).toMatchObject({
+          mic: 'live',
+          activeDeviceId: 'a',
+          notice: { kind: 'switched', label: 'Mic A', seq: 1 },
+        });
+        expect(openIds(inputs)).toEqual(['a']);
+      });
+
+      it('an unplug while requesting falls back to the other device with a notice', async () => {
+        const { session, deps, inputs, unplug } = devicesSetup();
+        const releaseList = hold(deps.listMics);
+        const allowing = session.allowMic();
+        await flush();
+        expect(session.getSnapshot().mic).toBe('requesting');
+        await unplug('a');
+        releaseList();
+        await allowing;
+        await flush();
+        expect(session.getSnapshot()).toMatchObject({
+          mic: 'live',
+          devices: [B],
+          activeDeviceId: 'b',
+          notice: { kind: 'switched', label: 'Mic B', seq: 1 },
+        });
+        expect(openIds(inputs)).toEqual(['b']);
+      });
+
+      it('a revoke while requesting shows the lost card with no input open', async () => {
+        const { session, deps, inputs, revoke } = devicesSetup();
+        const releaseList = hold(deps.listMics);
+        const allowing = session.allowMic();
+        await flush();
+        await revoke();
+        releaseList();
+        await allowing;
+        await flush();
+        expect(session.getSnapshot()).toMatchObject({ mic: 'error', errorCode: 'mic-lost' });
+        expect(session.getSnapshot().notice).toBeUndefined();
+        expect(openIds(inputs)).toEqual([]);
+      });
+
+      /** Makes the next opened input report Chrome's `default` id with `groupId`. */
+      function nextOpensDefault(deps: RecordingDeps, groupId: string) {
+        const opened = vi.mocked(deps.openInput).getMockImplementation()!;
+        vi.mocked(deps.openInput).mockImplementationOnce((s, ended) => ({
+          ...opened(s, ended),
+          deviceId: 'default',
+          groupId,
+        }));
+      }
+
+      it('an ended `default` input resolved by groupId at go-live falls back when unplugged', async () => {
+        const { session, deps, inputs, setListed } = devicesSetup({ listed: [B, A] });
+        nextOpensDefault(deps, 'gb');
+        await session.allowMic();
+        expect(session.getSnapshot().activeDeviceId).toBe('b');
+        setListed([A]);
+        inputs[0]!.end();
+        await flush();
+        expect(session.getSnapshot()).toMatchObject({
+          mic: 'live',
+          activeDeviceId: 'a',
+          notice: { kind: 'switched', label: 'Mic A', seq: 1 },
+        });
+        expect(openIds(inputs)).toEqual(['a']);
+      });
+
+      it('an ended `default` input resolved only by a later devicechange falls back when unplugged', async () => {
+        const { session, deps, inputs, setListed, fireDeviceChange } = devicesSetup({
+          listed: [B, A],
+        });
+        nextOpensDefault(deps, 'gc');
+        await session.allowMic();
+        expect(session.getSnapshot().activeDeviceId).toBe('default');
+        setListed([B, A, C]);
+        await fireDeviceChange();
+        expect(session.getSnapshot().activeDeviceId).toBe('c');
+        setListed([B, A]);
+        inputs[0]!.end();
+        await flush();
+        expect(session.getSnapshot()).toMatchObject({
+          mic: 'live',
+          activeDeviceId: 'b',
+          notice: { kind: 'switched', label: 'Mic B', seq: 1 },
+        });
+        expect(openIds(inputs)).toEqual(['b']);
+      });
+
+      it('an ended input reporting `default` with no listed match shows the lost card', async () => {
+        const { session, deps, setListed } = await liveUnresolved('default');
+        const opened = vi.mocked(deps.openInput).mock.results[0]!.value as { close: () => void };
+        // Another device remains listed, but the ended one cannot be judged unplugged.
+        setListed([B]);
+        vi.mocked(deps.openInput).mock.calls[0]![1](new AppError('mic-lost', 'ended'));
+        await flush();
+        expect(deps.requestMic).toHaveBeenCalledTimes(1);
+        expect(session.getSnapshot()).toMatchObject({ mic: 'error', errorCode: 'mic-lost' });
+        expect(opened.close).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 
   describe('tuner', () => {

@@ -201,8 +201,12 @@ test('unplug of the active device with another left: switches with a toast, no l
   await expect(lostCard(page)).toHaveCount(0);
   // One device left: the select hides.
   await expect(select(page)).toHaveCount(0);
+  // The fallback is one default request, made after the unplugged track had ended.
+  await expect
+    .poll(async () => (await gumLog(page)).map((c) => c.deviceId))
+    .toEqual(['null', 'null']);
+  expect((await gumLog(page))[1]).toEqual({ deviceId: 'null', liveBefore: 0 });
   expect(await gumCalls(page)).toBe(2);
-  expect((await gumLog(page))[1]!.deviceId).toBe('null');
   expect(errors).toEqual([]);
 });
 
@@ -210,8 +214,10 @@ test('unplug of the only device: the lost card, no toast', async ({ page }) => {
   const errors = await goLive(page, 'open_strings');
   await page.evaluate((id) => window.__fakeMic!.unplug(id), OPEN);
   await expect(lostCard(page)).toBeVisible();
+  // The card is the end state; a late fallback would still show here as a second request.
   await page.waitForTimeout(300);
   await expect(toast(page)).toHaveCount(0);
+  expect((await gumLog(page)).map((c) => c.deviceId)).toEqual(['null']);
   expect(await gumCalls(page)).toBe(1);
   expect(errors).toEqual([]);
 });

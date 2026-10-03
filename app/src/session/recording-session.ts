@@ -3,6 +3,12 @@
 // `devicechange` while live), the chosen device (`micDeviceId`) and the fallback to the default
 // input when the active one is unplugged. Read it with useSyncExternalStore.
 //
+// Every input transition (allow, switch, the handling of an ended track) runs one at a time
+// through one queue (`enqueue`), so only the running transition changes `input`. A switch that
+// arrives while any transition runs is ignored; an ended track is never dropped, its handling
+// queued after the transition in progress, and judged by the ended input's own device. A
+// transition that opened an input the store no longer holds closes it before returning.
+//
 // What the live input yields is derived by three modules it composes through one contract
 // (input-derivation.ts): the level warning (level-watch.ts), the input quality warning
 // (input-quality-watch.ts) and the Tuner's reading and ticks (tuner-watch.ts). Each mic
@@ -75,8 +81,9 @@ export interface RecordingSession {
   resume(): Promise<void>;
   /**
    * While live, switches to the listed device `deviceId`: closes the current input, opens that
-   * device exactly and saves it as `micDeviceId`. A no-op when not live, while another switch
-   * runs, or for the device already active. A failure shows its error card.
+   * device exactly and saves it as `micDeviceId`. A no-op when not live, while any input
+   * transition (an allow, a switch or an ended track's handling) runs, or for the device already
+   * active. A failure shows its error card.
    */
   selectMic(deviceId: string): Promise<void>;
   /**
@@ -129,8 +136,14 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     ...tuning.transition(idle),
   };
   let input: OpenedInput | null = null;
-  /** A device switch or an ended-track fallback is running. */
-  let busy = false;
+  /** The inputs already closed, so none is closed twice. */
+  const closed = new WeakSet<OpenedInput>();
+  /** Each opened input's listed device id as resolved when it went live (null: no match). */
+  const resolvedIds = new WeakMap<OpenedInput, string | null>();
+  /** The transitions waiting to run, in order; the running one has been taken off. */
+  const queue: (() => void)[] = [];
+  /** An input transition is running. */
+  let running = false;
   /** Bumped on every device list request, so an older answer never replaces a newer one. */
   let listSeq = 0;
   let noticeSeq = 0;
@@ -185,6 +198,51 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     }
   }
 
+  /**
+   * Runs `task` after every transition already queued; at once (synchronously up to its first
+   * await) when none runs. Settles as `task` does, once the next transition has started (or
+   * the queue is idle), so a caller that awaits it sees the queue as it now is.
+   */
+  function enqueue(task: () => Promise<void>): Promise<void> {
+    return new Promise((resolve, reject) => {
+      queue.push(() => {
+        // Started synchronously (not deferred), so a transition's first notify lands within the
+        // call; a synchronous throw still takes the rejection path and advances the queue.
+        let started: Promise<void>;
+        try {
+          started = task();
+        } catch (err) {
+          started = Promise.reject(err);
+        }
+        started.then(
+          () => {
+            advance();
+            resolve();
+          },
+          (err: unknown) => {
+            advance();
+            reject(err);
+          },
+        );
+      });
+      if (!running) advance();
+    });
+  }
+
+  /** Starts the next queued transition, or marks the queue idle. */
+  function advance() {
+    const next = queue.shift();
+    running = next !== undefined;
+    next?.();
+  }
+
+  /** Closes `opened` (stops its tracks, closes its context) unless it is already closed. */
+  function release(opened: OpenedInput) {
+    if (closed.has(opened)) return;
+    closed.add(opened);
+    opened.close();
+  }
+
   const readLevels = (now: number): LevelsDbfs => levels.read(liveInput(), now);
 
   const readTuner = (now: number): TunerDisplay | null => tuning.read(liveInput(), now);
@@ -209,8 +267,11 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     const seq = ++listSeq;
     const devices = await listDevices();
     if (seq !== listSeq || snapshot.mic !== 'live') return;
-    const settled = input && !busy ? input : null;
+    const settled = input && !running ? input : null;
     const activeDeviceId = settled ? activeId(settled, devices) : snapshot.activeDeviceId;
+    // Keep the ended-track judgement current: a device listed only now resolves the input.
+    const resolved = settled ? activeDevice(settled, devices)?.deviceId : undefined;
+    if (settled && resolved) resolvedIds.set(settled, resolved);
     notify({
       ...snapshot,
       devices,
@@ -225,18 +286,40 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     devices: MicDevice[];
     activeDeviceId: string | null;
   }> {
-    const opened = deps.openInput(stream, () => void ended(opened));
+    const opened = deps.openInput(stream, () => {
+      // The queue has already advanced past a failed handling; nothing is left to do with it.
+      enqueue(() => ended(opened)).catch(() => {});
+    });
+    closed.delete(opened);
     input = opened;
     ++listSeq;
     const devices = await listDevices();
+    resolvedIds.set(opened, activeDevice(opened, devices)?.deviceId ?? null);
     return { opened, devices, activeDeviceId: activeId(opened, devices) };
   }
 
   /**
-   * Whether `opened` is still the live input (a track that ended meanwhile replaced it). A
-   * function, so TypeScript does not narrow `input` across the awaits that may change it.
+   * Whether `opened` is still the store's input; when not, closes it. Transitions run one at a
+   * time, so this is a guard: only the running one changes `input`. A function, so TypeScript
+   * does not narrow `input` across the awaits.
    */
-  const holds = (opened: OpenedInput) => input === opened;
+  function holds(opened: OpenedInput): boolean {
+    if (input === opened) return true;
+    release(opened);
+    return false;
+  }
+
+  /**
+   * The device an ended input ran on: its listed id as resolved when it went live, else its
+   * track's id when that is a real one (not Chrome's `default` or `communications` alias), else
+   * null (unresolved).
+   */
+  function endedDeviceId(opened: OpenedInput): string | null {
+    const resolved = resolvedIds.get(opened);
+    if (resolved) return resolved;
+    const own = opened.deviceId;
+    return own && own !== 'default' && own !== 'communications' ? own : null;
+  }
 
   function savePrefs(patch: { micGranted?: boolean; micDeviceId?: string | null }) {
     try {
@@ -264,7 +347,13 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     return deps.requestMic();
   }
 
-  async function allowMic() {
+  function allowMic(): Promise<void> {
+    if (snapshot.mic === 'requesting' || snapshot.mic === 'live') return Promise.resolve();
+    return enqueue(allow);
+  }
+
+  async function allow() {
+    // Re-checked: a transition queued ahead of this one may have gone live.
     if (snapshot.mic === 'requesting' || snapshot.mic === 'live') return;
     set(
       snapshot.errorCode
@@ -284,77 +373,71 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     set({ mic: 'live', devices: live.devices, activeDeviceId: live.activeDeviceId });
   }
 
-  async function selectMic(deviceId: string) {
-    if (snapshot.mic !== 'live' || busy || deviceId === snapshot.activeDeviceId) return;
-    busy = true;
-    try {
-      // Close (stop the tracks) before asking for the new device; the select shows the choice.
-      const old = input;
-      input = null;
-      old?.close();
-      set({ mic: 'live', activeDeviceId: deviceId });
-      let live;
-      try {
-        live = await goLive(await deps.requestMic(deviceId));
-      } catch (err) {
-        input = null;
-        set({ mic: 'error', errorCode: asAppError(err).code });
-        return;
-      }
-      if (!holds(live.opened)) return;
-      savePrefs({ micDeviceId: deviceId });
-      set({ mic: 'live', devices: live.devices, activeDeviceId: live.activeDeviceId });
-    } finally {
-      busy = false;
+  function selectMic(deviceId: string): Promise<void> {
+    if (snapshot.mic !== 'live' || running || deviceId === snapshot.activeDeviceId) {
+      return Promise.resolve();
     }
+    return enqueue(() => switchTo(deviceId));
+  }
+
+  async function switchTo(deviceId: string) {
+    // Close (stop the tracks) before asking for the new device; the select shows the choice.
+    const old = input;
+    input = null;
+    if (old) release(old);
+    set({ mic: 'live', activeDeviceId: deviceId });
+    let live;
+    try {
+      live = await goLive(await deps.requestMic(deviceId));
+    } catch (err) {
+      input = null;
+      set({ mic: 'error', errorCode: asAppError(err).code });
+      return;
+    }
+    if (!holds(live.opened)) return;
+    savePrefs({ micDeviceId: deviceId });
+    set({ mic: 'live', devices: live.devices, activeDeviceId: live.activeDeviceId });
   }
 
   /**
-   * The live track ended on its own. When its device is no longer listed and another remains
-   * (an unplug), open the default input and post a `switched` notice; otherwise (a revoke, or
-   * the only device gone) close the input and show the lost card.
+   * A track ended on its own (queued: runs after the transition in progress). When the input
+   * is no longer the store's, it is only closed. Otherwise, when its device is no longer listed
+   * and another remains (an unplug), open the default input and post a `switched` notice; else
+   * (a revoke, the only device gone, or a device that cannot be resolved) close the input and
+   * show the lost card.
    */
   async function ended(endedInput: OpenedInput) {
-    if (input !== endedInput) return;
-    // Only an id that resolved to a listed device can be found missing later; an unresolved
-    // one (Chrome's `default` alias, or none) counts as still present: the lost card.
-    const endedId = snapshot.devices.some((d) => d.deviceId === snapshot.activeDeviceId)
-      ? snapshot.activeDeviceId
-      : null;
+    if (!holds(endedInput)) return;
+    const endedId = endedDeviceId(endedInput);
     input = null;
-    endedInput.close();
-    busy = true;
-    try {
-      ++listSeq;
-      const devices = await listDevices();
-      const unplugged = endedId !== null && !devices.some((d) => d.deviceId === endedId);
-      if (!unplugged || devices.length === 0) {
-        set({ mic: 'error', errorCode: 'mic-lost' });
-        return;
-      }
-      let live;
-      try {
-        live = await goLive(await deps.requestMic());
-      } catch (err) {
-        input = null;
-        set({ mic: 'error', errorCode: asAppError(err).code });
-        return;
-      }
-      if (!holds(live.opened)) return;
-      const now = activeDevice(live.opened, live.devices);
-      set({
-        mic: 'live',
-        devices: live.devices,
-        activeDeviceId: live.activeDeviceId,
-        notice: {
-          kind: 'switched',
-          label: now?.label || live.opened.label || '',
-          seq: ++noticeSeq,
-        },
-      });
-    } finally {
-      busy = false;
+    release(endedInput);
+    ++listSeq;
+    const devices = await listDevices();
+    const unplugged = endedId !== null && !devices.some((d) => d.deviceId === endedId);
+    if (!unplugged || devices.length === 0) {
+      set({ mic: 'error', errorCode: 'mic-lost' });
+      return;
     }
+    let live;
+    try {
+      live = await goLive(await deps.requestMic());
+    } catch (err) {
+      input = null;
+      set({ mic: 'error', errorCode: asAppError(err).code });
+      return;
+    }
+    if (!holds(live.opened)) return;
+    const now = activeDevice(live.opened, live.devices);
+    set({
+      mic: 'live',
+      devices: live.devices,
+      activeDeviceId: live.activeDeviceId,
+      notice: {
+        kind: 'switched',
+        label: now?.label || live.opened.label || '',
+        seq: ++noticeSeq,
+      },
+    });
   }
 
   let resuming = false;
