@@ -3,7 +3,7 @@ title: 'Pre-processing and Params'
 type: 'feature'
 ticket: '3'
 created: '2026-10-03'
-status: 'built'
+status: done
 baseline_revision: 'b262ce7535e34752a97361f0f93e2b73d2b86c13'
 route: 'full'
 route_source: 'auto'
