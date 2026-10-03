@@ -147,10 +147,15 @@ export interface MicInput {
   /**
    * Starts recording this input in its own AudioContext (audio/recorder.ts): 1 s mono chunks at
    * the context's rate go to `onChunk`, and a compressed copy is kept for `Capture.stop`. The
-   * capture opens at audio-clock time `startAt` (s) when given, else at once. Rejects with
+   * capture opens at audio-clock time `startAt` (s) when given, else at once; with `maxMs` it
+   * stops itself `maxMs` after it opens, on the audio clock (`Capture.capped`). Rejects with
    * `AppError` `mic-failed`. Stop (or abort) the capture before `close()`.
    */
-  capture(onChunk: (samples: Float32Array) => void, startAt?: number): Promise<Capture>;
+  capture(
+    onChunk: (samples: Float32Array) => void,
+    startAt?: number,
+    maxMs?: number,
+  ): Promise<Capture>;
   /** Stops the stream's tracks and closes the AudioContext. */
   close(): void;
 }
@@ -219,7 +224,7 @@ export function openInput(stream: MediaStream, onEnded?: (error: AppError) => vo
       },
       clock: () => context.currentTime,
       clicks: (beats) => scheduleClicks(context, beats),
-      capture: (onChunk, startAt) => startCapture(context, source, onChunk, startAt),
+      capture: (onChunk, startAt, maxMs) => startCapture(context, source, onChunk, startAt, maxMs),
       close() {
         detach();
         stopTracks(stream);

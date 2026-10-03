@@ -58,6 +58,14 @@ export const strings = {
   'record.stop': 'Stop',
   /** The indicator above the timer while a take records. */
   'record.recording': 'Recording',
+  /** Under the timer from 4:30, and announced once (EXPERIENCE.md Recording near limit). */
+  'record.nearLimit': '30 seconds left',
+  /** The toast after a take under 0.5 s is discarded (EXPERIENCE.md Take too short). */
+  'record.tooShort': 'Too short — nothing recorded',
+  /** Announced when a take starts capturing. */
+  'record.started': 'Recording started',
+  /** Announced when a take is saved. */
+  'record.stopped': 'Recording stopped',
   /** The recording timer's accessible name: "Elapsed time 0:42". */
   'record.elapsed': (time: string) => `Elapsed time ${time}`,
   /** The Space shortcut's description in the keyboard shortcuts dialog (EXPERIENCE.md). */

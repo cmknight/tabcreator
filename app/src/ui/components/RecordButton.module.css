@@ -102,3 +102,25 @@
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
+
+/* "30 seconds left" (EXPERIENCE.md Recording near limit): under the timer, in the warning
+   colour with the warning icon, drawn into the timer's bottom margin so the button stays put. */
+.limit {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  height: var(--space-4);
+
+  /* The timer's bottom margin is --space-6: 8 px gap, the 16 px line, then the button. */
+  margin: calc(var(--space-2) - var(--space-6)) 0 0;
+  color: var(--color-warning);
+  font: var(--font-ui-small);
+  font-weight: 600;
+  line-height: var(--space-4);
+}
+
+.limitIcon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}

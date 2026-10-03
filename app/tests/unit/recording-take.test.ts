@@ -5,7 +5,10 @@ import type { Take } from '../../src/model/types';
 import type { OpenedInput } from '../../src/session/input-derivation';
 import {
   createRecordingSession,
+  MAX_TAKE_MS,
+  readDevLimits,
   takeTitle,
+  WARN_LEAD_MS,
   type RecordingDeps,
 } from '../../src/session/recording-session';
 import type { RawWriter } from '../../src/storage/audio-store';
@@ -44,9 +47,11 @@ function setup(overrides: Partial<RecordingDeps> = {}, captureError?: AppError) 
   let elapsed = 0;
   /** The input's audio clock, s. */
   let audioTime = 10;
+  const capped = deferred<void>();
   const capture: Capture = {
     sampleRate: RATE,
     startTime: 0,
+    capped: capped.promise,
     elapsedMs: () => elapsed,
     stop: vi.fn(async () => {
       log.push('capture.stop');
@@ -116,6 +121,9 @@ function setup(overrides: Partial<RecordingDeps> = {}, captureError?: AppError) 
     writeCompressed: vi.fn(async (id: string, blob: Blob) => {
       log.push(`writeCompressed ${id} ${blob.type}`);
     }),
+    deleteTake: vi.fn(async (id: string) => {
+      log.push(`deleteTake ${id}`);
+    }),
     navigate: vi.fn((id: string) => log.push(`navigate ${id}`)),
     now: () => NOW,
     newId: vi.fn(() => 'take-1'),
@@ -136,6 +144,8 @@ function setup(overrides: Partial<RecordingDeps> = {}, captureError?: AppError) 
     emit: (samples: Float32Array) => emit?.(samples),
     setElapsed: (ms: number) => (elapsed = ms),
     setClock: (s: number) => (audioTime = s),
+    /** The capture stops itself at its cap (on the audio clock). */
+    reachCap: () => capped.resolve(),
     endTrack: async () => {
       onEnded?.(new AppError('mic-lost', 'ended'));
       await flush();
@@ -613,6 +623,237 @@ describe('count-in', () => {
     expect(t.deps.createTake).toHaveBeenCalledTimes(1);
     expect(vi.mocked(t.deps.createTake).mock.calls[0]![0]).not.toHaveProperty('countInBpm');
     expect(vi.mocked(t.input.capture).mock.calls[0]![1]).toBeUndefined();
+  });
+});
+
+// Story 3.7: the length cap, its warning, and short takes. The capture's elapsed time is set by
+// hand; timers are faked so the limit watch runs without real time passing. The dev limits
+// (8 s cap, warning 3 s before) stand in for 5:00 and 4:30.
+describe('length cap and short takes', () => {
+  const LIMITS = { capMs: 8_000, leadMs: 3_000 };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Live, then recording with the take created and no chunk yet. */
+  async function recordingFake(overrides: Partial<RecordingDeps> = {}) {
+    const t = setup({ limits: LIMITS, ...overrides });
+    const allowed = t.session.allowMic();
+    await vi.advanceTimersByTimeAsync(0);
+    await allowed;
+    const started = t.session.record();
+    await vi.advanceTimersByTimeAsync(0);
+    t.created.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await started;
+    expect(t.session.getSnapshot().recording).toBe('recording');
+    return t;
+  }
+
+  /** Emits `ms` of captured audio in chunks of at most 1 s. */
+  function emitMs(t: ReturnType<typeof setup>, ms: number) {
+    let left = Math.round((ms / 1000) * RATE);
+    while (left > 0) {
+      const n = Math.min(RATE, left);
+      t.emit(chunk(1, n));
+      left -= n;
+    }
+  }
+
+  /** The capture's stop delivers no final chunk, so the take's length is what was emitted. */
+  function exactStop(t: ReturnType<typeof setup>) {
+    vi.mocked(t.capture.stop).mockImplementation(async () => {
+      t.log.push('capture.stop');
+      return { parts: [new Blob(['webm'])] };
+    });
+  }
+
+  it('defaults to a 5:00 cap with the warning at 4:30', () => {
+    expect(MAX_TAKE_MS).toBe(300_000);
+    expect(WARN_LEAD_MS).toBe(30_000);
+  });
+
+  it('turns nearLimit on once at maxTakeMs − warnLeadMs', async () => {
+    const t = await recordingFake();
+    const listener = vi.fn();
+    t.session.subscribe(listener);
+    t.setElapsed(4_999);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(t.session.getSnapshot().nearLimit).toBe(false);
+    expect(listener).not.toHaveBeenCalled();
+    t.setElapsed(5_000);
+    await vi.advanceTimersByTimeAsync(5);
+    expect(t.session.getSnapshot().nearLimit).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(1);
+    t.setElapsed(6_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(t.capture.stop).not.toHaveBeenCalled();
+  });
+
+  it('schedules the cap on the audio clock when the capture starts', async () => {
+    const t = await recordingFake();
+    expect(vi.mocked(t.input.capture).mock.calls[0]![2]).toBe(8_000);
+  });
+
+  it('at the cap: saved as max-length and the Tab opens, with no timer needed', async () => {
+    const t = await recordingFake();
+    exactStop(t);
+    // A throttled (hidden) tab: no timer runs, yet the capture stops itself at the cap.
+    emitMs(t, 8_000);
+    t.setElapsed(8_000);
+    expect(t.session.getSnapshot().recording).toBe('recording');
+    t.reachCap();
+    // Settles the save's promises only; no timer is due.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.capture.stop).toHaveBeenCalledTimes(1);
+    expect(t.deps.patchTake).toHaveBeenCalledWith(
+      'take-1',
+      {
+        status: 'recorded',
+        durationMs: 8_000,
+        audioMime: 'audio/webm;codecs=opus',
+        stopReason: 'max-length',
+      },
+      'recording-session',
+    );
+    expect(t.deps.navigate).toHaveBeenCalledWith('take-1');
+    expect(t.deps.deleteTake).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot()).toMatchObject({
+      recording: 'idle',
+      nearLimit: false,
+      savedSeq: 1,
+    });
+  });
+
+  it('stays recording until the cap, so a Stop just before it saves as user', async () => {
+    const t = await recordingFake();
+    emitMs(t, 7_000);
+    t.setElapsed(7_900);
+    await vi.advanceTimersByTimeAsync(7_900);
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'recording', nearLimit: true });
+    const stopping = t.session.stop('user');
+    // The cap's own stop arriving now is ignored: the user's Stop is already saving.
+    t.reachCap();
+    await stopping;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.capture.stop).toHaveBeenCalledTimes(1);
+    expect(t.deps.patchTake).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({ stopReason: 'user' });
+  });
+
+  it('too short: a take stopped at 0.3 s is deleted, with a notice and no Tab', async () => {
+    const t = await recordingFake();
+    exactStop(t);
+    emitMs(t, 300);
+    const listener = vi.fn();
+    t.session.subscribe(listener);
+    await t.session.stop('user');
+    expect(t.log).toEqual([
+      'createTake take-1',
+      'openRawWriter take-1',
+      'capture.stop',
+      'writer.close after 1 appends',
+      'deleteTake take-1',
+    ]);
+    expect(t.deps.deleteTake).toHaveBeenCalledWith('take-1', 'recording-session');
+    expect(t.deps.writeCompressed).not.toHaveBeenCalled();
+    expect(t.deps.patchTake).not.toHaveBeenCalled();
+    expect(t.deps.navigate).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'live',
+      recording: 'idle',
+      activeTakeId: null,
+      notice: { kind: 'too-short', seq: 1 },
+      savedSeq: 0,
+    });
+    // stopping, then idle with the notice in one notify.
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it('too short with a failing delete: still discarded, idle with the notice, no error card', async () => {
+    const t = await recordingFake({
+      deleteTake: vi.fn(() => Promise.reject(new AppError('storage-failed', 'no'))),
+    });
+    exactStop(t);
+    emitMs(t, 300);
+    await t.session.stop('user');
+    expect(t.deps.deleteTake).toHaveBeenCalledTimes(1);
+    expect(t.deps.patchTake).not.toHaveBeenCalled();
+    expect(t.deps.navigate).not.toHaveBeenCalled();
+    expect(t.input.close).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'live',
+      recording: 'idle',
+      activeTakeId: null,
+      notice: { kind: 'too-short', seq: 1 },
+    });
+    expect(t.session.getSnapshot().errorCode).toBeUndefined();
+  });
+
+  it('exactly 0.5 s is kept', async () => {
+    const t = await recordingFake();
+    exactStop(t);
+    emitMs(t, 500);
+    await t.session.stop('user');
+    expect(t.deps.deleteTake).not.toHaveBeenCalled();
+    expect(t.deps.patchTake).toHaveBeenCalledWith(
+      'take-1',
+      expect.objectContaining({ status: 'recorded', durationMs: 500 }),
+      'recording-session',
+    );
+    expect(t.deps.navigate).toHaveBeenCalledWith('take-1');
+    expect(t.session.getSnapshot().notice).toBeUndefined();
+  });
+
+  it('short after a count-in: stopped 0.2 s after beat five, deleted with the notice', async () => {
+    const t = setup({ limits: LIMITS });
+    t.prefs.countIn = { on: true, bpm: 120 };
+    const session = createRecordingSession(t.deps);
+    const allowed = session.allowMic();
+    await vi.advanceTimersByTimeAsync(0);
+    await allowed;
+    const started = session.record();
+    await vi.advanceTimersByTimeAsync(0);
+    t.setClock(12.015);
+    await vi.advanceTimersByTimeAsync(2_500);
+    t.created.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await started;
+    expect(session.getSnapshot().recording).toBe('recording');
+    exactStop(t);
+    emitMs(t, 200);
+    await session.stop('user');
+    expect(t.deps.deleteTake).toHaveBeenCalledWith('take-1', 'recording-session');
+    expect(t.deps.patchTake).not.toHaveBeenCalled();
+    expect(t.deps.navigate).not.toHaveBeenCalled();
+    expect(session.getSnapshot()).toMatchObject({
+      recording: 'idle',
+      notice: { kind: 'too-short', seq: 1 },
+    });
+  });
+
+  it('reads the dev limits from the query, keeping the constants for missing or bad values', () => {
+    expect(readDevLimits('?maxTakeMs=8000&warnLeadMs=3000')).toEqual(LIMITS);
+    expect(readDevLimits('?fakeMic=x')).toEqual({
+      capMs: MAX_TAKE_MS,
+      leadMs: WARN_LEAD_MS,
+    });
+    expect(readDevLimits('?maxTakeMs=-5&warnLeadMs=abc')).toEqual({
+      capMs: MAX_TAKE_MS,
+      leadMs: WARN_LEAD_MS,
+    });
+    // The cap is at least 1 s (so a max-length take is never too short); the lead at most it.
+    expect(readDevLimits('?maxTakeMs=300&warnLeadMs=200')).toEqual({ capMs: 1_000, leadMs: 200 });
+    expect(readDevLimits('?maxTakeMs=2000&warnLeadMs=5000')).toEqual({
+      capMs: 2_000,
+      leadMs: 2_000,
+    });
   });
 });
 

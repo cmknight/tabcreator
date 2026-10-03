@@ -457,6 +457,8 @@ test('count-in: the beats 4-3-2-1 show and are announced; controls disabled; Can
   await expect(timer(page)).toBeVisible();
   await expect(countInToggle(page)).toBeDisabled();
   await expect(tempoField(page)).toBeDisabled();
+  // Past 0.5 s, so the take is kept (story 3.7).
+  await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
   await stopButton(page).click();
   const id = await tabTakeId(page);
   expect((await readSaved(page, id)).take).toMatchObject({ status: 'recorded', countInBpm: 60 });
@@ -502,5 +504,121 @@ test('count-in: Esc, the Cancel button and Space each cancel; no take is created
   await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
   await expect(countInToggle(page)).toBeEnabled();
   await expect(page).toHaveURL(/#\/record$/);
+  expect(errors).toEqual([]);
+});
+
+// Story 3.7: the length cap, its warning, short takes and the recording announcements. The dev
+// override `?maxTakeMs=8000&warnLeadMs=3000` stands in for the 5:00 cap and the 4:30 warning.
+
+const LIMITS = 'maxTakeMs=8000&warnLeadMs=3000';
+const nearLimit = (page: Page) => page.getByTestId('near-limit');
+
+/**
+ * From now on, records every non-empty text the polite live region shows, in order, in
+ * `window.__announced`.
+ */
+async function watchAnnouncements(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const w = window as unknown as { __announced: string[] };
+    w.__announced = [];
+    const region = document.querySelector('[role="status"][aria-live="polite"]')!;
+    new MutationObserver(() => {
+      const text = region.textContent ?? '';
+      if (text) w.__announced.push(text);
+    }).observe(region, { childList: true, characterData: true, subtree: true });
+  });
+}
+
+/** The polite announcements so far that are among `texts`, in order. */
+async function announced(page: Page, texts: readonly string[]): Promise<string[]> {
+  const all = await page.evaluate(
+    () => (window as unknown as { __announced: string[] }).__announced,
+  );
+  return all.filter((t) => texts.includes(t));
+}
+
+/** The names of the files in OPFS `raw/` and `audio/` (none when a directory is missing). */
+function opfsFiles(page: Page): Promise<string[]> {
+  return page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const names: string[] = [];
+    for (const dir of ['raw', 'audio']) {
+      try {
+        const handle = await root.getDirectoryHandle(dir);
+        for await (const name of (handle as unknown as { keys(): AsyncIterable<string> }).keys()) {
+          names.push(`${dir}/${name}`);
+        }
+      } catch {
+        // No such directory: nothing in it.
+      }
+    }
+    return names;
+  });
+}
+
+test('near the cap: "30 seconds left" shows and is announced once; at the cap it stops and saves', async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  await page.goto(`./?fakeMic=${FIXTURE}&${LIMITS}#/record`);
+  await page.getByRole('button', { name: 'Allow microphone' }).click();
+  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  await watchAnnouncements(page);
+
+  await recordButton(page).click();
+  await expect(timer(page)).toHaveText('0:03', { timeout: 6_000 });
+  await expect(nearLimit(page)).toHaveCount(0);
+  await expect(nearLimit(page)).toHaveText('30 seconds left', { timeout: 2_000 });
+  await expect(timer(page)).toHaveText(/^0:0[4-6]$/);
+  await expectNoSeriousAxe(page);
+
+  // No Stop: the take stops itself at 0:08 and opens its Tab.
+  const id = await tabTakeId(page);
+  const saved = await readSaved(page, id);
+  expect(saved.take).toMatchObject({
+    id,
+    status: 'recorded',
+    stopReason: 'max-length',
+    audioMime: MIME,
+  });
+  expect(Math.abs(saved.take!.durationMs - 8_000)).toBeLessThanOrEqual(50);
+  expect(saved.rawSamples).not.toBeNull();
+  expect(saved.decodedSeconds).not.toBeNull();
+
+  const texts = ['Recording started', '30 seconds left', 'Recording stopped'];
+  await expect.poll(() => announced(page, texts)).toEqual(texts);
+  expect(errors).toEqual([]);
+});
+
+test('too short: a take stopped at once (under 0.5 s) is discarded with a toast; Record stays', async ({
+  page,
+}) => {
+  const errors = await goLive(page);
+  await recordButton(page).click();
+  // Stop as soon as the take records: well under 0.5 s.
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
+  await stopButton(page).click();
+
+  await expect(page.getByTestId('toast')).toHaveText('Too short — nothing recorded', {
+    timeout: 5_000,
+  });
+  await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
+  await expect(page).toHaveURL(/#\/record$/);
+  expect(await takeCount(page)).toBe(0);
+  await expect.poll(() => opfsFiles(page)).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('Record then Stop announces "Recording started", then "Recording stopped"', async ({
+  page,
+}) => {
+  const errors = await goLive(page);
+  await watchAnnouncements(page);
+  await recordButton(page).click();
+  await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
+  await stopButton(page).click();
+  await tabTakeId(page);
+  const texts = ['Recording started', 'Recording stopped'];
+  await expect.poll(() => announced(page, texts)).toEqual(texts);
   expect(errors).toEqual([]);
 });

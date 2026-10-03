@@ -29,7 +29,7 @@ jobs:
 
   app:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       CI: true
     steps:
@@ -106,8 +106,8 @@ jobs:
 
       - name: No dev-only test pages in the production bundle
         run: |
-          if grep -rE '__test|StorageTestPage' app/dist; then
-            echo "::error::dev-only test page code found in app/dist"
+          if grep -rE '__test|StorageTestPage|maxTakeMs|warnLeadMs' app/dist; then
+            echo "::error::dev-only test page code or the dev take-length override found in app/dist"
             exit 1
           fi
 

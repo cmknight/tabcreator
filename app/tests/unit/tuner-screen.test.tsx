@@ -22,6 +22,8 @@ const LIVE: RecordingSnapshot = {
   recording: 'idle',
   activeTakeId: null,
   countIn: { on: false, bpm: 100 },
+  nearLimit: false,
+  savedSeq: 0,
 };
 
 function renderReading(string: StringNo, cents: number, held = false) {

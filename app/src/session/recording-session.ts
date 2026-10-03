@@ -34,6 +34,16 @@
 // it resolves are held as above. During the count-in `stop()` cancels it (clicks cancelled,
 // capture aborted, no take). This store also reads and writes the `countIn` pref (the same
 // epic 2 decision as the mic prefs).
+//
+// Length cap and short takes (story 3.7, CAP-5, CAP-25, spine AD-9): a take is capped at
+// `MAX_TAKE_MS`. Its capture's stop is scheduled when the capture starts, on the audio clock at
+// exactly `startTime + MAX_TAKE_MS`, so no timer can extend it; when that stop completes the
+// store saves the take with `stopReason: 'max-length'` (it stays `recording`, so Stop works,
+// until then). When its audio-clock time reaches `MAX_TAKE_MS − WARN_LEAD_MS` the snapshot's
+// `nearLimit` turns on (one notify; a wall-clock timer that re-reads the audio clock). A take
+// stopped under `MIN_TAKE_MS` is deleted (record and files)
+// with a `too-short` notice and no navigation. Each saved take bumps `savedSeq`, so the shell
+// can announce it. In dev builds `?maxTakeMs=<n>&warnLeadMs=<n>` override the two limits.
 
 import type { LevelsDbfs } from '../audio/level-meter';
 import {
@@ -83,6 +93,22 @@ export const COUNT_IN_BPM_MAX = 240;
 const DEFAULT_COUNT_IN: CountInPrefs = { on: false, bpm: 100 };
 /** How long past the expected capture start the audio clock may lag before it counts as stopped. */
 const CLOCK_STALL_MS = 2000;
+/** The longest take, ms (CAP-5): it stops itself here. */
+export const MAX_TAKE_MS = 300_000;
+/** How long before the cap the "30 seconds left" warning shows, ms. */
+export const WARN_LEAD_MS = 30_000;
+/** The shortest take kept, ms (spine AD-9): a shorter one is deleted at stop. */
+export const MIN_TAKE_MS = 500;
+/** The shortest cap the dev override accepts, ms, so a max-length take is never too short. */
+const DEV_MIN_CAP_MS = 1000;
+
+/** A take's length limits, ms: the cap and the warning's lead before it. */
+export interface TakeLimits {
+  /** The cap (`MAX_TAKE_MS`). */
+  capMs: number;
+  /** The warning's lead before the cap (`WARN_LEAD_MS`). */
+  leadMs: number;
+}
 
 /**
  * A typed tempo as stored: rounded to a whole BPM and clamped to 40–240; `fallback` when it is
@@ -109,12 +135,19 @@ declare global {
 }
 
 /** A one-off fact for the shell to show; `seq` grows with each new notice. */
-export interface MicNotice {
-  kind: 'switched';
-  /** The label of the input now in use; "" when the browser gives none. */
-  label: string;
-  seq: number;
-}
+export type MicNotice =
+  | {
+      /** The active input was unplugged and the default one is now in use. */
+      kind: 'switched';
+      /** The label of the input now in use; "" when the browser gives none. */
+      label: string;
+      seq: number;
+    }
+  | {
+      /** A take stopped under `MIN_TAKE_MS` was deleted. */
+      kind: 'too-short';
+      seq: number;
+    };
 
 /** The mic fields, plus the fields each input derivation owns (see input-derivation.ts). */
 export interface RecordingSnapshot extends LevelFields, InputQualityFields, TunerFields {
@@ -133,6 +166,10 @@ export interface RecordingSnapshot extends LevelFields, InputQualityFields, Tune
   activeTakeId: string | null;
   /** The count-in pref, as the Record screen's controls show it. */
   countIn: CountInPrefs;
+  /** The take in progress has reached its warning time (`maxTakeMs − warnLeadMs`). */
+  nearLimit: boolean;
+  /** How many takes this store has saved (`recorded`); grows by one with each. */
+  savedSeq: number;
 }
 
 export interface RecordingSession {
@@ -182,7 +219,8 @@ export interface RecordingSession {
   record(): Promise<void>;
   /**
    * Stops the take while `recording`: sets `stopping`, saves it, patches it `recorded` with
-   * `stopReason`, then navigates to its Tab. During a count-in, cancels it: the clicks are
+   * `stopReason`, then navigates to its Tab. A take under `MIN_TAKE_MS` is deleted instead,
+   * with a `too-short` notice and no navigation. During a count-in, cancels it: the clicks are
    * cancelled, the capture aborted, no take is created and the state returns to `idle`. A no-op
    * otherwise. Never rejects.
    */
@@ -223,12 +261,16 @@ export interface RecordingDeps {
   patchTake: (id: string, patch: TakePatch, writer: 'recording-session') => Promise<unknown>;
   openRawWriter: (takeId: string) => Promise<RawWriter>;
   writeCompressed: (takeId: string, blob: Blob) => Promise<void>;
+  /** Deletes a take's record and its raw and compressed files (a too-short take). */
+  deleteTake: (id: string, writer: 'recording-session') => Promise<unknown>;
   /** Opens the take's Tab screen (`#/tab/<id>`). */
   navigate: (takeId: string) => void;
   /** The wall clock, ms since the epoch (`Date.now`). */
   now: () => number;
   /** A new take id (`crypto.randomUUID`). */
   newId: () => string;
+  /** The length limits; `MAX_TAKE_MS` and `WARN_LEAD_MS` when absent (dev overrides only). */
+  limits?: TakeLimits;
 }
 
 /** A take from `record()` until it is saved, fails or is abandoned. */
@@ -246,6 +288,8 @@ interface ActiveTake {
   samples: number;
   /** Set when the take is given up; later chunks are dropped. */
   abandoned: boolean;
+  /** The warning's watch while recording. */
+  limitTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
 /** A count-in in progress: its take (not yet created), beats and cancel. */
@@ -299,6 +343,8 @@ const asAppError = (err: unknown) =>
     : new AppError('mic-failed', 'Opening the microphone failed', { cause: err });
 
 export function createRecordingSession(deps: RecordingDeps): RecordingSession {
+  const maxTakeMs = deps.limits?.capMs ?? MAX_TAKE_MS;
+  const warnLeadMs = Math.min(deps.limits?.leadMs ?? WARN_LEAD_MS, maxTakeMs);
   // The watches publish through `patch`, which reads `snapshot` only when called (never here).
   const levels = createLevelWatch(patch);
   const quality = createInputQualityWatch(patch);
@@ -311,6 +357,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     recording: 'idle',
     activeTakeId: null,
     countIn: loadCountIn(deps),
+    nearLimit: false,
+    savedSeq: 0,
     ...levels.transition(idle),
     ...quality.transition(idle),
     ...tuning.transition(idle),
@@ -378,6 +426,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       recording,
       activeTakeId: takeId(),
       countIn: snapshot.countIn,
+      nearLimit: nearLimit(),
+      savedSeq: snapshot.savedSeq,
       ...levels.transition(t),
       ...quality.transition(t),
       ...tuning.transition(t),
@@ -640,10 +690,48 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     });
   }
 
+  /** The published `nearLimit`: kept while the take records or stops, else off. */
+  const nearLimit = () =>
+    (recording === 'recording' || recording === 'stopping') && snapshot.nearLimit;
+
   /** Publishes the recording state and the active take id; notifies only on a change. */
-  function setRecording(next: RecordingState) {
+  function setRecording(next: RecordingState, extra: Partial<RecordingSnapshot> = {}) {
     recording = next;
-    patch({ recording, activeTakeId: takeId() });
+    patch({ recording, activeTakeId: takeId(), nearLimit: nearLimit(), ...extra });
+  }
+
+  /**
+   * While the take records: turns `nearLimit` on when its audio-clock time reaches
+   * `maxTakeMs − warnLeadMs` (a timer aimed at that time that re-reads the audio clock, so it
+   * never acts early), and saves it as `max-length` when its capture stops itself at the cap.
+   */
+  function watchLimits(take: ActiveTake) {
+    const capture = take.capture;
+    if (!capture) return;
+    const warnAt = maxTakeMs - warnLeadMs;
+    const tick = () => {
+      take.limitTimer = undefined;
+      if (active !== take || take.abandoned || recording !== 'recording') return;
+      const elapsed = capture.elapsedMs();
+      if (elapsed >= warnAt) {
+        if (!snapshot.nearLimit) patch({ nearLimit: true });
+        return;
+      }
+      take.limitTimer = setTimeout(tick, Math.max(1, Math.ceil(warnAt - elapsed)));
+    };
+    tick();
+    void capture.capped.then(() => {
+      // A Stop (or a failure) came first: that path saves (or keeps) the take.
+      if (active !== take || take.abandoned || recording !== 'recording') return;
+      stopWatchingLimits(take);
+      setRecording('stopping');
+      enqueue(() => finishTake('max-length')).catch(() => {});
+    });
+  }
+
+  function stopWatchingLimits(take: ActiveTake) {
+    clearTimeout(take.limitTimer);
+    take.limitTimer = undefined;
   }
 
   /** A captured chunk: counted, then appended (or held until the writer exists). */
@@ -668,6 +756,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   /** Gives the take up (its input is going away): drops the capture, closes the writer. */
   function abandon(take: ActiveTake) {
     take.abandoned = true;
+    stopWatchingLimits(take);
     take.capture?.abort();
     const writer = take.writer;
     void take.appends.then(() => writer?.close()).catch(() => {});
@@ -680,6 +769,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
    * the failure's code (the mic's error path).
    */
   function failRecording(err: unknown) {
+    if (active) stopWatchingLimits(active);
     if (countIn) {
       countIn.cancelClicks();
       clearTimeout(countIn.timer);
@@ -750,6 +840,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       appends: Promise.resolve(),
       samples: 0,
       abandoned: false,
+      limitTimer: undefined,
     };
     active = take;
     const { on, bpm } = snapshot.countIn;
@@ -764,7 +855,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       const record = newTake(take.id, opened, null);
       // Both at once: the take is created at the click, and the capture's early chunks are held.
       [captured, opening] = await Promise.allSettled([
-        attempt(() => opened.capture((samples) => onChunk(take, samples))),
+        attempt(() => opened.capture((samples) => onChunk(take, samples), undefined, maxTakeMs)),
         attempt(() => deps.createTake(record).then(() => deps.openRawWriter(take.id))),
       ]);
     } catch (err) {
@@ -792,6 +883,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     take.writer = writer;
     for (const samples of take.held.splice(0)) appendRaw(take, writer, samples);
     setRecording('recording');
+    watchLimits(take);
   }
 
   /**
@@ -818,7 +910,11 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       countIn = ci;
       setRecording('count-in');
       ci.cancelClicks = opened.clicks(schedule.beats);
-      capturing = opened.capture((samples) => onChunk(take, samples), schedule.captureStart);
+      capturing = opened.capture(
+        (samples) => onChunk(take, samples),
+        schedule.captureStart,
+        maxTakeMs,
+      );
     } catch (err) {
       take.abandoned = true;
       failRecording(err);
@@ -945,18 +1041,37 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       return Promise.resolve();
     }
     if (recording !== 'recording') return Promise.resolve();
+    if (active) stopWatchingLimits(active);
     setRecording('stopping');
     return enqueue(() => finishTake(reason)).catch(() => {});
   }
 
+  /**
+   * The stop pipeline: stops the capture (already stopped at the cap for `max-length`), then
+   * saves the take and opens its Tab, or deletes it when it is under `MIN_TAKE_MS`.
+   */
   async function finishTake(reason: StopReason) {
     const take = active;
     if (!take || take.abandoned || !take.capture || !take.writer) return;
     const { capture, writer } = take;
+    stopWatchingLimits(take);
     try {
       const { parts } = await capture.stop();
       await take.appends;
       const durationMs = Math.round((take.samples / capture.sampleRate) * 1000);
+      // A max-length stop is never short; any other stop under 0.5 s keeps nothing (AD-9).
+      if (reason !== 'max-length' && durationMs < MIN_TAKE_MS) {
+        try {
+          await writer.close();
+          await deps.deleteTake(take.id, 'recording-session');
+        } catch {
+          // The `recording` record (and its raw file) left behind is the recovery scan's to
+          // remove (story 3.11); the take is discarded all the same.
+        }
+        active = null;
+        setRecording('idle', { notice: { kind: 'too-short', seq: ++noticeSeq } });
+        return;
+      }
       await deps.writeCompressed(take.id, new Blob(parts, { type: RECORDING_MIME }));
       await writer.close();
       await deps.patchTake(
@@ -973,7 +1088,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       return;
     }
     active = null;
-    setRecording('idle');
+    setRecording('idle', { savedSeq: snapshot.savedSeq + 1 });
     deps.navigate(take.id);
   }
 
@@ -1021,6 +1136,21 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   };
 }
 
+/**
+ * Dev builds only: the length limits from `?maxTakeMs=<n>&warnLeadMs=<n>` in `search`, each a
+ * positive whole number of ms; a missing or invalid one keeps its constant. The cap is at least
+ * `DEV_MIN_CAP_MS` and the lead at most the cap. Read once, when the store is created.
+ */
+export function readDevLimits(search: string): TakeLimits {
+  const params = new URLSearchParams(search);
+  const read = (name: string, fallback: number) => {
+    const value = Number(params.get(name) ?? NaN);
+    return Number.isInteger(value) && value > 0 ? value : fallback;
+  };
+  const capMs = Math.max(DEV_MIN_CAP_MS, read('maxTakeMs', MAX_TAKE_MS));
+  return { capMs, leadMs: Math.min(capMs, read('warnLeadMs', WARN_LEAD_MS)) };
+}
+
 export const recordingSession: RecordingSession = createRecordingSession({
   requestMic,
   openInput,
@@ -1033,10 +1163,15 @@ export const recordingSession: RecordingSession = createRecordingSession({
   patchTake: (id, patch, writer) => db.patchTake(id, patch, writer),
   openRawWriter: (takeId) => audioStore.openRawWriter(takeId),
   writeCompressed: (takeId, blob) => audioStore.writeCompressed(takeId, blob),
+  deleteTake: (id, writer) => db.deleteTake(id, writer),
   // The `tab` route's hash (ui/router.ts routeToHash); session/ may not import ui/.
   navigate: (takeId) => {
     window.location.hash = `#/tab/${encodeURIComponent(takeId)}`;
   },
   now: () => Date.now(),
   newId: () => crypto.randomUUID(),
+  // Dev builds only: production builds replace the condition with `false`, so the override and
+  // its query parameter names tree-shake out (the `TakeLimits` fields are named apart from them,
+  // so the dist check for the parameter names stays meaningful).
+  ...(import.meta.env.DEV ? { limits: readDevLimits(window.location.search) } : {}),
 });

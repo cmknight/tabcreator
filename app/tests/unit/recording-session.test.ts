@@ -25,6 +25,8 @@ const IDLE = {
   recording: 'idle',
   activeTakeId: null,
   countIn: { on: false, bpm: 100 },
+  nearLimit: false,
+  savedSeq: 0,
 };
 
 /** The prefs' analysis defaults the fakes return; `record()` copies them into the take. */
@@ -35,7 +37,14 @@ const noCapture = () => Promise.reject(new Error('not recording'));
 /** The recording deps (storage, navigation, clock, ids) for tests that never record. */
 function recordingFakes(): Pick<
   RecordingDeps,
-  'createTake' | 'patchTake' | 'openRawWriter' | 'writeCompressed' | 'navigate' | 'now' | 'newId'
+  | 'createTake'
+  | 'patchTake'
+  | 'openRawWriter'
+  | 'writeCompressed'
+  | 'deleteTake'
+  | 'navigate'
+  | 'now'
+  | 'newId'
 > {
   const unused = () => Promise.reject(new Error('not recording'));
   return {
@@ -43,6 +52,7 @@ function recordingFakes(): Pick<
     patchTake: vi.fn(unused),
     openRawWriter: vi.fn(unused),
     writeCompressed: vi.fn(unused),
+    deleteTake: vi.fn(unused),
     navigate: vi.fn(),
     now: () => 0,
     newId: () => 'take-1',

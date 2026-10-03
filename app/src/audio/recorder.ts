@@ -6,9 +6,12 @@
 //     (Opus, 96 kbps).
 // Start and stop are scheduled on the audio clock: the start a short lookahead ahead, or at a
 // given time (the count-in's beat five), the stop a lookahead ahead; the worklet and the gate
-// switch at exactly those frames. MediaRecorder cannot be scheduled on the audio clock, so
-// it is started and stopped by timers aimed at the same times; the compressed copy is offset
-// from the raw chunks only by that timer jitter (and the encoder's own start latency), a few ms.
+// switch at exactly those frames. A capture given a length cap also schedules its stop at the
+// start, at `startTime + maxMs` on the audio clock, so no main-thread timer can extend it.
+// MediaRecorder cannot be scheduled on the audio clock, so it is started and stopped by timers
+// aimed at the same times (and stopped as soon as the worklet reports it has stopped); the
+// compressed copy is offset from the raw chunks only by that jitter (and the encoder's own
+// start latency), a few ms.
 
 import workletUrl from './recorder-worklet.ts?worker&url';
 import { AppError } from '../model/errors';
@@ -33,12 +36,19 @@ export interface Capture {
   /** Audio-clock time captured so far, in ms (0 before the start time; frozen once stopping). */
   elapsedMs(): number;
   /**
-   * Stops at the audio clock's next lookahead time. Every chunk, the final partial one
-   * included, is delivered to `onChunk` before this resolves with the compressed parts.
+   * Stops at the audio clock's next lookahead time, or at the cap when that comes first (or has
+   * passed). Every chunk, the final partial one included, is delivered to `onChunk` before this
+   * resolves with the compressed parts.
    * Rejects with `AppError` `mic-failed` when the worklet's last chunk does not arrive in time
    * or MediaRecorder failed: the copy is incomplete, so the take must not be saved.
    */
   stop(): Promise<{ parts: Blob[] }>;
+  /**
+   * Resolves once the capture has stopped by itself at its cap (`startTime + maxMs`), every
+   * chunk delivered; call `stop` then for the compressed parts. Never resolves without a cap,
+   * or when `stop` or `abort` came first.
+   */
+  readonly capped: Promise<void>;
   /** Stops the worklet and MediaRecorder and tears the graph down without waiting. */
   abort(): void;
 }
@@ -96,14 +106,16 @@ const msUntil = (ctx: BaseAudioContext, time: number) =>
  * Starts capturing `source` (a node of `ctx`). `onChunk` receives each 1 s chunk in order (the
  * last one shorter). The capture opens at audio-clock time `startAt` (s) when given (a count-in's
  * beat five), else a short lookahead from now; a `startAt` already too close or past opens it
- * after that lookahead instead (`Capture.startTime` says when). Rejects with `AppError`
- * `mic-failed` when the context cannot run or the graph cannot be built.
+ * after that lookahead instead (`Capture.startTime` says when). With `maxMs`, the stop is
+ * scheduled at once at `startTime + maxMs` on the audio clock (`Capture.capped`). Rejects with
+ * `AppError` `mic-failed` when the context cannot run or the graph cannot be built.
  */
 export async function startCapture(
   ctx: AudioContext,
   source: AudioNode,
   onChunk: (samples: Float32Array) => void,
   startAt?: number,
+  maxMs?: number,
 ): Promise<Capture> {
   let worklet: AudioWorkletNode | undefined;
   let gate: GainNode | undefined;
@@ -151,6 +163,7 @@ export async function startCapture(
   }
 
   let startTime: number;
+  let capTime: number | null = null;
   try {
     await loadRecorderWorklet(ctx);
     worklet = new AudioWorkletNode(ctx, 'tabcreator-recorder', {
@@ -187,6 +200,12 @@ export async function startCapture(
     startTime = Math.max(startAt ?? -Infinity, ctx.currentTime + LOOKAHEAD_S);
     gate.gain.setValueAtTime(1, startTime);
     worklet.port.postMessage({ type: 'start', frame: Math.round(startTime * ctx.sampleRate) });
+    if (maxMs !== undefined) {
+      // The cap, on the audio clock: an earlier stop's frame replaces it.
+      capTime = startTime + maxMs / 1000;
+      gate.gain.setValueAtTime(0, capTime);
+      worklet.port.postMessage({ type: 'stop', frame: Math.round(capTime * ctx.sampleRate) });
+    }
     // Started when the gate opens, so the compressed copy begins with the raw chunks.
     startTimer = setTimeout(
       () => {
@@ -208,29 +227,42 @@ export async function startCapture(
   const gain = gate;
   let stopTime: number | null = null;
   let stopping: Promise<{ parts: Blob[] }> | null = null;
+  let aborted = false;
+
+  /** Stops MediaRecorder (once); resolves when it has stopped. */
+  let mediaStopped: Promise<void> | null = null;
+  const stopMedia = () =>
+    (mediaStopped ??= new Promise<void>((resolve) => {
+      clearTimeout(startTimer);
+      if (media.state === 'inactive') {
+        resolve();
+        return;
+      }
+      media.addEventListener('stop', () => resolve(), { once: true });
+      try {
+        media.stop();
+      } catch {
+        mediaError = true;
+        resolve();
+      }
+    }));
+
+  // The worklet has passed its stop frame (the cap's, or an earlier stop's): the gate is
+  // closed, so the compressed copy ends here too.
+  let resolveCapped: () => void = () => {};
+  const capped = new Promise<void>((resolve) => (resolveCapped = resolve));
+  void stopped.then(() => {
+    if (aborted) return;
+    void stopMedia();
+    if (!stopping && capTime !== null) resolveCapped();
+  });
 
   async function finish(at: number): Promise<{ parts: Blob[] }> {
     gain.gain.setValueAtTime(0, at);
     node.port.postMessage({ type: 'stop', frame: Math.round(at * ctx.sampleRate) });
     // Stopped when the gate closes, so the compressed copy ends with the raw chunks.
     const mediaDone = new Promise<void>((resolve) => {
-      setTimeout(
-        () => {
-          clearTimeout(startTimer);
-          if (media.state === 'inactive') {
-            resolve();
-            return;
-          }
-          media.addEventListener('stop', () => resolve(), { once: true });
-          try {
-            media.stop();
-          } catch {
-            mediaError = true;
-            resolve();
-          }
-        },
-        msUntil(ctx, at),
-      );
+      setTimeout(() => void stopMedia().then(resolve), msUntil(ctx, at));
     });
     const done = await within(
       Promise.all([stopped, mediaDone]),
@@ -245,18 +277,23 @@ export async function startCapture(
   return {
     sampleRate: ctx.sampleRate,
     startTime,
+    capped,
     elapsedMs() {
-      const now = stopTime === null ? ctx.currentTime : Math.min(ctx.currentTime, stopTime);
-      return Math.max(0, (now - startTime) * 1000);
+      const end = Math.min(stopTime ?? Infinity, capTime ?? Infinity);
+      return Math.max(0, (Math.min(ctx.currentTime, end) - startTime) * 1000);
     },
     stop() {
       if (!stopping) {
-        stopTime = Math.max(ctx.currentTime + LOOKAHEAD_S, startTime);
+        stopTime = Math.min(
+          capTime ?? Infinity,
+          Math.max(ctx.currentTime + LOOKAHEAD_S, startTime),
+        );
         stopping = finish(stopTime);
       }
       return stopping;
     },
     abort() {
+      aborted = true;
       stopTime ??= ctx.currentTime;
       try {
         if (media.state !== 'inactive') media.stop();

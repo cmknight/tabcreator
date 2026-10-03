@@ -87,3 +87,56 @@ test('Space starts a take within 100 ms, and Space again stops it and opens its 
   ).toBeGreaterThanOrEqual(2);
   hygiene.expectClean();
 });
+
+// Story 3.7 (CAP-5, Done when 1): a take left running stops itself at 5:00, its stop scheduled
+// on the audio clock, and its compressed copy fits in 5 MB. Slow: the full five minutes.
+test('a take runs to the 5:00 cap, stops itself, and its compressed copy is at most 5 MB @slow', async ({
+  page,
+  baseURL,
+}) => {
+  test.setTimeout(7 * 60_000);
+  const hygiene = await watchHygiene(page, baseURL!);
+  await goLive(page);
+  await recordButton(page).click();
+  await expect(page.getByRole('timer')).toHaveText('0:01', { timeout: 5_000 });
+
+  await expect(page.getByTestId('near-limit')).toHaveText('30 seconds left', {
+    timeout: 4.75 * 60_000,
+  });
+  await expect(page.getByRole('timer')).toHaveText(/^4:(29|3[0-5])$/);
+  await expect(page).toHaveURL(/#\/tab\/[^/]+$/, { timeout: 60_000 });
+  const id = decodeURIComponent(new URL(page.url()).hash.slice('#/tab/'.length));
+
+  const saved = await page.evaluate(async (takeId) => {
+    const take = await new Promise<{
+      status: string;
+      stopReason?: string;
+      durationMs: number;
+    } | null>((resolve, reject) => {
+      const open = indexedDB.open('tabcreator');
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const get = db.transaction('takes').objectStore('takes').get(takeId);
+        get.onsuccess = () => {
+          resolve(get.result ?? null);
+          db.close();
+        };
+        get.onerror = () => reject(get.error);
+      };
+    });
+    const root = await navigator.storage.getDirectory();
+    const file = await (await root.getDirectoryHandle('audio')).getFileHandle(`${takeId}.webm`);
+    return { take, compressedBytes: (await file.getFile()).size };
+  }, id);
+
+  expect(saved.take).toMatchObject({ status: 'recorded', stopReason: 'max-length' });
+  expect(Math.abs(saved.take!.durationMs - 300_000)).toBeLessThanOrEqual(50);
+  test.info().annotations.push({
+    type: 'compressed-bytes',
+    description: String(saved.compressedBytes),
+  });
+  expect(saved.compressedBytes).toBeGreaterThan(0);
+  expect(saved.compressedBytes).toBeLessThanOrEqual(5 * 1024 * 1024);
+  hygiene.expectClean();
+});

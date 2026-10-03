@@ -10,6 +10,22 @@ export function formatElapsed(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+/** The warning icon (as the level meter's and the input quality banner's). */
+function WarnIcon() {
+  return (
+    <svg className={styles.limitIcon} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M12 3 2 20h20z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path d="M12 10v4.5M12 17.2v.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 /**
  * The count-in's beat number (4, 3, 2, 1), read from the store each animation frame while it
  * runs; each new beat re-renders and is announced assertively (latest wins). Null otherwise.
@@ -44,9 +60,11 @@ function useCountInBeat(counting: boolean): number | null {
  * while a take runs, and re-renders only when the shown second changes. During a count-in the
  * large beat number replaces the timer and the button reads "Cancel" (a press cancels). While
  * the take starts or stops the button is `aria-disabled` (not `disabled`), so it keeps focus.
+ * From the warning time (`nearLimit`, 4:30) "30 seconds left" shows under the timer in the
+ * warning colour; it is announced by the shell's RecordingAnnouncer, never a live region here.
  */
 export function RecordButton() {
-  const { recording, countIn } = useSyncExternalStore(
+  const { recording, countIn, nearLimit } = useSyncExternalStore(
     recordingSession.subscribe,
     recordingSession.getSnapshot,
   );
@@ -99,6 +117,12 @@ export function RecordButton() {
           aria-label={strings['record.elapsed'](time)}
         >
           {time}
+        </div>
+      )}
+      {running && nearLimit && (
+        <div className={styles.limit} data-testid="near-limit">
+          <WarnIcon />
+          {strings['record.nearLimit']}
         </div>
       )}
       <button

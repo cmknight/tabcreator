@@ -4,6 +4,7 @@ import { Announcer } from './ui/a11y/announcer';
 import { ShortcutListener } from './ui/a11y/shortcuts';
 import { MicErrorAnnouncer } from './ui/components/MicErrorAnnouncer';
 import { MicNotices } from './ui/components/MicNotices';
+import { RecordingAnnouncer } from './ui/components/RecordingAnnouncer';
 import { ToastHost } from './ui/components/ToastHost';
 import { parseRoute, routeToHash, useHash, useRoute, type Route } from './ui/router';
 import { Library } from './ui/screens/Library';
@@ -106,6 +107,7 @@ function Shell({ current, children }: { current: Route['name'] | null; children:
       <ShortcutListener />
       <MicErrorAnnouncer />
       <MicNotices />
+      <RecordingAnnouncer />
       <ToastHost />
     </>
   );
