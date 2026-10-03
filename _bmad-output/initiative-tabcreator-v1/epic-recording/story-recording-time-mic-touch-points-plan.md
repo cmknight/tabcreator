@@ -3,7 +3,7 @@ title: 'Recording-time mic touch points'
 type: 'feature'
 ticket: '8'
 created: '2026-10-02'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
