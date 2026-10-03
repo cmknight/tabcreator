@@ -126,7 +126,21 @@ fn run_fixture(name: &str, wav: &Path, answer: &Answer, set: Set) -> (FixtureRow
         counts: score(&answer.notes, &detected, &positions),
         analyze_ms,
     };
-    (row, output_hash(&json, &frets_json))
+    // Detection may find few or no notes, so the hash also covers `map_frets` on all of the
+    // fixture's ground-truth notes (unplayable ones, e.g. drop-D's low D, map to null): a
+    // mapping change then shows as changed output.
+    let truth_json = serde_json::to_string(
+        &answer
+            .notes
+            .iter()
+            .map(|n| serde_json::json!({"midi": n.midi, "startMs": n.start_ms, "endMs": n.end_ms}))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let truth_frets_json = engine::map_frets_core(&truth_json, "[]", MAX_FRET)
+        .unwrap_or_else(|e| panic!("{}: map_frets on ground truth failed: {e}", wav.display()));
+    let hash = output_hash(&json, &format!("{frets_json}\n{truth_frets_json}"));
+    (row, hash)
 }
 
 /// Reads and parses a JSON file named by env var `var`; `None` when the variable is unset.
@@ -285,6 +299,28 @@ fn gate_failures(
     failures
 }
 
+/// `UPDATE_ACCURACY=1`: `accuracy_report` rewrites the committed files.
+fn update_requested() -> bool {
+    std::env::var("UPDATE_ACCURACY").is_ok_and(|v| v == "1")
+}
+
+/// Writes this run's baseline and outputs text to temp files named for `test`, so the gate
+/// tests check against what this build produces instead of the committed files, which
+/// `accuracy_report` may be rewriting in parallel under `UPDATE_ACCURACY=1`.
+fn fresh_files(
+    test: &str,
+    baseline: &AccuracyBaseline,
+    outputs: &FixtureOutputs,
+) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("accuracy-fresh-{test}"));
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+    let b = dir.join("accuracy-baseline.json");
+    let o = dir.join("fixture-outputs.json");
+    std::fs::write(&b, to_file_text(baseline)).unwrap_or_else(|e| panic!("{}: {e}", b.display()));
+    std::fs::write(&o, to_file_text(outputs)).unwrap_or_else(|e| panic!("{}: {e}", o.display()));
+    (b, o)
+}
+
 #[test]
 fn accuracy_report() {
     let run = run_all();
@@ -321,7 +357,7 @@ fn accuracy_report() {
     println!("Accuracy report written to {}", path.display());
 
     // The report is written first, so CI publishes it even when a check below fails.
-    let update = std::env::var("UPDATE_ACCURACY").is_ok_and(|v| v == "1");
+    let update = update_requested();
     let failures = gate_failures(
         main_baseline.as_ref(),
         main_outputs.as_ref(),
@@ -378,18 +414,11 @@ fn analyze_is_deterministic() {
 #[test]
 fn gate_fails_on_clean_gate_f1_drop() {
     let (now_b, now_o) = run_all().files();
+    let (fresh_b, fresh_o) = fresh_files("gate_fails_on_clean_gate_f1_drop", &now_b, &now_o);
     let mut main = now_b.clone();
     let clean = main.sets.get_mut("clean-gate").expect("clean-gate set");
     clean.f1 = Some(clean.f1.expect("clean-gate f1") + 0.02);
-    let failures = gate_failures(
-        Some(&main),
-        None,
-        &now_b,
-        &now_o,
-        &committed(BASELINE_FILE),
-        &committed(OUTPUTS_FILE),
-        false,
-    );
+    let failures = gate_failures(Some(&main), None, &now_b, &now_o, &fresh_b, &fresh_o, false);
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].starts_with("clean-gate F1:"), "{failures:?}");
 }
@@ -397,17 +426,14 @@ fn gate_fails_on_clean_gate_f1_drop() {
 #[test]
 fn gate_fails_naming_a_changed_hash_under_the_same_version() {
     let (now_b, now_o) = run_all().files();
-    let mut main = now_o.clone();
-    *main.fixtures.get_mut("vibrato").expect("vibrato hash") = "0000000000000000".to_owned();
-    let failures = gate_failures(
-        None,
-        Some(&main),
+    let (fresh_b, fresh_o) = fresh_files(
+        "gate_fails_naming_a_changed_hash_under_the_same_version",
         &now_b,
         &now_o,
-        &committed(BASELINE_FILE),
-        &committed(OUTPUTS_FILE),
-        false,
     );
+    let mut main = now_o.clone();
+    *main.fixtures.get_mut("vibrato").expect("vibrato hash") = "0000000000000000".to_owned();
+    let failures = gate_failures(None, Some(&main), &now_b, &now_o, &fresh_b, &fresh_o, false);
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].ends_with(": vibrato"), "{failures:?}");
 }
@@ -415,17 +441,14 @@ fn gate_fails_naming_a_changed_hash_under_the_same_version() {
 #[test]
 fn missing_committed_file_fails_without_update() {
     let (now_b, now_o) = run_all().files();
-    let missing = std::env::temp_dir().join("accuracy-no-such-baseline.json");
-    let _ = std::fs::remove_file(&missing);
-    let failures = gate_failures(
-        None,
-        None,
+    let (_, fresh_o) = fresh_files(
+        "missing_committed_file_fails_without_update",
         &now_b,
         &now_o,
-        &missing,
-        &committed(OUTPUTS_FILE),
-        false,
     );
+    let missing = std::env::temp_dir().join("accuracy-no-such-baseline.json");
+    let _ = std::fs::remove_file(&missing);
+    let failures = gate_failures(None, None, &now_b, &now_o, &missing, &fresh_o, false);
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(
         failures[0].contains("accuracy-no-such-baseline.json: cannot read the committed file"),

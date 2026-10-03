@@ -5,9 +5,9 @@
 //! `analyze` and `map_frets` are pure functions of their inputs (spine AD-7); JSON strings with
 //! camelCase keys cross the wasm boundary.
 //!
-//! This is the platform-baseline stub: `analyze` detects nothing and `map_frets` picks the
-//! lowest-fret position per note. Real detection and Viterbi fret mapping arrive in later epics.
+//! `analyze` does not detect notes yet; `map_frets` is the Viterbi fret mapping in [`fretmap`].
 
+pub mod fretmap;
 pub mod preprocess;
 pub mod pyin;
 
@@ -179,40 +179,14 @@ pub fn map_frets_core(notes_json: &str, locks_json: &str, max_fret: u32) -> Resu
     serde_json::to_string(&positions).map_err(|e| e.to_string())
 }
 
-/// Per note: the locked position if one is given for its index, otherwise the lowest-fret
-/// position within `max_fret` (ties: lower string number), or `None` if unplayable.
+/// Per note: its position chosen over the whole sequence by [`fretmap::map_positions`] with
+/// default weights. A locked note gets exactly its lock; an unlocked unplayable note is `None`.
 pub fn map_positions(
     notes: &[FretNote],
     locks: &[FretLock],
     max_fret: u32,
 ) -> Result<Vec<Option<Position>>, String> {
-    let mut out: Vec<Option<Position>> = notes
-        .iter()
-        .map(|n| lowest_fret(n.midi, max_fret))
-        .collect();
-    for lock in locks {
-        if !(1..=6).contains(&lock.string) {
-            return Err(format!("lock string out of range: {}", lock.string));
-        }
-        let slot = out
-            .get_mut(lock.index)
-            .ok_or_else(|| format!("lock index out of range: {}", lock.index))?;
-        *slot = Some(Position {
-            string: lock.string,
-            fret: lock.fret,
-        });
-    }
-    Ok(out)
-}
-
-fn lowest_fret(midi: i32, max_fret: u32) -> Option<Position> {
-    (1u8..=6)
-        .zip(OPEN_MIDI)
-        .filter_map(|(string, open)| {
-            let fret = u32::try_from(midi - open).ok()?;
-            (fret <= max_fret).then_some(Position { string, fret })
-        })
-        .min_by_key(|p| (p.fret, p.string))
+    fretmap::map_positions(notes, locks, max_fret, &fretmap::FretWeights::default())
 }
 
 #[cfg(test)]
@@ -224,7 +198,7 @@ mod tests {
 
     #[test]
     fn version_is_package_version() {
-        assert_eq!(engine_version(), "0.1.0");
+        assert_eq!(engine_version(), "0.2.0");
     }
 
     #[test]
@@ -321,13 +295,15 @@ mod tests {
     }
 
     #[test]
-    fn map_frets_lowest_fret_and_unplayable() {
+    fn map_frets_whole_path_and_unplayable() {
+        // After open low E, E4 on the G string fret 9 (0.18 + two skipped strings 0.8) beats
+        // open e (four skipped strings, 1.6).
         let notes = r#"[{"midi":40,"startMs":0,"endMs":100},{"midi":64,"startMs":100,"endMs":200},{"midi":30,"startMs":200,"endMs":300}]"#;
         let out = map_frets_core(notes, "[]", 24).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             v,
-            json!([{"string": 6, "fret": 0}, {"string": 1, "fret": 0}, null])
+            json!([{"string": 6, "fret": 0}, {"string": 3, "fret": 9}, null])
         );
     }
 

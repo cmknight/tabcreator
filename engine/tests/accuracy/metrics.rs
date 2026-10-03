@@ -15,6 +15,7 @@ const EPS_MS: f64 = 1e-6;
 #[serde(rename_all = "camelCase")]
 pub struct TruthNote {
     pub start_ms: f64,
+    pub end_ms: f64,
     pub midi: i32,
     pub string: u8,
     pub fret: i32,
@@ -190,6 +191,7 @@ mod tests {
     fn g(start_ms: f64, midi: i32, string: u8, fret: i32) -> TruthNote {
         TruthNote {
             start_ms,
+            end_ms: start_ms + 100.0,
             midi,
             string,
             fret,
@@ -295,7 +297,7 @@ mod tests {
     fn wrong_fret_lowers_agreement() {
         let truth = [g(300.0, 64, 2, 5), g(900.0, 64, 1, 0)];
         let det = [d(300.0, 64), d(900.0, 64)];
-        // The stub's lowest-fret choice puts both on the open high e.
+        // Hand-built positions: both notes on the open high e, so only the second agrees.
         let pos = [
             Some(Pos { string: 1, fret: 0 }),
             Some(Pos { string: 1, fret: 0 }),
