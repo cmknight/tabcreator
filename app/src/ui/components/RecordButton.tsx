@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { recordingSession } from '../../session/recording-session';
 import { announce } from '../a11y/announcer';
 import { strings } from '../strings';
+import { MIC_CARD_TITLE_ID } from './MicGate';
 import styles from './RecordButton.module.css';
 
 /** `m:ss` for a duration in ms, rounded down to the second. */
@@ -62,15 +63,18 @@ function useCountInBeat(counting: boolean): number | null {
  * the take starts or stops the button is `aria-disabled` (not `disabled`), so it keeps focus.
  * From the warning time (`nearLimit`, 4:30) "30 seconds left" shows under the timer in the
  * warning colour; it is announced by the shell's RecordingAnnouncer, never a live region here.
+ * While the mic is not live (the setup or error card shows) the button is `aria-disabled` and
+ * described by the card's heading (`#mic-setup-title`), which says why; a press does nothing.
  */
 export function RecordButton() {
-  const { recording, countIn, nearLimit } = useSyncExternalStore(
+  const { mic, recording, countIn, nearLimit } = useSyncExternalStore(
     recordingSession.subscribe,
     recordingSession.getSnapshot,
   );
   const running = recording === 'recording' || recording === 'stopping';
   const counting = recording === 'count-in';
-  const busy = recording === 'starting' || recording === 'stopping';
+  const live = mic === 'live';
+  const busy = !live || recording === 'starting' || recording === 'stopping';
   const [seconds, setSeconds] = useState(0);
   const beat = useCountInBeat(counting);
 
@@ -131,7 +135,9 @@ export function RecordButton() {
         aria-pressed={counting ? undefined : running}
         aria-disabled={busy || undefined}
         aria-label={counting ? strings['record.cancelCountIn'] : undefined}
+        aria-describedby={live ? undefined : MIC_CARD_TITLE_ID}
         onClick={() => {
+          if (!live) return;
           if (recording === 'idle') void recordingSession.record();
           else if (recording === 'recording' || counting) void recordingSession.stop('user');
         }}

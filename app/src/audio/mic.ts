@@ -146,13 +146,14 @@ export interface MicInput {
   clicks(beats: readonly number[]): () => void;
   /**
    * Starts recording this input in its own AudioContext (audio/recorder.ts): 1 s mono chunks at
-   * the context's rate go to `onChunk`, and a compressed copy is kept for `Capture.stop`. The
-   * capture opens at audio-clock time `startAt` (s) when given, else at once; with `maxMs` it
-   * stops itself `maxMs` after it opens, on the audio clock (`Capture.capped`). Rejects with
-   * `AppError` `mic-failed`. Stop (or abort) the capture before `close()`.
+   * the context's rate go to `onChunk`, each with its count of clipped samples, and a
+   * compressed copy is kept for `Capture.stop`. The capture opens at audio-clock time `startAt`
+   * (s) when given, else at once; with `maxMs` it stops itself `maxMs` after it opens, on the
+   * audio clock (`Capture.capped`). Rejects with `AppError` `mic-failed`. Stop (or abort) the
+   * capture before `close()`.
    */
   capture(
-    onChunk: (samples: Float32Array) => void,
+    onChunk: (samples: Float32Array, clipped: number) => void,
     startAt?: number,
     maxMs?: number,
   ): Promise<Capture>;

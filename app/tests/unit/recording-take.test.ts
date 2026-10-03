@@ -43,7 +43,9 @@ const chunk = (value: number, n = RATE) => new Float32Array(n).fill(value);
 /** Fakes; `overrides` replace deps, and `captureError` makes `input.capture` reject with it. */
 function setup(overrides: Partial<RecordingDeps> = {}, captureError?: AppError) {
   const log: string[] = [];
-  let emit: ((samples: Float32Array) => void) | null = null;
+  let emit: ((samples: Float32Array, clipped: number) => void) | null = null;
+  /** The clipped-sample count the final partial chunk reports at stop. */
+  let finalClipped = 0;
   let elapsed = 0;
   /** The input's audio clock, s. */
   let audioTime = 10;
@@ -56,7 +58,7 @@ function setup(overrides: Partial<RecordingDeps> = {}, captureError?: AppError) 
     stop: vi.fn(async () => {
       log.push('capture.stop');
       // The final partial chunk arrives before stop resolves.
-      emit?.(chunk(9, RATE / 2));
+      emit?.(chunk(9, RATE / 2), finalClipped);
       return { parts: [new Blob(['webm'])] };
     }),
     abort: vi.fn(() => log.push('capture.abort')),
@@ -71,11 +73,13 @@ function setup(overrides: Partial<RecordingDeps> = {}, captureError?: AppError) 
       log.push(`clicks ${beats.length}`);
       return cancelClicks;
     }),
-    capture: vi.fn((onChunk: (samples: Float32Array) => void, startAt?: number) => {
-      emit = onChunk;
-      (capture as { startTime: number }).startTime = startAt ?? audioTime + 0.05;
-      return captureError ? Promise.reject(captureError) : Promise.resolve(capture);
-    }),
+    capture: vi.fn(
+      (onChunk: (samples: Float32Array, clipped: number) => void, startAt?: number) => {
+        emit = onChunk;
+        (capture as { startTime: number }).startTime = startAt ?? audioTime + 0.05;
+        return captureError ? Promise.reject(captureError) : Promise.resolve(capture);
+      },
+    ),
     close: vi.fn(() => log.push('input.close')),
     deviceId: DEVICE.deviceId,
     groupId: DEVICE.groupId,
@@ -141,7 +145,8 @@ function setup(overrides: Partial<RecordingDeps> = {}, captureError?: AppError) 
     prefs,
     created,
     cancelClicks,
-    emit: (samples: Float32Array) => emit?.(samples),
+    emit: (samples: Float32Array, clipped = 0) => emit?.(samples, clipped),
+    setFinalClipped: (n: number) => (finalClipped = n),
     setElapsed: (ms: number) => (elapsed = ms),
     setClock: (s: number) => (audioTime = s),
     /** The capture stops itself at its cap (on the audio clock). */
@@ -289,6 +294,7 @@ describe('recording a take', () => {
         durationMs: 2500,
         audioMime: 'audio/webm;codecs=opus',
         stopReason: 'user',
+        clipped: false,
       },
       'recording-session',
     );
@@ -298,6 +304,41 @@ describe('recording a take', () => {
       activeTakeId: null,
     });
     expect(t.input.close).not.toHaveBeenCalled();
+  });
+
+  it('saves clipped: true when any chunk reported clipped samples, held ones included', async () => {
+    const t = setup();
+    await t.session.allowMic();
+    const started = t.session.record();
+    await flush();
+    // Held before the take exists: still counted.
+    t.emit(chunk(1), 3);
+    t.created.resolve();
+    await started;
+    t.emit(chunk(2), 0);
+    await flush();
+    await t.session.stop('user');
+    expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({ clipped: true });
+  });
+
+  it('saves clipped: true when only the final chunk at stop clipped', async () => {
+    const t = await recording();
+    t.setFinalClipped(1);
+    await t.session.stop('user');
+    expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({ clipped: true });
+  });
+
+  it('counts each take afresh: a clean take after a clipped one saves clipped: false', async () => {
+    const t = await recording();
+    t.emit(chunk(3), 5);
+    await t.session.stop('user');
+    vi.mocked(t.deps.newId).mockReturnValue('take-2');
+    const started = t.session.record();
+    await flush();
+    t.emit(chunk(4), 0);
+    await started;
+    await t.session.stop('user');
+    expect(vi.mocked(t.deps.patchTake).mock.calls.map((c) => c[1].clipped)).toEqual([true, false]);
   });
 
   it('does nothing on stop() when not recording', async () => {
@@ -446,6 +487,26 @@ describe('count-in', () => {
     expect(t.appended).toEqual([1, 2]);
     expect(t.session.getSnapshot().recording).toBe('recording');
     expect(t.cancelClicks).not.toHaveBeenCalled();
+  });
+
+  it('a count-in take whose chunks clipped is saved with clipped: true', async () => {
+    const t = await live(120);
+    const started = t.session.record();
+    await vi.advanceTimersByTimeAsync(0);
+    await clockTo(t, 12.015);
+    // One held chunk (before createTake resolves) and one appended chunk each report clips.
+    t.emit(chunk(1), 4);
+    t.created.resolve();
+    await started;
+    t.emit(chunk(2), 1);
+    await vi.advanceTimersByTimeAsync(0);
+    const stopped = t.session.stop('user');
+    await vi.advanceTimersByTimeAsync(0);
+    await stopped;
+    expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
+      status: 'recorded',
+      clipped: true,
+    });
   });
 
   it.each([
@@ -719,6 +780,7 @@ describe('length cap and short takes', () => {
         durationMs: 8_000,
         audioMime: 'audio/webm;codecs=opus',
         stopReason: 'max-length',
+        clipped: false,
       },
       'recording-session',
     );
@@ -728,6 +790,19 @@ describe('length cap and short takes', () => {
       recording: 'idle',
       nearLimit: false,
       savedSeq: 1,
+    });
+  });
+
+  it('at the cap: a take that clipped is saved as max-length with clipped: true', async () => {
+    const t = await recordingFake();
+    exactStop(t);
+    emitMs(t, 7_000);
+    t.emit(chunk(1), 2);
+    t.reachCap();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
+      stopReason: 'max-length',
+      clipped: true,
     });
   });
 

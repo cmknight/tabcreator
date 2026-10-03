@@ -7,8 +7,12 @@
 // main thread learns when capture began without waiting for the first 1 s chunk. After the stop
 // frame it posts the final partial chunk, then `stopped`, and ends.
 //
-// Port messages in:  { type: 'start', frame }  { type: 'stop', frame }
-// Port messages out: { type: 'started' }  { type: 'chunk', samples: Float32Array }
+// Each chunk carries how many of its samples clipped: |x| at or above the start message's
+// `clipLevel` (the meter's Too loud threshold, model/level-warnings.ts `CLIP_LEVEL`, sent by
+// audio/recorder.ts because this file imports nothing). Only captured frames are counted.
+//
+// Port messages in:  { type: 'start', frame, clipLevel }  { type: 'stop', frame }
+// Port messages out: { type: 'started' }  { type: 'chunk', samples: Float32Array, clipped }
 //                    { type: 'stopped' }
 
 const CHUNK_SAMPLES = Math.max(1, Math.round(sampleRate));
@@ -20,13 +24,21 @@ class RecorderProcessor extends AudioWorkletProcessor {
   private filled = 0;
   private done = false;
   private started = false;
+  /** |x| at or above this counts as clipped; never reached until the start message sets it. */
+  private clipLevel = Infinity;
+  /** Clipped samples in the current chunk. */
+  private clipped = 0;
 
   constructor() {
     super();
-    this.port.onmessage = (event: MessageEvent<{ type: 'start' | 'stop'; frame: number }>) => {
-      const { type, frame } = event.data;
-      if (type === 'start') this.startFrame = frame;
-      else if (type === 'stop') this.stopFrame = frame;
+    this.port.onmessage = (
+      event: MessageEvent<{ type: 'start' | 'stop'; frame: number; clipLevel?: number }>,
+    ) => {
+      const { type, frame, clipLevel } = event.data;
+      if (type === 'start') {
+        this.startFrame = frame;
+        if (typeof clipLevel === 'number') this.clipLevel = clipLevel;
+      } else if (type === 'stop') this.stopFrame = frame;
     };
   }
 
@@ -34,9 +46,10 @@ class RecorderProcessor extends AudioWorkletProcessor {
   private flush(): void {
     if (this.filled === 0) return;
     const samples = this.filled === CHUNK_SAMPLES ? this.chunk : this.chunk.slice(0, this.filled);
-    this.port.postMessage({ type: 'chunk', samples }, [samples.buffer]);
+    this.port.postMessage({ type: 'chunk', samples, clipped: this.clipped }, [samples.buffer]);
     this.chunk = new Float32Array(CHUNK_SAMPLES);
     this.filled = 0;
+    this.clipped = 0;
   }
 
   process(inputs: Float32Array[][]): boolean {
@@ -53,7 +66,9 @@ class RecorderProcessor extends AudioWorkletProcessor {
     }
     for (let f = from; f < to; f++) {
       // A disconnected input (no channel) records silence, so the timeline never shrinks.
-      this.chunk[this.filled++] = channel ? (channel[f - blockStart] ?? 0) : 0;
+      const x = channel ? (channel[f - blockStart] ?? 0) : 0;
+      if (Math.abs(x) >= this.clipLevel) this.clipped++;
+      this.chunk[this.filled++] = x;
       if (this.filled === CHUNK_SAMPLES) this.flush();
     }
     if (this.stopFrame <= blockEnd) {

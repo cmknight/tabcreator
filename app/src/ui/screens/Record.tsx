@@ -26,8 +26,10 @@ export function Record() {
         <MicSelect />
         <LevelMeter />
         <CountInControls />
-        <RecordButton />
       </MicGate>
+      {/* Outside the gate, so it is one element whether or not the mic is live: without a live
+          mic it shows disabled, described by the card's heading. */}
+      <RecordButton />
     </section>
   );
 }

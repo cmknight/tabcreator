@@ -44,6 +44,10 @@
 // stopped under `MIN_TAKE_MS` is deleted (record and files)
 // with a `too-short` notice and no navigation. Each saved take bumps `savedSeq`, so the shell
 // can announce it. In dev builds `?maxTakeMs=<n>&warnLeadMs=<n>` override the two limits.
+//
+// Clipping (US-1.3, spine AD-14): the capture reports each chunk's clipped samples (|x| at or
+// above the meter's Too loud threshold); the take's total is kept in memory as `clipCount`, and
+// every saved take's stop patch carries `clipped: clipCount > 0`.
 
 import type { LevelsDbfs } from '../audio/level-meter';
 import {
@@ -286,6 +290,8 @@ interface ActiveTake {
   appends: Promise<void>;
   /** Samples appended to the raw file so far. */
   samples: number;
+  /** Captured samples that clipped (|x| ≥ `CLIP_LEVEL`) so far; saved as `clipped` at stop. */
+  clipCount: number;
   /** Set when the take is given up; later chunks are dropped. */
   abandoned: boolean;
   /** The warning's watch while recording. */
@@ -735,8 +741,9 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   }
 
   /** A captured chunk: counted, then appended (or held until the writer exists). */
-  function onChunk(take: ActiveTake, samples: Float32Array) {
+  function onChunk(take: ActiveTake, samples: Float32Array, clipped: number) {
     if (take.abandoned) return;
+    take.clipCount += clipped;
     if (take.writer) appendRaw(take, take.writer, samples);
     else take.held.push(samples);
   }
@@ -839,6 +846,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       held: [],
       appends: Promise.resolve(),
       samples: 0,
+      clipCount: 0,
       abandoned: false,
       limitTimer: undefined,
     };
@@ -855,7 +863,13 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       const record = newTake(take.id, opened, null);
       // Both at once: the take is created at the click, and the capture's early chunks are held.
       [captured, opening] = await Promise.allSettled([
-        attempt(() => opened.capture((samples) => onChunk(take, samples), undefined, maxTakeMs)),
+        attempt(() =>
+          opened.capture(
+            (samples, clipped) => onChunk(take, samples, clipped),
+            undefined,
+            maxTakeMs,
+          ),
+        ),
         attempt(() => deps.createTake(record).then(() => deps.openRawWriter(take.id))),
       ]);
     } catch (err) {
@@ -911,7 +925,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       setRecording('count-in');
       ci.cancelClicks = opened.clicks(schedule.beats);
       capturing = opened.capture(
-        (samples) => onChunk(take, samples),
+        (samples, clipped) => onChunk(take, samples, clipped),
         schedule.captureStart,
         maxTakeMs,
       );
@@ -1076,7 +1090,13 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       await writer.close();
       await deps.patchTake(
         take.id,
-        { status: 'recorded', durationMs, audioMime: RECORDING_MIME, stopReason: reason },
+        {
+          status: 'recorded',
+          durationMs,
+          audioMime: RECORDING_MIME,
+          stopReason: reason,
+          clipped: take.clipCount > 0,
+        },
         'recording-session',
       );
     } catch (err) {

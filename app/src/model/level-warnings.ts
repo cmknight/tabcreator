@@ -5,6 +5,12 @@ export type LevelWarning = 'loud' | 'quiet';
 
 /** A peak at or above this sets Too loud at once. */
 export const TOO_LOUD_PEAK_DB = -1;
+/**
+ * `TOO_LOUD_PEAK_DB` as a linear sample magnitude: a captured sample with |x| at or above it
+ * counts as clipped (the recorder's clip count, `Take.clipped`), so a flagged take is one the
+ * meter warned about.
+ */
+export const CLIP_LEVEL = 10 ** (TOO_LOUD_PEAK_DB / 20);
 /** Too loud clears this long after the last loud peak. */
 export const TOO_LOUD_CLEAR_MS = 2000;
 /** RMS below this, continuously for `TOO_QUIET_AFTER_MS`, sets Too quiet. */

@@ -32,6 +32,8 @@ export const strings = {
   'global.microphone': 'Microphone',
   /** The option text for an input the browser gives no label. */
   'global.microphoneUnnamed': (n: number) => `Microphone ${n}`,
+  /** The Microphone select's reason while a take runs (EXPERIENCE.md Microphone select). */
+  'global.microphoneBusy': "Can't change the microphone while recording",
   /** Toast when the active input is unplugged and another one takes over (EXPERIENCE.md). */
   'global.micSwitched': (label: string) => `Microphone disconnected — switched to ${label}`,
   'global.inputLevel': 'Input level',

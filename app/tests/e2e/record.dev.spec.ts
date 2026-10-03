@@ -17,6 +17,7 @@ interface SavedTake {
     durationMs: number;
     sampleRate: number;
     countInBpm?: number;
+    clipped?: boolean;
   } | null;
   rawSamples: number | null;
   /** RMS over the raw samples; null when the raw file is missing. */
@@ -45,9 +46,9 @@ const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', 
 const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop', exact: true });
 const timer = (page: Page) => page.getByRole('timer');
 
-async function goLive(page: Page): Promise<string[]> {
+async function goLive(page: Page, fixtures = FIXTURE): Promise<string[]> {
   const errors = collectErrors(page);
-  await page.goto(`./?fakeMic=${FIXTURE}#/record`);
+  await page.goto(`./?fakeMic=${fixtures}#/record`);
   await page.getByRole('button', { name: 'Allow microphone' }).click();
   await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
   return errors;
@@ -222,18 +223,53 @@ test('leaving Record keeps recording; returning shows Stop and the running timer
   expect(errors).toEqual([]);
 });
 
-test('no Record button without a live mic', async ({ page }) => {
+// Story 3.8: without a live mic, Record shows disabled, the mic card's heading its reason.
+test('without a live mic Record is aria-disabled, described by the card heading; click and Space do nothing', async ({
+  page,
+}) => {
   const errors = collectErrors(page);
   await page.goto(`./?fakeMic=${FIXTURE}#/record`);
   await expect(page.getByRole('button', { name: 'Allow microphone' })).toBeVisible();
-  await expect(recordButton(page)).toHaveCount(0);
+  await expect(recordButton(page)).toBeVisible();
+  await expect(recordButton(page)).toHaveAttribute('aria-disabled', 'true');
+  await expect(recordButton(page)).toHaveAccessibleDescription('TabCreator needs your microphone');
+  await expectNoSeriousAxe(page);
+
+  // aria-disabled: Playwright waits for "enabled" unless forced; the click must do nothing.
+  await recordButton(page).click({ force: true });
+  await blur(page);
+  await page.keyboard.press('Space');
+  await expectNoTake(page);
+  // Nothing asked for the mic: the setup card is still there.
+  await expect(page.getByRole('button', { name: 'Allow microphone' })).toBeVisible();
+  // Space on the focused (still focusable) Record button: its own click, which does nothing.
+  await recordButton(page).focus();
+  await expect(recordButton(page)).toBeFocused();
+  await page.keyboard.press('Space');
+  await expectNoTake(page);
+  await expect(
+    page.getByRole('heading', { name: 'TabCreator needs your microphone' }),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Allow microphone' })).toBeVisible();
 
   await page.evaluate(() => window.__fakeMic!.failNext('NotAllowedError'));
   await page.getByRole('button', { name: 'Allow microphone' }).click();
   await expect(page.getByRole('heading', { name: 'Microphone access is blocked' })).toBeVisible();
-  await expect(recordButton(page)).toHaveCount(0);
-  await expect(page.getByRole('timer')).toHaveCount(0);
+  await expect(recordButton(page)).toHaveAttribute('aria-disabled', 'true');
+  await expect(recordButton(page)).toHaveAccessibleDescription('Microphone access is blocked');
+  await recordButton(page).click({ force: true });
+  await blur(page);
+  await page.keyboard.press('Space');
+  await expectNoTake(page);
+  await expect(page.getByRole('heading', { name: 'Microphone access is blocked' })).toBeVisible();
   expect(errors.filter((e) => !e.includes('NotAllowedError'))).toEqual([]);
+});
+
+test('with a live mic Record is enabled, with no description', async ({ page }) => {
+  const errors = await goLive(page);
+  await expect(recordButton(page)).not.toHaveAttribute('aria-disabled');
+  await expect(recordButton(page)).not.toHaveAttribute('aria-describedby');
+  expect(errors).toEqual([]);
 });
 
 // Story 3.5: Space on Record (ui/a11y/shortcuts.ts).
@@ -620,5 +656,58 @@ test('Record then Stop announces "Recording started", then "Recording stopped"',
   await tabTakeId(page);
   const texts = ['Recording started', 'Recording stopped'];
   await expect.poll(() => announced(page, texts)).toEqual(texts);
+  expect(errors).toEqual([]);
+});
+
+// Story 3.8: clipping during a take is saved as `clipped` (US-1.3, spine AD-14).
+for (const [fixture, clipped] of [
+  ['level_too_hot', true],
+  ['open_strings', false],
+] as const) {
+  test(`a take recorded from ${fixture} is saved with clipped: ${clipped}`, async ({ page }) => {
+    const errors = await goLive(page, fixture);
+    await recordButton(page).click();
+    await expect(timer(page)).toHaveText('0:02', { timeout: 5_000 });
+    await stopButton(page).click();
+    const id = await tabTakeId(page);
+    const saved = await readSaved(page, id);
+    expect(saved.take).toMatchObject({ status: 'recorded', stopReason: 'user', clipped });
+    expect(errors).toEqual([]);
+  });
+}
+
+// Story 3.8: the Microphone select is disabled from the count-in until the take is saved (CAP-2).
+test('the Microphone select is disabled with its reason during the count-in and recording, enabled after', async ({
+  page,
+}) => {
+  const errors = await goLive(page, 'open_strings,silence_60s');
+  const select = page.getByRole('combobox', { name: 'Microphone' });
+  const field = select.locator('..');
+  const REASON = "Can't change the microphone while recording";
+  await expect(select).toBeEnabled();
+  await expect(field).not.toHaveAttribute('title');
+  await expect(select).not.toHaveAttribute('aria-describedby');
+
+  // 40 BPM: a 6 s count-in, long enough to inspect.
+  await countInOn(page, 40);
+  await recordButton(page).click();
+  await expect(cancelButton(page)).toBeVisible();
+  await expect(select).toBeDisabled();
+  await expect(field).toHaveAttribute('title', REASON);
+  await expect(select).toHaveAccessibleDescription(REASON);
+
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true', { timeout: 10_000 });
+  await expect(select).toBeDisabled();
+  await expect(field).toHaveAttribute('title', REASON);
+  await expect(select).toHaveAccessibleDescription(REASON);
+  await expectNoSeriousAxe(page);
+
+  await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
+  await stopButton(page).click();
+  await tabTakeId(page);
+  await page.getByRole('link', { name: 'Record' }).click();
+  await expect(select).toBeEnabled();
+  await expect(field).not.toHaveAttribute('title');
+  await expect(select).not.toHaveAttribute('aria-describedby');
   expect(errors).toEqual([]);
 });

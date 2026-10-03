@@ -15,6 +15,7 @@
 
 import workletUrl from './recorder-worklet.ts?worker&url';
 import { AppError } from '../model/errors';
+import { CLIP_LEVEL } from '../model/level-warnings';
 
 /** The compressed copy's MIME type (spine AD-9); `model/audio-format.ts` lists it. */
 export const RECORDING_MIME = 'audio/webm;codecs=opus';
@@ -104,16 +105,17 @@ const msUntil = (ctx: BaseAudioContext, time: number) =>
 
 /**
  * Starts capturing `source` (a node of `ctx`). `onChunk` receives each 1 s chunk in order (the
- * last one shorter). The capture opens at audio-clock time `startAt` (s) when given (a count-in's
- * beat five), else a short lookahead from now; a `startAt` already too close or past opens it
- * after that lookahead instead (`Capture.startTime` says when). With `maxMs`, the stop is
- * scheduled at once at `startTime + maxMs` on the audio clock (`Capture.capped`). Rejects with
- * `AppError` `mic-failed` when the context cannot run or the graph cannot be built.
+ * last one shorter), with how many of its samples clipped (|x| ≥ `CLIP_LEVEL`). The capture
+ * opens at audio-clock time `startAt` (s) when given (a count-in's beat five), else a short
+ * lookahead from now; a `startAt` already too close or past opens it after that lookahead
+ * instead (`Capture.startTime` says when). With `maxMs`, the stop is scheduled at once at
+ * `startTime + maxMs` on the audio clock (`Capture.capped`). Rejects with `AppError`
+ * `mic-failed` when the context cannot run or the graph cannot be built.
  */
 export async function startCapture(
   ctx: AudioContext,
   source: AudioNode,
-  onChunk: (samples: Float32Array) => void,
+  onChunk: (samples: Float32Array, clipped: number) => void,
   startAt?: number,
   maxMs?: number,
 ): Promise<Capture> {
@@ -173,9 +175,11 @@ export async function startCapture(
       channelCountMode: 'explicit',
       channelInterpretation: 'speakers',
     });
-    worklet.port.onmessage = (event: MessageEvent<{ type: string; samples?: Float32Array }>) => {
-      const { type, samples } = event.data;
-      if (type === 'chunk' && samples) onChunk(samples);
+    worklet.port.onmessage = (
+      event: MessageEvent<{ type: string; samples?: Float32Array; clipped?: number }>,
+    ) => {
+      const { type, samples, clipped } = event.data;
+      if (type === 'chunk' && samples) onChunk(samples, clipped ?? 0);
       else if (type === 'started') markCaptureStart();
       else if (type === 'stopped') resolveStopped();
     };
@@ -199,7 +203,11 @@ export async function startCapture(
     };
     startTime = Math.max(startAt ?? -Infinity, ctx.currentTime + LOOKAHEAD_S);
     gate.gain.setValueAtTime(1, startTime);
-    worklet.port.postMessage({ type: 'start', frame: Math.round(startTime * ctx.sampleRate) });
+    worklet.port.postMessage({
+      type: 'start',
+      frame: Math.round(startTime * ctx.sampleRate),
+      clipLevel: CLIP_LEVEL,
+    });
     if (maxMs !== undefined) {
       // The cap, on the audio clock: an earlier stop's frame replaces it.
       capTime = startTime + maxMs / 1000;

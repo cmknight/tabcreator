@@ -5,6 +5,9 @@ import { strings } from '../strings';
 import buttons from './buttons.module.css';
 import styles from './MicGate.module.css';
 
+/** The id of the setup and error cards' heading, which names why the mic is not live. */
+export const MIC_CARD_TITLE_ID = 'mic-setup-title';
+
 /** Marks the element that takes focus when the card or the live view replaces what had it. */
 const FOCUS_TARGET = 'data-focus-target';
 
@@ -99,11 +102,11 @@ function MicSetupCard({
     return (
       <section
         className={`${styles.setup} ${styles.error}`}
-        aria-labelledby="mic-setup-title"
+        aria-labelledby={MIC_CARD_TITLE_ID}
         data-error-code={errorCode}
       >
         <MicIcon off />
-        <h2 id="mic-setup-title" className={styles.setupTitle} tabIndex={-1} data-focus-target="">
+        <h2 id={MIC_CARD_TITLE_ID} className={styles.setupTitle} tabIndex={-1} data-focus-target="">
           {strings[`${key}.title`]}
         </h2>
         <p className={styles.setupText}>{strings[`${key}.body`]}</p>
@@ -128,9 +131,9 @@ function MicSetupCard({
     );
   }
   return (
-    <section className={styles.setup} aria-labelledby="mic-setup-title">
+    <section className={styles.setup} aria-labelledby={MIC_CARD_TITLE_ID}>
       <MicIcon off={false} />
-      <h2 id="mic-setup-title" className={styles.setupTitle} tabIndex={-1} data-focus-target="">
+      <h2 id={MIC_CARD_TITLE_ID} className={styles.setupTitle} tabIndex={-1} data-focus-target="">
         {strings['record.micSetupTitle']}
       </h2>
       <p className={styles.setupText}>{strings['record.micSetupText']}</p>
