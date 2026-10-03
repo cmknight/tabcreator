@@ -54,3 +54,32 @@ Dev builds also expose test hooks on `window.__fakeMic` (reset by reload):
 - `failNext(name, message?)` makes the next `getUserMedia` call reject with that `DOMException`.
 - `configure(deviceId, { sampleRate?, label? })` changes the settings of streams opened
   afterwards; a label change fires `devicechange`.
+
+## pyin/
+
+Generated. The librosa pYIN oracle for the engine's pitch tracker (US-4.2), one
+`pyin/synth/{name}.pyin.json` per `synth/{name}.wav`. Do not edit by hand; change
+`tools/reference_pyin.py` (or the fixtures) and regenerate:
+
+```sh
+uv run --locked tools/reference_pyin.py
+```
+
+It lives outside `synth/` because `make_fixtures.py` deletes every other file there. The script
+runs librosa on the engine's own pre-processed signal, so the oracle tests the pitch tracker on
+identical input: `cargo run --release --locked --example dump_preprocessed` (in `engine/`, so it
+needs the Rust toolchain) writes every fixture after `preprocess` (with 100 ms skipped for
+`countin_bleed*`), and the script runs `librosa.pyin` with US-4.2's parameters on it. Any change
+to the engine's pre-processing changes the oracle. It is deterministic, writes atomically and
+deletes stale files in `pyin/synth/`; CI reruns it and fails if the committed files differ.
+
+```json
+{ "sr": 22050, "hop": 256, "f0": [null, 110.44, 110.44], "voicedProb": [0.01, 0.6512, 0.7931] }
+```
+
+- One entry per frame; frame `i` is centred on sample `i × 256` of the pre-processed signal
+  (`center=True`, zero padding), so there are `1 + samples / 256` frames.
+- `f0` is in Hz rounded to 0.01, or `null` when the frame is unvoiced; `voicedProb` is rounded
+  to 4 decimal places.
+- `engine/tests/pyin_oracle.rs` compares the engine's `pyin` with these files: per fixture,
+  voicing agrees on ≥ 97% of frames and, where both are voiced, f0 is within 10 cents on ≥ 99%.

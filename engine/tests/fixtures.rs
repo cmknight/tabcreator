@@ -16,6 +16,7 @@ use accuracy::baseline::{
 };
 use accuracy::metrics::{DetectedNote, Pos, TruthNote, score};
 use accuracy::report::{FixtureRow, RunInfo, Set, classify_synth, render};
+use accuracy::skip::skip_start_ms;
 use accuracy::wav::read_wav;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -87,11 +88,7 @@ fn read_answer(path: &Path) -> Answer {
 
 /// The analysis settings every fixture runs with.
 fn settings_for(name: &str) -> String {
-    let skip_start_ms = if name.starts_with("countin_bleed") {
-        100
-    } else {
-        0
-    };
+    let skip_start_ms = skip_start_ms(name);
     format!(
         r#"{{"sensitivity":0.5,"minNoteMs":40,"maxFret":{MAX_FRET},"trimStartMs":0,"trimEndMs":null,"skipStartMs":{skip_start_ms}}}"#
     )

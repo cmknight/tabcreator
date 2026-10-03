@@ -3,4 +3,5 @@
 pub mod baseline;
 pub mod metrics;
 pub mod report;
+pub mod skip;
 pub mod wav;

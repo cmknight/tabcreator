@@ -53,3 +53,4 @@ Detection quality is proven by numbers in CI before any screen depends on it.
 - Decision: the real Rust panic check deferred from epic 1 is settled in entry 10 (user, 2026-10-03).
 - Decision: deferred scope — human recordings in `testdata/real` wait until the Tab editor and Library backup export can produce ground truth; the harness reads the folder from entry 1 (user, 2026-10-03).
 - Decision: no plan or done checkpoints set (user approved the breakdown as is, 2026-10-03).
+- Decision: the pYIN oracle (4.4) runs librosa on the engine's own pre-processed signal, exported by a Rust example, so it tests the tracker on identical input; the rubato delay lead in pre-processing is fixed alongside (user, 2026-10-03).

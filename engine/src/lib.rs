@@ -9,6 +9,7 @@
 //! lowest-fret position per note. Real detection and Viterbi fret mapping arrive in later epics.
 
 pub mod preprocess;
+pub mod pyin;
 
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
@@ -125,6 +126,8 @@ pub fn map_frets(notes_json: &str, locks_json: &str, max_fret: u32) -> Result<St
 
 /// Progress reported once pre-processing is done (AD-8 stage weights).
 const PROGRESS_PREPROCESSED: f64 = 0.111;
+/// Progress reported once pitch tracking is done (AD-8 stage weights).
+const PROGRESS_PITCH_TRACKED: f64 = 0.778;
 
 /// Pure core of [`analyze`]; `progress` receives monotone fractions in 0..=1.
 pub fn analyze_core(
@@ -140,7 +143,7 @@ pub fn analyze_core(
     }
     progress(0.0);
     let _params = Params::from_settings(&input);
-    let _signal = preprocess::preprocess(
+    let signal = preprocess::preprocess(
         pcm,
         sample_rate,
         input.trim_start_ms,
@@ -149,7 +152,16 @@ pub fn analyze_core(
     )?;
     // Pre-processing is 0.111 of the work (AD-8 weights).
     progress(PROGRESS_PREPROCESSED);
-    // No pitch, onset or note detection yet.
+    // Pitch tracking runs from 0.111 to 0.778 (AD-8 weights).
+    debug_assert_eq!(signal.sample_rate, preprocess::TARGET_RATE);
+    debug_assert_eq!(f64::from(preprocess::TARGET_RATE), pyin::SAMPLE_RATE);
+    let _pitch = pyin::pyin(&signal.samples, |fraction| {
+        progress(
+            PROGRESS_PREPROCESSED + (PROGRESS_PITCH_TRACKED - PROGRESS_PREPROCESSED) * fraction,
+        );
+    });
+    progress(PROGRESS_PITCH_TRACKED);
+    // No onset or note detection yet.
     progress(1.0);
     Ok(
         serde_json::json!({ "notes": [], "tuningOffsetCents": 0, "belowRangeNotes": 0 })
@@ -241,10 +253,20 @@ mod tests {
     }
 
     #[test]
-    fn analyze_reports_preprocessing_progress() {
+    fn analyze_reports_preprocessing_and_pitch_tracking_progress() {
         let mut seen = Vec::new();
         analyze_core(&[0.0; 4800], 48_000.0, INPUT, |f| seen.push(f)).unwrap();
-        assert_eq!(seen, vec![0.0, 0.111, 1.0]);
+        // 0, then pre-processing done, then pitch tracking up to 0.778, then done.
+        assert_eq!(&seen[..2], &[0.0, PROGRESS_PREPROCESSED]);
+        assert_eq!(seen[seen.len() - 2..], [PROGRESS_PITCH_TRACKED, 1.0]);
+        let pitch = &seen[1..seen.len() - 1];
+        assert!(pitch.len() > 2);
+        assert!(pitch.windows(2).all(|w| w[0] <= w[1]));
+        assert!(
+            pitch
+                .iter()
+                .all(|&f| (PROGRESS_PREPROCESSED..=PROGRESS_PITCH_TRACKED).contains(&f))
+        );
     }
 
     fn input_with_sensitivity(s: f64) -> EngineAnalyzeInput {

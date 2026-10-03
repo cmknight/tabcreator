@@ -10,7 +10,7 @@ permissions:
 jobs:
   fixtures:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -18,9 +18,23 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
 
       # Regenerates testdata/synth/ from tools/make_fixtures.py (pinned by its .lock); any
-      # difference means the generator is not deterministic or its outputs were not committed.
+      # difference means a generator is not deterministic or its outputs were not committed.
       - name: Generate fixtures
         run: uv run --locked tools/make_fixtures.py
+
+      # The pYIN oracle runs librosa on the engine's own pre-processed signal, which the script
+      # gets from `cargo run --example dump_preprocessed`. Rust 1.98.1, from rust-toolchain.toml.
+      - name: Rust toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      # Regenerates the librosa pYIN oracle in testdata/pyin/ (US-4.2) from the fixtures above,
+      # pinned by tools/reference_pyin.py.lock; the check below catches stale oracle files.
+      - name: Generate pYIN oracle
+        run: uv run --locked tools/reference_pyin.py
 
       - name: Fixtures match the committed files
         run: |

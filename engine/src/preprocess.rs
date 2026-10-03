@@ -106,28 +106,63 @@ fn trim_and_skip(
     (out, start)
 }
 
-/// Step 3: resamples to [`TARGET_RATE`] with rubato's sinc resampler, its delay trimmed off.
-/// The output has `round(len × 22 050 / rate)` samples.
+/// Step 3: resamples to [`TARGET_RATE`] with rubato's sinc resampler, its delay trimmed off so
+/// output sample `m` is the signal at input time `m / 22 050` s (to within 0.05 output samples at
+/// the usual rates, 8–96 kHz; tested). The output has `round(len × 22 050 / rate)` samples.
+///
+/// rubato's `process_all` trims `floor(taps × ratio / 2)` output samples, but the filter's real
+/// delay is `taps × ratio / 2 − 1`, so its output leads by `1 − frac(taps × ratio / 2)` samples
+/// (0.6 at 48 kHz, 1.0 at 44.1 kHz). A fraction cannot be trimmed, so `pad` zeros are put in
+/// front of the input, chosen so the remaining delay is as close to a whole number of output
+/// samples as possible, and that whole number is dropped from the front.
 fn resample(input: &[f64], rate: f64) -> Result<Vec<f64>, String> {
     let target_rate = f64::from(TARGET_RATE);
     if input.is_empty() || rate == target_rate {
         return Ok(input.to_vec());
     }
     let ratio = target_rate / rate;
+    let (pad, skip) = delay_alignment(ratio);
     let params = SincInterpolationParameters::new(SINC_TAPS, WindowFunction::BlackmanHarris2)
         .oversampling_factor(SINC_OVERSAMPLING)
         .interpolation(SincInterpolationType::Linear);
     let mut resampler =
         Async::<f64>::new_sinc(ratio, 1.0, &params, RESAMPLE_CHUNK, 1, FixedAsync::Input)
             .map_err(|e| format!("resampler: {e}"))?;
-    let adapter = InterleavedSlice::new(input, 1, input.len()).map_err(|e| e.to_string())?;
-    let mut out = resampler
-        .process_all(&adapter, input.len(), None)
+    let mut padded = vec![0.0; pad];
+    padded.extend_from_slice(input);
+    let adapter = InterleavedSlice::new(&padded, 1, padded.len()).map_err(|e| e.to_string())?;
+    let out = resampler
+        .process_all(&adapter, padded.len(), None)
         .map_err(|e| format!("resampling failed: {e}"))?
         .take_data();
     let len = (input.len() as f64 * ratio).round() as usize;
-    out.resize(len, 0.0);
-    Ok(out)
+    let mut aligned: Vec<f64> = out.into_iter().skip(skip).take(len).collect();
+    aligned.resize(len, 0.0);
+    Ok(aligned)
+}
+
+/// Most zeros [`resample`] may put in front of the input to align its delay.
+const MAX_ALIGN_PAD: usize = 1024;
+
+/// `(pad, skip)` for [`resample`]: with `pad` leading zeros, the output after rubato's own trim
+/// lags by `(taps / 2 + pad) × ratio − 1 − floor(taps × ratio / 2)` samples; this picks the
+/// smallest `pad` that brings that closest to a whole number `skip ≥ 0`.
+fn delay_alignment(ratio: f64) -> (usize, usize) {
+    let lag = |pad: usize| alignment_lag(ratio, pad);
+    let error = |pad: usize| (lag(pad) - lag(pad).round()).abs();
+    let pad = (0..=MAX_ALIGN_PAD)
+        .filter(|&pad| lag(pad).round() >= 0.0)
+        .min_by(|&a, &b| error(a).total_cmp(&error(b)))
+        .unwrap_or(0);
+    (pad, lag(pad).round().max(0.0) as usize)
+}
+
+/// Output samples the resampler's output still lags by, after rubato's own trim, with `pad`
+/// leading zeros: `(taps / 2 + pad) × ratio − 1 − floor(taps × ratio / 2)`.
+fn alignment_lag(ratio: f64, pad: usize) -> f64 {
+    // rubato's `output_delay()`: what `process_all` already trims.
+    let trimmed = (SINC_TAPS as f64 * ratio / 2.0) as usize;
+    (SINC_TAPS as f64 / 2.0 + pad as f64) * ratio - 1.0 - trimmed as f64
 }
 
 /// Biquad coefficients `(b0, b1, b2, a1, a2)` (a0 = 1) of a 2nd-order Butterworth high-pass at
@@ -250,6 +285,52 @@ mod tests {
         assert!(!out.silent);
         let hz = zero_crossing_hz(&out.samples, 22_050.0);
         assert!((hz - 440.0).abs() <= 0.1, "measured {hz} Hz");
+    }
+
+    /// Position of the peak of `x`, refined by a parabola through it and its neighbours.
+    fn peak_position(x: &[f64]) -> f64 {
+        let i = (1..x.len() - 1)
+            .max_by(|&a, &b| x[a].total_cmp(&x[b]))
+            .unwrap();
+        let (a, b, c) = (x[i - 1], x[i], x[i + 1]);
+        i as f64 + 0.5 * (a - c) / (a - 2.0 * b + c)
+    }
+
+    #[test]
+    fn resampled_impulse_lands_at_its_time() {
+        for rate in [48_000.0, 44_100.0, 32_000.0, 96_000.0, 16_000.0] {
+            for at in [10_000usize, 10_001, 12_345] {
+                let mut pcm = vec![0.0f64; 40_000];
+                pcm[at] = 1.0;
+                let out = resample(&pcm, rate).unwrap();
+                let expected = at as f64 * 22_050.0 / rate;
+                let found = peak_position(&out);
+                assert!(
+                    (found - expected).abs() <= 0.25,
+                    "{rate} Hz, input sample {at}: peak at {found}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn delay_alignment_is_whole_samples_at_common_rates() {
+        assert_eq!(delay_alignment(22_050.0 / 44_100.0), (2, 0));
+        let (pad, skip) = delay_alignment(22_050.0 / 48_000.0);
+        assert_eq!((pad, skip), (256, 117));
+    }
+
+    #[test]
+    fn delay_alignment_residual_is_within_a_twentieth_of_a_sample() {
+        for rate in [
+            8_000.0, 11_025.0, 16_000.0, 22_050.0, 24_000.0, 32_000.0, 44_100.0, 48_000.0,
+            88_200.0, 96_000.0,
+        ] {
+            let ratio = 22_050.0 / rate;
+            let (pad, skip) = delay_alignment(ratio);
+            let residual = (alignment_lag(ratio, pad) - skip as f64).abs();
+            assert!(residual <= 0.05, "{rate} Hz: residual {residual} samples");
+        }
     }
 
     #[test]

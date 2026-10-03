@@ -20,6 +20,8 @@ console_error_panic_hook = "=0.1.7"
 # rubato: the sinc resampler for pre-processing (spine Stack, US-4.1). Default features off:
 # only the async sinc resampler is used, so the FFT resampler's realfft/rustfft stay out.
 rubato = { version = "=5.0.0", default-features = false }
+# rustfft: the FFT behind pYIN's autocorrelation-based difference function (US-4.2).
+rustfft = "=6.4.1"
 
 [profile.test]
 opt-level = 3
