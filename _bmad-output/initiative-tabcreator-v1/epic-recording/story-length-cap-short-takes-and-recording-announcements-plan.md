@@ -3,7 +3,7 @@ title: 'Length cap, short takes and recording announcements'
 type: 'feature'
 ticket: '7'
 created: '2026-10-02'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
