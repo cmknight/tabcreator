@@ -41,3 +41,4 @@ The player turns a take into tab they trust, fixing only what the engine got wro
 
 - Waits on epic 3 because: needs recorded takes and raw audio.
 - Waits on epic 4 because: needs analyze and map_frets with locks.
+- Touch points from epic 3 (Recording), owned here: the Tab screen shows the "Maximum length reached" toast for a take with stopReason max-length and "Some of this take clipped" for a take with clipped true. Recording only persists these fields (AD-14). This epic also owns CAP-6's "survives a closed tab mid-analysis" and "no raw recovery files remain after successful analysis" (raw deleted after commitAnalysis, AD-9) (2026-10-02).

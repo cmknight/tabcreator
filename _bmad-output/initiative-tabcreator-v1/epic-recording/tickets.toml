@@ -1,7 +1,6 @@
 # tickets.toml — a container's agreed children. tickets.py reads it.
 # The order of the tables is the build order: move a table to reorder. `id` names a child for good and is never reused.
 # Status never lives here: an entry's plan beside it carries `status`.
-# Only the opening refactor is planned so far; the rest of the epic is planned at inception, after it.
 
 [[entry]]
 id = 1
@@ -18,3 +17,171 @@ references = [
   "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-3",
 ]
 notes = ["the store split (A1) should be the first story of the Recording epic"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Serialise mic input transitions"
+description = "Replaces the shared busy flag in recording-session with one serialised path for allow, switch, unplug fallback and lost, so a racing transition never leaves a second input open (epic 2 retro A3), and makes the mic-select unplug e2e stable under repeated runs (retro A4)."
+verify = "Unit tests that interleave a select during the unplug fallback, a track ending during a switch, and an unplug while requesting each end with exactly one open input whose device matches activeDeviceId, and mic-select.dev.spec.ts passes at --repeat-each=10 --workers=4 --retries=0."
+covers = []
+after = [1]
+hitl = false
+risk = "medium"
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-mic-and-tuner/epic-mic-and-tuner-retrospective.md, Diff-scope review 2-3 and 16, actions A3 and A4"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Queue announcements"
+description = "Changes app/src/ui/a11y/announcer.ts so polite messages announced in the same frame are all spoken in order instead of the last replacing the others, removes the Tuner's All-six delay workaround, and adds retro A4's UI tests: the quality banner on the Tuner with Dismiss focusing the Tuner h1, and All six announced on unmount only while the mic is live."
+verify = "A dev e2e where the switch toast and the quality banner announce together records both texts in the polite region in order, the Tuner still announces the sixth string and All six, and the two retro A4 Tuner tests pass."
+covers = []
+after = []
+hitl = false
+risk = "low"
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-mic-and-tuner/epic-mic-and-tuner-retrospective.md, Diff-scope review 1, 5 and 6, actions A2 and A4"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Record and stop a take (tracer)"
+description = "Adds the capture path end to end: audio/ exposes the live input's graph, a recorder worklet posts raw blocks batched into 1 s chunks appended through the OPFS worker (blocks that arrive before createTake resolves are held and appended first, AD-9), a gated MediaStreamDestination feeds MediaRecorder at Opus 96 kbps, recording-session gains record() and stop('user') with createTake at the click (entry 6 moves it to count-in end) and the stop pipeline (writeCompressed, patchTake recorded), capture keeps running when the player leaves Record, and Record shows the Record/Stop button (aria-pressed, dot then square, Recording state) with the m:ss timer and opens #/tab/<id> on stop."
+verify = "On the dev build with ?fakeMic=c_major_scale_pos1, Record then Stop after about 5 s opens #/tab/<id> with the take recorded, durationMs within 50 ms of the audio-clock time between capture start and stop and of the raw chunk length, and a webm/opus file that decodes; leaving for Library mid-take and returning to Stop gives the full duration."
+covers = ["CAP-5", "CAP-6"]
+after = [2, "epic-platform-baseline"]
+hitl = false
+risk = "high"
+unknown = "How the recorder worklet module is bundled and loaded under Vite 8 with the strict CSP (a same-origin file for addModule)."
+references = [
+  "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-2, AD-9, AD-13, AD-14, AD-15",
+  "stories — TabCreator-User-Stories.md, US-3.1",
+  "design — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/DESIGN.md, Record button",
+  "design — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/mockups/record.html, Record button and timer states",
+]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Space to record and the production test lane"
+description = "Adds app/src/ui/a11y/shortcuts.ts as the only shortcut registry with the text-field guard, registers Space to start and stop recording on Record, emits performance marks at keydown and at the first captured worklet block in every build, and adds a production Playwright lane using Chrome's native fake device fed a looping noisy fixture through --use-file-for-fake-audio-capture under the real autoplay policy, with retro A4's production rows (a no-prompt row for #/tuner and a native-fake-device recording)."
+verify = "On the production lane Space starts a take within 100 ms by the two performance marks and stops it, Space in a text field does nothing, and the #/tuner no-prompt row passes."
+covers = ["CAP-5"]
+after = [4]
+hitl = false
+risk = "low"
+references = [
+  "experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Interaction Primitives",
+  "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-18",
+  "retrospective — _bmad-output/initiative-tabcreator-v1/epic-mic-and-tuner/epic-mic-and-tuner-retrospective.md, Process and action A4",
+]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Count-in"
+description = "Adds audio/metronome.ts scheduling four clicks on the audio clock (30 ms sines, 1500 Hz then 1000 Hz, -12 dBFS) and replaces entry 4's start path so capture and createTake open at beat five, with the count-in toggle and BPM (40-240, persisted, disabled while recording), the large 4-3-2-1 in place of the timer, Cancel on the button, Esc registered in the shortcuts registry to cancel, beats announced assertively through the announcer, countInBpm stored only when on, and a dev-only hook exposing the audio-clock times of the click and of capture start."
+verify = "At 120 BPM the capture starts 2.0 s after the click within 20 ms on the audio clock by the dev hook, a take recorded from silence_60s has no click energy at 1000 or 1500 Hz in the raw or decoded audio (Goertzel), and Esc or Cancel during the count-in creates no take."
+covers = ["CAP-7"]
+after = [5, 3]
+hitl = false
+risk = "medium"
+unknown = "The scheduling lead before beat one; the 2.0 s is measured from the click's audio-clock time, not from beat one."
+references = [
+  "stories — TabCreator-User-Stories.md, US-3.3",
+  "design — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/mockups/record.html, count-in states",
+]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Length cap, short takes and recording announcements"
+description = "Adds the 4:30 warning \"30 seconds left\" announced once, the auto-stop at 5:00 saved with stopReason max-length (the Tab epic shows its toast), discarding takes under 0.5 s with \"Too short — nothing recorded\", start and stop announcements, app reload refused while recording, a dev-only cap override (?maxTakeMs, DEV only), and one @slow test on entry 5's production lane."
+verify = "With the dev cap override the warning and auto-stop appear, a 0.3 s take is discarded with its message, and the @slow production test records the full 5 minutes, auto-stops and keeps compressed audio at or under 5 MB."
+covers = ["CAP-5", "CAP-25"]
+after = [6]
+hitl = false
+risk = "medium"
+unknown = "Whether the @slow 5-minute test runs on every CI push or only on main."
+references = [
+  "experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Recording near limit and Take too short rows",
+  "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-16, AD-19",
+]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Recording-time mic touch points"
+description = "Counts clipped samples in the recorder worklet and saves clipped on the take (the Tab epic shows the clipping banner), disables the Microphone select while recording with the tooltip \"Can't change the microphone while recording\", and disables Record and Space with a reason while the mic is unavailable."
+verify = "A take recorded from level_too_hot is saved with clipped true and one from open_strings with false, the select is disabled with its tooltip while recording, and Record is disabled with its reason on the error card while Space does nothing."
+covers = ["CAP-2"]
+after = [5]
+hitl = false
+risk = "low"
+unknown = "The clip threshold: full scale, or -1 dBFS to match Too loud."
+references = [
+  "stories — TabCreator-User-Stories.md, US-1.3 clipCount",
+  "experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Microphone select and Record button rows",
+]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Failure stops keep the take"
+description = "Stops and saves the take on Record when the mic is lost, revoked or unplugged mid-take (stopReason mic-lost, no fallback to another input) or when storage fills (new stopReason storage-full with a no-op schema version bump and fixture test per AD-11, error banner \"Storage is full — recording stopped and saved\" with a link to the Library), with a dev-only hook that makes OPFS appends reject with QuotaExceededError."
+verify = "With two fake devices, unplugging the active one 3 s into a take saves a recorded take of about 3 s with stopReason mic-lost and shows \"Microphone disconnected — recording stopped and saved\"; revoking does the same and shows \"Microphone access was lost\"; the storage-full hook saves the take with stopReason storage-full and shows the banner."
+covers = ["CAP-25", "CAP-26"]
+after = [7, 8]
+hitl = false
+risk = "high"
+unknown = "When the quota is exhausted the stop's own writeCompressed and patchTake may also fail; the take then stays recording with its raw chunks for entry 11's recovery."
+references = [
+  "stories — TabCreator-User-Stories.md, US-1.1, US-1.2 mid-take",
+  "experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Mic access lost mid-session and Device unplugged rows",
+  "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-10, AD-11, AD-15",
+]
+
+[[entry]]
+id = 10
+type = "story"
+title = "One tab at a time"
+description = "Adds app/src/session/instance-lock.ts holding the Web Lock tabcreator-instance before any storage write, the \"TabCreator is open in another tab\" screen with Use here (BroadcastChannel request, 3 s wait, then steal), the releasing tab stopping its take with stopReason instance-lost, flushing, closing IndexedDB (new db close) and fencing writes, and the versionchange and blocked screens; without navigator.locks the app does not start (unsupported browser, CAP-22 in epic-offline-accessibility-budgets)."
+verify = "With two Playwright pages, the second shows the screen, Use here hands over within 3 s, a take recording in the first tab is saved with stopReason instance-lost, and later writes from the first tab reject with instance-taken."
+covers = ["CAP-29"]
+after = [9]
+hitl = false
+risk = "high"
+unknown = "Whether a backgrounded releasing tab can finish MediaRecorder and writeCompressed inside the 3 s window; if not, the take stays recording and entry 11 recovers it with stopReason recovered."
+references = [
+  "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-6, AD-16",
+  "stories — TabCreator-User-Stories.md, US-8.5",
+]
+
+[[entry]]
+id = 11
+type = "story"
+title = "Recover an unfinished take"
+description = "Runs the recovery scan after the lock is held, finding takes with status recording and deleting orphan raw and compressed files and takes under 0.5 s silently, shows \"An unfinished take from <time> was recovered (m:ss)\" on Record with Open and Discard, and on Open re-encodes the raw chunks through the graph (WAV, newly added to the format table, if encoding fails), never overwriting existing compressed audio, sets recorded with stopReason recovered and opens #/tab/<id>; it also adds the beforeunload warning while recording."
+verify = "Reloading 10 s into a dev recording (accepting the beforeunload dialog) shows the banner with at least 9 s, Open lands on #/tab/<id> with the take recorded, stopReason recovered and compressed audio that decodes to at least 9 s, Discard removes the take and its files, and the banner never offers a take another tab is still recording."
+covers = ["CAP-6", "CAP-29"]
+after = [10]
+hitl = false
+risk = "high"
+unknown = "Re-encoding through MediaRecorder runs in real time, so recovering a 5-minute take takes about 5 minutes; the WAV fallback breaks the 5 MB budget."
+references = [
+  "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-9, AD-11, AD-15",
+  "stories — TabCreator-User-Stories.md, US-3.2",
+  "design — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/mockups/record.html, recovered take banner",
+]
+
+[[entry]]
+id = 12
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what the build records and deferred review findings of stories 1 to 11 name, plus epic 2 retro A5's sweep list, after grepping every plan's triage log for sweep routings; scope is set when it starts and takes cleanup only."
+verify = "CI stays green and every item in the sweep's agreed scope is closed or explicitly deferred."
+covers = []
+after = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+hitl = false
+risk = "low"
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-mic-and-tuner/epic-mic-and-tuner-retrospective.md, actions A5 and A7"]

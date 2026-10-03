@@ -40,3 +40,4 @@ The player keeps their work and can take it anywhere.
 ## Notes
 
 - Waits on epic 5 because: needs tab layout and toText, the Tab screen.
+- Touch point from epic 3 (Recording): compressed audio can be WAV (audio/wav, .wav) when recovery encoding fails. Backup and restore must accept it (2026-10-02).
