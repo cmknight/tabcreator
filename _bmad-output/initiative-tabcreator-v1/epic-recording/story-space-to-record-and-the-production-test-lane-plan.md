@@ -3,12 +3,12 @@ title: 'Space to record and the production test lane'
 type: 'feature'
 ticket: '5'
 created: '2026-10-02'
-status: 'in-progress'
+status: 'built'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 baseline_revision: '378b8e61f5419a086bc60bf81a51087d01b218a7'
@@ -115,8 +115,76 @@ deferred: []
 
 ## Review Triage Log
 
+### 2026-10-02 — Review pass
+- verdicts: 28 findings — high 0, medium 1, low 25, false 2, maybe-false 0 (the verification-gap lens reported none)
+- findings:
+  - `medium` `patch` (blind) Space on a focused link is guarded, but links do not activate on Space, so after the nav link Space does nothing — links now guard only Enter; e2e row added.
+  - `low` `patch` (blind) the capture-mark doc says first copied frame, but it is set on message receipt — comment corrected.
+  - `low` `reject` (blind) the 100 ms check may be flaky on CI (50 ms lookahead plus a hop) — measured 57–64 ms; kept as a residual risk.
+  - `low` `patch` (blind) the held-Space test sends repeats while still starting — repeats now sent while recording.
+  - `low` `patch` (blind) the off-Record half asserts nothing — split out with direct assertions.
+  - `low` `patch` (blind) marks are never cleared and pair wrongly — both cleared at each handled keydown.
+  - `low` `patch` (blind) the keydown mark is unguarded — wrapped like the capture mark.
+  - `low` `reject` (blind) the prod spec hardcodes the mark names — the test imports nothing from the app bundle by design; low.
+  - `low` `reject` (blind) the worklet `started` message has no unit tests — covered by the prod lane.
+  - `low` `patch` (blind) Shift+Space toggles recording — `shiftKey` excluded.
+  - `low` `reject` (blind) ARIA widget roles are missing from the guard — no such widgets exist yet.
+  - `low` `patch` (blind) the Tuner row sits in the record spec — moved to `mic-setup.spec.ts` (see the intent row).
+  - `low` `patch` (blind) no fixture existence check — the config throws if it is missing.
+  - `low` `reject` (blind) ShortcutListener mount order and double mount — one shell mount; documented in the file.
+  - `low` `patch` (edge) a stale keydown mark when `record()` no-ops — grouped with clearing marks.
+  - `low` `patch` (edge) marks pile up and pair by index — grouped.
+  - `low` `patch` (edge) `performance.mark` throwing blocks `record()` — grouped with the safe wrapper.
+  - `low` `reject` (edge) ARIA roles radio/tab/menuitem/option and media controls — grouped with the blind row.
+  - `low` `patch` (edge) Shift+Space — grouped.
+  - `low` `reject` (edge) `preventDefault` even when the handler does nothing (mic not live) — suppresses only a page scroll on Record; low.
+  - `low` `patch` (edge) the prod latency test can hit a TypeError on a missing mark — asserts defined first.
+  - `low` `patch` (intent) "Space in a text field does nothing" is unit-only — dev e2e row on the Microphone select added.
+  - `low` `reject` (intent) the latency marks are main-thread proxies, not physical key and audio-clock times — documented choice of the plan.
+  - `low` `patch` (intent) the `#/tuner` row ran with permission pre-granted and fake UI, not first visit — moved to the plain production project.
+  - `low` `reject` (intent) the real autoplay policy is asserted by omission — the override flag is absent; the retro probe showed the policy does not block a resumed context.
+  - `false` `reject` (intent) the registry holds only Space — the ticket scopes it to Space; Esc and `?` are later stories.
+  - `false` `reject` (intent) the guard is broader than text fields — the plan requires the native-action guard.
+  - `low` `reject` (intent) off-route, held-key and focused-button behaviour are tested on dev only — browser behaviour, the same in both builds.
+
 ## Verification
 
 **Commands:**
 - `npx -y -p node@24.21.0 -p pnpm@12.6.0 -- sh -c 'pnpm install --frozen-lockfile && pnpm build:engine && pnpm format:check && pnpm lint && pnpm stylelint && pnpm typecheck && pnpm test && pnpm build && CI=1 pnpm e2e'` (repo root, `~/.cargo/bin` on PATH) -- expected: all exit 0
 - `grep -rnE "addEventListener\(['\"]keydown|onKeyDown" app/src` -- expected: only `app/src/ui/a11y/shortcuts.ts` (component-local key handling on a specific control, if any, is listed and justified in Implementation Notes)
+
+## Auto Run Result
+
+- **Summary:** `ui/a11y/shortcuts.ts` is the only shortcut registry (AD-18).
+  - **Listener:** one window keydown listener in the shell; entries hold a key, route, description and handler.
+  - **Guard:** it skips text fields, and native activators (Space on buttons and checkbox/switch; Enter on links too). It ignores auto-repeat and Ctrl, Meta, Alt or Shift combinations, and calls `preventDefault` on handled keys.
+  - **Space on Record:** toggles record and stop while the mic is live; ignored while starting or stopping.
+  - **Marks:** `record-keydown` (cleared at each start) and `record-capture-start` (on the worklet's new `started` message) exist in every build.
+  - **Production lane:** the `prod-mic` Playwright project feeds Chrome's native fake device a looping noisy WAV under the real autoplay policy; the 3.4 production recording test moved into it.
+  - **Retro A4:** the `#/tuner` first-visit no-prompt row is on the plain production project.
+- **Files changed:**
+  - `app/src/ui/a11y/shortcuts.ts`, `app/src/App.tsx`, `app/src/ui/strings.ts`;
+  - `app/src/audio/recorder{,-worklet}.ts`;
+  - `app/playwright.config.ts`;
+  - tests: `app/tests/unit/shortcuts.test.ts`, `app/tests/e2e/record{.dev,.prod}.spec.ts` (`record.spec.ts` was moved), `app/tests/e2e/mic-setup.spec.ts`.
+  - First commit `dfa134b` (made early by the implementer); review fixes in the second commit.
+- **Review:** 28 findings (medium 1, low 25, false 2); the verification-gap lens found none.
+  - The medium entry was patched: Space on a focused link (e.g. after the Record nav link) did nothing.
+  - The low patches cover:
+    - clearing the marks and a safe wrapper;
+    - excluding Shift;
+    - the doc correction;
+    - stronger held-key and off-route tests;
+    - a text-field e2e test;
+    - the first-visit Tuner row moved;
+    - the fixture existence check;
+    - defined-mark asserts.
+  - Nothing deferred.
+- **Follow-up review recommended:** false. Patched by verdict: high 0, medium 1, low 13 (grouped entries).
+- **Verification:**
+  - The full plan command exited 0: 536 unit tests, 91 Playwright tests including `prod-mic`, none flaky.
+  - The keydown grep finds only `shortcuts.ts`.
+  - Space latency measured 57–64 ms in the lane.
+- **Residual risks:**
+  - About 50 ms of the latency is the recorder's lookahead, leaving about 35 ms of headroom on a loaded CI runner.
+  - Real OS auto-repeat is simulated with `repeat: true` events.

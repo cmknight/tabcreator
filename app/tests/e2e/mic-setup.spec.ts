@@ -39,3 +39,16 @@ test('a return with micGranted but no granted permission shows the setup card, n
     await page.evaluate(() => JSON.parse(localStorage.getItem('tabcreator.prefs.v1') ?? '{}')),
   ).toMatchObject({ micGranted: true });
 });
+
+// Retro A4: a first visit to the Tuner in the production build shows the setup card and asks
+// the browser for nothing (no permission granted, as for a new player).
+test('Tuner shows the setup card and makes no getUserMedia call', async ({ page }) => {
+  await countGetUserMedia(page);
+  await page.goto('./#/tuner');
+
+  const card = page.getByRole('region', { name: 'TabCreator needs your microphone' });
+  await expect(card).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Allow microphone' })).toBeEnabled();
+  await page.waitForTimeout(300);
+  expect(await gumCalls(page)).toBe(0);
+});

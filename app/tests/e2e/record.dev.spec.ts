@@ -237,18 +237,64 @@ test('Space on the focused Record button toggles once (its own click)', async ({
   expect(errors).toEqual([]);
 });
 
-test('Space does nothing off Record, held Space toggles once', async ({ page }) => {
+/** Blurs whatever has focus, so keys go to the page itself. */
+const blur = (page: Page) =>
+  page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+/** The number of saved takes (0 before the store exists). */
+function takeCount(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        const open = indexedDB.open('tabcreator');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          if (!db.objectStoreNames.contains('takes')) {
+            db.close();
+            resolve(0);
+            return;
+          }
+          const count = db.transaction('takes').objectStore('takes').count();
+          count.onsuccess = () => {
+            resolve(count.result);
+            db.close();
+          };
+          count.onerror = () => reject(count.error);
+        };
+      }),
+  );
+}
+
+const keydownMarks = (page: Page) =>
+  page.evaluate(() => performance.getEntriesByName('record-keydown').length);
+
+/** No take started: no keydown mark, no take saved, the button still offers Record. */
+async function expectNoTake(page: Page): Promise<void> {
+  await page.waitForTimeout(500);
+  expect(await keydownMarks(page)).toBe(0);
+  expect(await takeCount(page)).toBe(0);
+  await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
+}
+
+test('Space off Record does nothing', async ({ page }) => {
   const errors = await goLive(page);
   await page.getByRole('link', { name: 'Library' }).click();
   await expect(page).toHaveURL(/#\/library$/);
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await blur(page);
   await page.keyboard.press('Space');
+  await page.waitForTimeout(500);
   await page.getByRole('link', { name: 'Record' }).click();
-  await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
+  await expectNoTake(page);
+  expect(errors).toEqual([]);
+});
 
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  // A held key: one keydown, then auto-repeats.
+test('held Space: auto-repeats while recording do not stop the take', async ({ page }) => {
+  const errors = await goLive(page);
+  await blur(page);
   await page.keyboard.down('Space');
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
+  // Now recording: the auto-repeats of the held key reach the toggle's stop path if unguarded.
   for (let i = 0; i < 5; i++) {
     await page.evaluate(() =>
       document.body.dispatchEvent(
@@ -257,9 +303,39 @@ test('Space does nothing off Record, held Space toggles once', async ({ page }) 
     );
   }
   await page.keyboard.up('Space');
+  await page.waitForTimeout(500);
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
+  await expect(page).toHaveURL(/#\/record$/);
+  expect(await keydownMarks(page)).toBe(1);
+  await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
+  await stopButton(page).click();
+  await tabTakeId(page);
+  expect(errors).toEqual([]);
+});
+
+test('Space after clicking the Record nav link starts a take (links ignore Space)', async ({
+  page,
+}) => {
+  const errors = await goLive(page);
+  await page.getByRole('link', { name: 'Record' }).click();
+  await expect(page.getByRole('link', { name: 'Record' })).toBeFocused();
+  await page.keyboard.press('Space');
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
   await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
   await stopButton(page).click();
   await tabTakeId(page);
+  expect(errors).toEqual([]);
+});
+
+test('Space in the Microphone select does not start a take', async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.goto('./?fakeMic=open_strings,silence_60s#/record');
+  await page.getByRole('button', { name: 'Allow microphone' }).click();
+  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  const select = page.getByRole('combobox', { name: 'Microphone' });
+  await select.focus();
+  await page.keyboard.press('Space');
+  await expectNoTake(page);
+  await page.keyboard.press('Escape');
   expect(errors).toEqual([]);
 });

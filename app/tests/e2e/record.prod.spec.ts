@@ -2,7 +2,6 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { watchHygiene } from './hygiene';
-import { countGetUserMedia, gumCalls } from './mic-helpers';
 
 // The production-mic lane (`prod-mic` project): the production build, with Chromium's fake
 // capture device looping testdata/synth/c_major_scale_pos1_noisy.wav as the microphone, the
@@ -67,11 +66,13 @@ test('Space starts a take within 100 ms, and Space again stops it and opens its 
   await expect
     .poll(() => page.evaluate(() => performance.getEntriesByName('record-capture-start').length))
     .toBe(1);
-  const latencyMs = await page.evaluate(() => {
-    const [keydown] = performance.getEntriesByName('record-keydown');
-    const [start] = performance.getEntriesByName('record-capture-start');
-    return start!.startTime - keydown!.startTime;
-  });
+  const marks = await page.evaluate(() => ({
+    keydown: performance.getEntriesByName('record-keydown').map((e) => e.startTime),
+    start: performance.getEntriesByName('record-capture-start').map((e) => e.startTime),
+  }));
+  expect(marks.keydown).toHaveLength(1);
+  expect(marks.start).toHaveLength(1);
+  const latencyMs = marks.start[0]! - marks.keydown[0]!;
   test.info().annotations.push({ type: 'space-to-capture-ms', description: latencyMs.toFixed(1) });
   expect(latencyMs).toBeGreaterThanOrEqual(0);
   expect(latencyMs).toBeLessThanOrEqual(100);
@@ -85,21 +86,4 @@ test('Space starts a take within 100 ms, and Space again stops it and opens its 
     await page.evaluate(() => performance.getEntriesByName('record-keydown').length),
   ).toBeGreaterThanOrEqual(2);
   hygiene.expectClean();
-});
-
-// Retro A4: the Tuner asks for nothing on a first visit to the production build, even with
-// the permission already granted; the browser is asked only at Allow.
-test('Tuner shows the setup card with no getUserMedia call before Allow', async ({ page }) => {
-  await countGetUserMedia(page);
-  await page.goto('./#/tuner');
-
-  const card = page.getByRole('region', { name: 'TabCreator needs your microphone' });
-  await expect(card).toBeVisible();
-  await expect(card.getByRole('button', { name: 'Allow microphone' })).toBeEnabled();
-  await page.waitForTimeout(300);
-  expect(await gumCalls(page)).toBe(0);
-
-  await card.getByRole('button', { name: 'Allow microphone' }).click();
-  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
-  expect(await gumCalls(page)).toBe(1);
 });

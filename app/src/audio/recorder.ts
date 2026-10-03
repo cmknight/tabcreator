@@ -55,9 +55,10 @@ export function loadRecorderWorklet(ctx: BaseAudioContext): Promise<void> {
 }
 
 /**
- * The latency mark set when the worklet copies its first frame (story 3.5, Done when 1: Space
- * to capture start within 100 ms, read against `record-keydown`). Set in every build; nothing
- * in the app reads it.
+ * The latency mark set when the main thread receives the worklet's `started` message (posted
+ * from the render quantum that copies the first frame), so it trails the actual start by the
+ * port's delivery time (story 3.5, Done when 1: Space to capture start within 100 ms, read
+ * against `record-keydown`). Set in every build; nothing in the app reads it.
  */
 export const CAPTURE_START_MARK = 'record-capture-start';
 

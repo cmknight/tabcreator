@@ -84,6 +84,7 @@ describe('dispatch', () => {
     press(document.body, ' ', { ctrlKey: true });
     press(document.body, ' ', { metaKey: true });
     press(document.body, ' ', { altKey: true });
+    press(document.body, ' ', { shiftKey: true });
     expect(handler).not.toHaveBeenCalled();
   });
 
@@ -101,13 +102,21 @@ describe('dispatch', () => {
 
   it.each([
     ['button', () => add('button')],
-    ['link', () => add('a', { href: '#/library' })],
     ['checkbox', () => add('input', { type: 'checkbox' })],
     ['role=checkbox', () => add('div', { role: 'checkbox', tabindex: '0' })],
   ])('leaves Space on a %s to its native action', (_, make) => {
     const event = press(make(), ' ');
     expect(handler).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  it.each([
+    ['link', () => add('a', { href: '#/record' })],
+    ['role=link', () => add('div', { role: 'link', tabindex: '0' })],
+  ])('runs Space on a focused %s (Space does not activate links)', (_, make) => {
+    const event = press(make(), ' ');
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(event.defaultPrevented).toBe(true);
   });
 
   it('runs with focus on a non-interactive element', () => {
@@ -135,6 +144,10 @@ describe('the guard', () => {
     expect(guarded(button, ' ')).toBe(true);
     expect(guarded(button, 'Enter')).toBe(true);
     expect(guarded(button, '?')).toBe(false);
+    const link = document.createElement('a');
+    link.href = '#/library';
+    expect(guarded(link, ' ')).toBe(false);
+    expect(guarded(link, 'Enter')).toBe(true);
     expect(guarded(document.createElement('input'), '?')).toBe(true);
     expect(guarded(null, ' ')).toBe(false);
   });
@@ -157,7 +170,7 @@ describe('Space on Record', () => {
     s.toggle();
     expect(s.record).toHaveBeenCalledTimes(1);
     expect(s.stop).not.toHaveBeenCalled();
-    expect(s.mark).toHaveBeenCalledWith(RECORD_KEYDOWN_MARK);
+    expect(s.mark).toHaveBeenCalledWith(true);
     expect(s.mark.mock.invocationCallOrder[0]).toBeLessThan(s.record.mock.invocationCallOrder[0]!);
   });
 
@@ -165,6 +178,7 @@ describe('Space on Record', () => {
     const s = store('live', 'recording');
     s.toggle();
     expect(s.stop).toHaveBeenCalledWith('user');
+    expect(s.mark).toHaveBeenCalledWith(false);
     expect(s.record).not.toHaveBeenCalled();
   });
 
@@ -181,5 +195,46 @@ describe('Space on Record', () => {
     s.toggle();
     expect(s.record).not.toHaveBeenCalled();
     expect(s.mark).not.toHaveBeenCalled();
+  });
+
+  describe('the default marks', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      performance.clearMarks();
+    });
+
+    const toggleWith = (recording: RecordingSnapshot['recording']) => {
+      const record = vi.fn(() => Promise.resolve());
+      const stop = vi.fn(() => Promise.resolve());
+      const toggle = recordToggle({
+        getSnapshot: () => ({ mic: 'live', recording }) as RecordingSnapshot,
+        record,
+        stop,
+      });
+      return { toggle, record, stop };
+    };
+
+    it('a start clears stale marks, then sets one record-keydown', () => {
+      performance.mark(RECORD_KEYDOWN_MARK);
+      performance.mark('record-capture-start');
+      toggleWith('idle').toggle();
+      expect(performance.getEntriesByName(RECORD_KEYDOWN_MARK)).toHaveLength(1);
+      expect(performance.getEntriesByName('record-capture-start')).toHaveLength(0);
+    });
+
+    it('a stop adds its mark without clearing', () => {
+      toggleWith('idle').toggle();
+      toggleWith('recording').toggle();
+      expect(performance.getEntriesByName(RECORD_KEYDOWN_MARK)).toHaveLength(2);
+    });
+
+    it('a throwing mark still starts the take', () => {
+      vi.spyOn(performance, 'mark').mockImplementation(() => {
+        throw new Error('no user timing');
+      });
+      const t = toggleWith('idle');
+      t.toggle();
+      expect(t.record).toHaveBeenCalledTimes(1);
+    });
   });
 });

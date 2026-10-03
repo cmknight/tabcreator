@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
 
@@ -24,6 +25,8 @@ const MIC_FIXTURE = resolve(
   'synth',
   'c_major_scale_pos1_noisy.wav',
 );
+// Chromium falls back to its own beep when the file is missing, silently: fail loudly instead.
+if (!existsSync(MIC_FIXTURE)) throw new Error(`prod-mic fixture missing: ${MIC_FIXTURE}`);
 
 /**
  * Locally, build the engine wasm (so Rust edits are never served stale) and the app first. In
