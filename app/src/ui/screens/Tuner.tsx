@@ -19,11 +19,6 @@ import tunerStyles from './Tuner.module.css';
 const CHIPS: readonly StringNo[] = [6, 5, 4, 3, 2, 1];
 const TICKS = [-50, -25, 0, 25, 50] as const;
 const NO_PITCH: TunerDisplay = { reading: null, held: false, inTune: false };
-/**
- * "All six strings in tune" is announced this long after the sixth string's own "… in tune",
- * so the shared polite region does not replace one with the other before it is spoken.
- */
-const ALL_SIX_DELAY_MS = 1000;
 
 /** Needle position on the track, 0–100 %, clamped to −50…+50 cents. */
 const needlePercent = (cents: number) => Math.min(50, Math.max(-50, cents)) + 50;
@@ -110,7 +105,6 @@ function TunerPanel() {
 
   useEffect(() => {
     let inTune = false;
-    let allSixAt: number | null = null;
     const poll = () => {
       // A hidden tab throttles timers past the store's 500 ms gap, so every read would only
       // restart the machine: skip polling until the tab is visible again.
@@ -126,10 +120,7 @@ function TunerPanel() {
         before < CHIPS.length &&
         recordingSession.getSnapshot().tunedStrings.length >= CHIPS.length
       ) {
-        allSixAt = now + ALL_SIX_DELAY_MS;
-      }
-      if (allSixAt !== null && now >= allSixAt) {
-        allSixAt = null;
+        // After the string's own "… in tune": the polite region speaks them in order.
         announce(strings['tuner.allInTune']);
       }
       setDisplay((shown) => (sameDisplay(shown, next) ? shown : next));
@@ -137,11 +128,7 @@ function TunerPanel() {
     // Read at once: after a gap the store restarts the machine before anything is shown.
     poll();
     const id = setInterval(poll, TUNER_POLL_MS);
-    return () => {
-      clearInterval(id);
-      // Leaving before the delay ran out: still say it, once.
-      if (allSixAt !== null) announce(strings['tuner.allInTune']);
-    };
+    return () => clearInterval(id);
   }, []);
 
   const { reading, held, inTune } = display;

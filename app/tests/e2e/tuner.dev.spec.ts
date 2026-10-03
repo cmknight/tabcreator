@@ -120,14 +120,15 @@ test('open_strings on the Tuner ticks all six chips, In tune only after 500 ms i
     page.getByTestId('tuner-panel').getByText('All six strings in tune', { exact: true }),
   ).toBeVisible();
   // Announced politely through the shared region: each string as it enters In tune, then all six
-  // (after the sixth string's own announcement).
+  // (queued after the sixth string's own announcement, in the same poll).
   const politeLog = () => page.evaluate(() => window.__politeLog ?? []);
   await expect.poll(politeLog).toContain('All six strings in tune');
   const said = await politeLog();
-  for (const name of CHIP_NAMES) expect(said).toContain(`${name} string in tune`);
-  expect(said.indexOf('All six strings in tune')).toBeGreaterThan(
-    said.indexOf('High E string in tune'),
-  );
+  const allSix = said.indexOf('All six strings in tune');
+  for (const name of CHIP_NAMES) {
+    expect(said).toContain(`${name} string in tune`);
+    expect(said.indexOf(`${name} string in tune`)).toBeLessThan(allSix);
+  }
   // Then the input goes silent: after 3 s the no-pitch state, ticks kept.
   await expect(page.getByText('Play a single open string')).toBeVisible({ timeout: 10_000 });
   await expect(needle(page)).toHaveAccessibleName(
@@ -243,5 +244,26 @@ test('ticks are kept when leaving the Tuner and coming back', async ({ page }) =
   // A subset: another string may tick between capturing the set and leaving.
   const back = await ticked.evaluateAll((items) => items.map((li) => li.ariaLabel));
   expect(back).toEqual(expect.arrayContaining(names));
+  expect(errors).toEqual([]);
+});
+
+test('leaving right after the sixth tick still announces All six strings in tune', async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  await page.goto('./?fakeMic=open_strings#/tuner');
+  await expect(setupCard(page)).toBeVisible();
+  await watchReadout(page);
+  await page.getByRole('button', { name: 'Allow microphone' }).click();
+  await expect(page.locator('li[data-ticked]')).toHaveCount(6, { timeout: 15_000 });
+  // At once: the sixth string's own announcement is still being held in the polite region.
+  await page.getByRole('navigation').getByRole('link', { name: 'Library' }).click();
+  await expect(h1(page)).toHaveText('Library');
+  const politeLog = () => page.evaluate(() => window.__politeLog ?? []);
+  await expect.poll(politeLog).toContain('All six strings in tune');
+  const said = await politeLog();
+  expect(said.indexOf('All six strings in tune')).toBeGreaterThan(
+    said.indexOf('High E string in tune'),
+  );
   expect(errors).toEqual([]);
 });
