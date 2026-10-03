@@ -3,7 +3,7 @@ title: 'Queue announcements'
 type: 'bugfix'
 ticket: '3'
 created: '2026-10-02'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
