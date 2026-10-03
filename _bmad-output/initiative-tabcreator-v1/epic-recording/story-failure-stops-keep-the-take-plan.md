@@ -3,7 +3,7 @@ title: 'Failure stops keep the take'
 type: 'feature'
 ticket: '9'
 created: '2026-10-02'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
