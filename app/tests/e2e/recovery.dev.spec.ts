@@ -1,13 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
-import { expectNoSeriousAxe } from './mic-helpers';
+import { MIME, decodedSeconds } from './helpers';
+import { expectNoSeriousAxe, FIXTURE, goLive } from './mic-helpers';
 
 // Runs in the `dev` project only (story 3.11, US-3.2): a take whose page reloads mid-recording
 // is offered back on Record ("An unfinished take from <time> was recovered (m:ss)") once the
 // instance lock is held and the handover window has passed; Open rebuilds its audio from the raw
 // file in real time, Discard deletes it. The fake mic (US-0.4) plays c_major_scale_pos1.
 
-const FIXTURE = 'c_major_scale_pos1';
-const MIME = 'audio/webm;codecs=opus';
 /** The scan starts 3.5 s after the lock is granted (HANDOVER_WAIT_MS + 500). */
 const SCAN_WAIT_MS = 10_000;
 const BANNER_TEXT =
@@ -17,13 +16,6 @@ const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', 
 const timer = (page: Page) => page.getByRole('timer');
 const banners = (page: Page) => page.getByTestId('recovered-take-banner');
 const heading = (page: Page) => page.getByRole('heading', { name: 'Record', level: 1 });
-
-async function goLive(page: Page): Promise<void> {
-  await page.goto(`./?fakeMic=${FIXTURE}#/record`);
-  // The Allow click is also the user gesture `beforeunload` needs to ask.
-  await page.getByRole('button', { name: 'Allow microphone' }).click();
-  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
-}
 
 /** Records until the timer shows `shown`, then reloads, accepting the leave-page dialog. */
 async function reloadMidTake(page: Page, shown: string): Promise<string[]> {
@@ -85,21 +77,6 @@ function opfsFiles(page: Page): Promise<string[]> {
   });
 }
 
-/** The decoded duration (s) of the take's compressed webm; null when missing or undecodable. */
-function decodedSeconds(page: Page, id: string): Promise<number | null> {
-  return page.evaluate(async (takeId) => {
-    try {
-      const root = await navigator.storage.getDirectory();
-      const file = await (await root.getDirectoryHandle('audio')).getFileHandle(`${takeId}.webm`);
-      const ctx = new OfflineAudioContext(1, 1, 48_000);
-      const buffer = await ctx.decodeAudioData(await (await file.getFile()).arrayBuffer());
-      return buffer.duration;
-    } catch {
-      return null;
-    }
-  }, id);
-}
-
 /** The banner's sentence and its length in seconds. */
 async function bannerSeconds(page: Page): Promise<{ text: string; seconds: number }> {
   const text = (await banners(page).first().locator('p').textContent()) ?? '';
@@ -112,6 +89,7 @@ test('reload mid-take: the leave dialog, then the banner; Open rebuilds the take
   page,
 }) => {
   test.setTimeout(90_000);
+  // The Allow click is also the user gesture `beforeunload` needs to ask.
   await goLive(page);
   const dialogs = await reloadMidTake(page, '0:10');
   expect(dialogs).toEqual(['beforeunload']);

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
-import { countGetUserMedia, expectNoSeriousAxe, gumCalls } from './mic-helpers';
+import { collectErrors } from './helpers';
+import { countGetUserMedia, expectNoSeriousAxe, goLive, gumCalls, meter } from './mic-helpers';
 
 // Runs in the `dev` project only: each `?fakeMic` fixture is one fake input device (story 2.2),
 // id `fake-mic-<fixture>`, label "Fake mic: <fixture>". open_strings moves the meter; silence_60s
@@ -11,16 +12,6 @@ const OPEN_LABEL = 'Fake mic: open_strings';
 const SILENCE_LABEL = 'Fake mic: silence_60s';
 const LOST_TITLE = 'Microphone access was lost';
 
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
-  });
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
-
-const meter = (page: Page) => page.getByRole('meter', { name: 'Input level' });
 const select = (page: Page) => page.getByRole('combobox', { name: 'Microphone' });
 const toast = (page: Page) => page.getByTestId('toast');
 const lostCard = (page: Page) => page.getByRole('region', { name: LOST_TITLE });
@@ -70,15 +61,13 @@ async function recordGum(page: Page): Promise<void> {
 const gumLog = (page: Page) =>
   page.evaluate(() => (window as unknown as { __gum: GumCall[] }).__gum);
 
-/** Opens Record with `fixtures` as the devices and goes live with Allow. */
-async function goLive(page: Page, fixtures: string): Promise<string[]> {
-  const errors = collectErrors(page);
+/**
+ * Opens Record with `fixtures` as the devices and goes live with Allow, counting and logging
+ * every `getUserMedia` call.
+ */
+async function goLiveLogged(page: Page, fixtures: string): Promise<string[]> {
   await countGetUserMedia(page);
-  await page.goto(`./?fakeMic=${fixtures}#/record`);
-  await recordGum(page);
-  await page.getByRole('button', { name: 'Allow microphone' }).click();
-  await expect(meter(page)).toBeVisible();
-  return errors;
+  return goLive(page, fixtures, { before: () => recordGum(page) });
 }
 
 /** The meter's reading moves away from −60 (open_strings is playing). */
@@ -89,7 +78,7 @@ async function expectMeterMoving(page: Page) {
 }
 
 test('one device: no select', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings');
+  const errors = await goLiveLogged(page, 'open_strings');
   await page.waitForTimeout(300);
   await expect(select(page)).toHaveCount(0);
   expect(errors).toEqual([]);
@@ -98,7 +87,7 @@ test('one device: no select', async ({ page }) => {
 test('two devices: the select lists both labels with the live one selected; passes axe', async ({
   page,
 }) => {
-  const errors = await goLive(page, 'open_strings,silence_60s');
+  const errors = await goLiveLogged(page, 'open_strings,silence_60s');
   await expect(select(page)).toBeVisible();
   await expect(select(page).locator('option')).toHaveText([OPEN_LABEL, SILENCE_LABEL]);
   await expect(select(page)).toHaveValue(OPEN);
@@ -116,7 +105,7 @@ test('two devices: the select lists both labels with the live one selected; pass
 test('switch: old tracks stop before one exact request, and the meter follows', async ({
   page,
 }) => {
-  const errors = await goLive(page, 'open_strings,silence_60s');
+  const errors = await goLiveLogged(page, 'open_strings,silence_60s');
   await expectMeterMoving(page);
   expect(await gumCalls(page)).toBe(1);
 
@@ -150,7 +139,7 @@ test('remember: after a reload with the permission granted the chosen device is 
   context,
 }) => {
   await context.grantPermissions(['microphone']);
-  const errors = await goLive(page, 'open_strings,silence_60s');
+  const errors = await goLiveLogged(page, 'open_strings,silence_60s');
   await select(page).selectOption(SILENCE);
   // Saved once the new device is open.
   await expect.poll(async () => (await storedPrefs(page)).micDeviceId).toBe(SILENCE);
@@ -188,7 +177,7 @@ test('saved device gone: the default opens and micDeviceId is cleared', async ({
 test('unplug of the active device with another left: switches with a toast, no lost card', async ({
   page,
 }) => {
-  const errors = await goLive(page, 'open_strings,silence_60s');
+  const errors = await goLiveLogged(page, 'open_strings,silence_60s');
   await expect(select(page)).toHaveValue(OPEN);
   await page.evaluate((id) => window.__fakeMic!.unplug(id), OPEN);
 
@@ -211,7 +200,7 @@ test('unplug of the active device with another left: switches with a toast, no l
 });
 
 test('unplug of the only device: the lost card, no toast', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings');
+  const errors = await goLiveLogged(page, 'open_strings');
   await page.evaluate((id) => window.__fakeMic!.unplug(id), OPEN);
   await expect(lostCard(page)).toBeVisible();
   // The card is the end state; a late fallback would still show here as a second request.
@@ -223,7 +212,7 @@ test('unplug of the only device: the lost card, no toast', async ({ page }) => {
 });
 
 test('revoke with devices still listed: the lost card, no toast', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings,silence_60s');
+  const errors = await goLiveLogged(page, 'open_strings,silence_60s');
   await page.evaluate(() => window.__fakeMic!.revoke());
   await expect(lostCard(page)).toBeVisible();
   await page.waitForTimeout(300);
@@ -233,7 +222,7 @@ test('revoke with devices still listed: the lost card, no toast', async ({ page 
 });
 
 test('a device list change while live refreshes the select', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings,silence_60s');
+  const errors = await goLiveLogged(page, 'open_strings,silence_60s');
   await expect(select(page).locator('option')).toHaveText([OPEN_LABEL, SILENCE_LABEL]);
   await page.evaluate(
     (id) => window.__fakeMic!.configure(id, { label: 'USB Audio CODEC' }),

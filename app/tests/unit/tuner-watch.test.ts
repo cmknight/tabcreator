@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { OPEN_STRING_HZ } from '../../src/audio/tuner';
+import { ANALYSER_FFT_SIZE } from '../../src/audio/mic';
 import type { StringNo } from '../../src/model/types';
 import { READ_GAP_MS } from '../../src/session/input-derivation';
 import { createTunerWatch } from '../../src/session/tuner-watch';
 
 const RATE = 48_000;
 const LIVE = { live: true, input: null, devices: [] };
-let frame = new Float32Array(4096);
+let frame = new Float32Array(ANALYSER_FFT_SIZE);
 const input = {
   analyser: { context: { sampleRate: RATE } } as unknown as AnalyserNode,
   readFrame: vi.fn(() => frame),
@@ -14,9 +15,11 @@ const input = {
 
 function tone(s: StringNo, cents = 0) {
   const hz = OPEN_STRING_HZ[s] * 2 ** (cents / 1200);
-  frame = new Float32Array(4096).map((_, i) => 0.25 * Math.sin((2 * Math.PI * hz * i) / RATE));
+  frame = new Float32Array(ANALYSER_FFT_SIZE).map(
+    (_, i) => 0.25 * Math.sin((2 * Math.PI * hz * i) / RATE),
+  );
 }
-const silence = () => (frame = new Float32Array(4096));
+const silence = () => (frame = new Float32Array(ANALYSER_FFT_SIZE));
 
 function setup() {
   const patch = vi.fn();

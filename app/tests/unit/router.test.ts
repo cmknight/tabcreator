@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
-import { parseRoute, routeToHash, useRoute } from './router';
+import { parseRoute, routeToHash, useRoute } from '../../src/ui/router';
 
 describe('parseRoute', () => {
   it.each([

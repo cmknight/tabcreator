@@ -1,16 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
+import { collectErrors } from './helpers';
 
 // Runs in the `dev` project only: #/__test/storage exists only in dev builds (stories US-0.3).
-
-/** Collects console errors and warnings plus uncaught page errors. */
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
-  });
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
 
 async function runCheck(page: Page, button: string, name: string): Promise<unknown> {
   await page.getByRole('button', { name: button }).click();

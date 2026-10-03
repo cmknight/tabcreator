@@ -1,7 +1,9 @@
 import { useSyncExternalStore } from 'react';
 import { reloadApp } from '../../session/app-reload';
 import { settingsSession, type EngineStatus } from '../../session/settings-session';
+import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
+import { ErrorIcon } from '../components/icons';
 import { strings } from '../strings';
 import styles from './Screen.module.css';
 import settingsStyles from './Settings.module.css';
@@ -22,12 +24,9 @@ export function Settings() {
   return (
     <section className={styles.screen}>
       {engine.state === 'unavailable' && (
-        <div className={settingsStyles.bannerError}>
-          <svg className={settingsStyles.bannerIcon} viewBox="0 0 24 24" aria-hidden="true">
-            <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" />
-            <path d="M12 7v6M12 16.5v.5" stroke="currentColor" strokeWidth="2" />
-          </svg>
-          <p className={settingsStyles.bannerText}>{strings['global.engineFailed']}</p>
+        <div className={`${banner.banner} ${banner.error} ${settingsStyles.bannerError}`}>
+          <ErrorIcon className={banner.icon} />
+          <p className={banner.text}>{strings['global.engineFailed']}</p>
           <button type="button" className={buttons.secondary} onClick={reloadApp}>
             {strings['global.reload']}
           </button>

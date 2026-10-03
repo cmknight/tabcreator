@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Capture } from '../../src/audio/mic';
+import { ANALYSER_FFT_SIZE, type Capture } from '../../src/audio/mic';
 import { AppError } from '../../src/model/errors';
 import type { Take } from '../../src/model/types';
 import type { OpenedInput } from '../../src/session/input-derivation';
@@ -67,7 +67,7 @@ function setup(overrides: Partial<RecordingDeps> = {}, captureError?: AppError) 
   const cancelClicks = vi.fn(() => log.push('clicks.cancel'));
   const input: OpenedInput = {
     analyser: { context: { sampleRate: RATE } } as unknown as AnalyserNode,
-    readFrame: () => new Float32Array(4096),
+    readFrame: () => new Float32Array(ANALYSER_FFT_SIZE),
     clock: () => audioTime,
     clicks: vi.fn((beats: readonly number[]) => {
       log.push(`clicks ${beats.length}`);

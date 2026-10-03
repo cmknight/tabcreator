@@ -98,7 +98,7 @@ function MicSetupCard({
   errorCode: MicErrorCode | null;
 }) {
   if (errorCode) {
-    const key = `record.micError.${errorCode}` as const;
+    const key = `global.micError.${errorCode}` as const;
     return (
       <section
         className={`${styles.setup} ${styles.error}`}
@@ -124,7 +124,7 @@ function MicSetupCard({
               if (!requesting) void recordingSession.allowMic();
             }}
           >
-            {strings['record.tryAgain']}
+            {strings['global.tryAgain']}
           </button>
         </div>
       </section>
@@ -134,9 +134,9 @@ function MicSetupCard({
     <section className={styles.setup} aria-labelledby={MIC_CARD_TITLE_ID}>
       <MicIcon off={false} />
       <h2 id={MIC_CARD_TITLE_ID} className={styles.setupTitle} tabIndex={-1} data-focus-target="">
-        {strings['record.micSetupTitle']}
+        {strings['global.micSetupTitle']}
       </h2>
-      <p className={styles.setupText}>{strings['record.micSetupText']}</p>
+      <p className={styles.setupText}>{strings['global.micSetupText']}</p>
       <button
         type="button"
         className={buttons.primary}
@@ -145,7 +145,7 @@ function MicSetupCard({
           if (!requesting) void recordingSession.allowMic();
         }}
       >
-        {strings['record.allowMic']}
+        {strings['global.allowMic']}
       </button>
     </section>
   );

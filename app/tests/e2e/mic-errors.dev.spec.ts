@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
-import { countGetUserMedia, expectNoSeriousAxe, gumCalls } from './mic-helpers';
+import { collectErrors } from './helpers';
+import { countGetUserMedia, expectNoSeriousAxe, gumCalls, meter } from './mic-helpers';
 
 // Runs in the `dev` project only: errors are injected through the fake mic's hooks (story 2.2).
 
@@ -55,15 +56,6 @@ const CARDS = {
 } as const;
 type Code = keyof typeof CARDS;
 
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
-  });
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
-
 /** Records every non-empty text the assertive live region takes, from page start. */
 async function recordAssertive(page: Page): Promise<void> {
   await page.addInitScript(() => {
@@ -84,7 +76,6 @@ async function recordAssertive(page: Page): Promise<void> {
 const assertiveLog = (page: Page) =>
   page.evaluate(() => (window as unknown as { __assertive: string[] }).__assertive);
 
-const meter = (page: Page) => page.getByRole('meter', { name: 'Input level' });
 const card = (page: Page, code: Code) => page.getByRole('region', { name: CARDS[code].title });
 const tryAgain = (page: Page) => page.getByRole('button', { name: 'Try again' });
 

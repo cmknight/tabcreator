@@ -1,0 +1,44 @@
+/* Shared banners (DESIGN.md banner-warning, banner-error): a fill, a 4 px coloured edge, the
+   icon, one sentence, then the banner's own actions. Combine .banner with .warning or .error;
+   each banner's own module adds its margins, wrap and actions. */
+.banner {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+  color: var(--color-text);
+  border-inline-start: 4px solid;
+}
+
+/* banner-warning: check-bg fill, warning edge, an 18 px warning icon. */
+.warning {
+  background: var(--color-check-bg);
+  border-inline-start-color: var(--color-warning);
+}
+
+/* banner-error: surface fill, danger edge, a 20 px error icon. */
+.error {
+  background: var(--color-surface);
+  border-inline-start-color: var(--color-danger);
+}
+
+.icon {
+  flex: none;
+}
+
+.warning .icon {
+  width: 18px;
+  height: 18px;
+  color: var(--color-warning);
+}
+
+.error .icon {
+  width: 20px;
+  height: 20px;
+  color: var(--color-danger);
+}
+
+.text {
+  flex: 1;
+  margin: 0;
+}

@@ -1,16 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
+import { collectErrors } from './helpers';
 import { expectNoSeriousAxe } from './mic-helpers';
 
 // Runs in the `dev` project only: #/__test/ui exists only in dev builds (story 2.3).
-
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
-  });
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
 
 const polite = (page: Page) => page.locator('[aria-live="polite"]');
 const assertive = (page: Page) => page.locator('[aria-live="assertive"]');

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { installFakeMic, RESUME_TIMEOUT_MS } from '../../src/audio/fake-mic';
+import { installFakeMic, RESUME_TIMEOUT_MS } from '../../src/dev/fake-mic';
 
 // jsdom has no Web Audio or media devices: these stubs stand in for them so the start-up path
 // (no user gesture, then a retry) can be driven with fake timers.

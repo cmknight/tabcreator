@@ -1,21 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
-import { countGetUserMedia, expectNoSeriousAxe, gumCalls } from './mic-helpers';
+import { collectErrors } from './helpers';
+import { countGetUserMedia, expectNoSeriousAxe, gumCalls, meter } from './mic-helpers';
 
 // Runs in the `dev` project only: the fake mic (US-0.4) plays open_strings as the microphone.
 
 const SETUP_TITLE = 'TabCreator needs your microphone';
 
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
-  });
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
-
 const setupCard = (page: Page) => page.getByRole('region', { name: SETUP_TITLE });
-const meter = (page: Page) => page.getByRole('meter', { name: 'Input level' });
 
 async function readMeter(page: Page): Promise<number> {
   return Number(await meter(page).getAttribute('aria-valuenow'));

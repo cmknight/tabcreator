@@ -48,6 +48,8 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
-    include: ['src/**/*.test.{ts,tsx}', 'tests/unit/**/*.test.{ts,tsx}'],
+    // Unit tests live in tests/unit/ only. src/lint-rules.test.ts is the one exception, by
+    // design: it tests eslint.config.js's layer rules against fixture paths inside src/.
+    include: ['tests/unit/**/*.test.{ts,tsx}', 'src/lint-rules.test.ts'],
   },
 });

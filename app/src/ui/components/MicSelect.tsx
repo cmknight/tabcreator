@@ -1,5 +1,7 @@
 import { useId, useSyncExternalStore } from 'react';
 import { recordingSession } from '../../session/recording-session';
+import hidden from '../a11y/visually-hidden.module.css';
+import { inputDisplayName } from '../format';
 import { strings } from '../strings';
 import styles from './MicSelect.module.css';
 
@@ -39,12 +41,12 @@ export function MicSelect() {
         {!listed && <option value="" disabled />}
         {devices.map((device, i) => (
           <option key={device.deviceId} value={device.deviceId}>
-            {device.label || strings['global.microphoneUnnamed'](i + 1)}
+            {inputDisplayName(device.label, i + 1)}
           </option>
         ))}
       </select>
       {busy && (
-        <span id={reasonId} className={styles.visuallyHidden}>
+        <span id={reasonId} className={hidden.visuallyHidden}>
           {strings['global.microphoneBusy']}
         </span>
       )}

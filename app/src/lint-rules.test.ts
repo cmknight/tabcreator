@@ -112,7 +112,61 @@ describe('ESLint layering (spine AD-1)', () => {
     ).toEqual([]);
   });
 
-  // Spine AD-1, written out by hand so a wrong rule in eslint.config.js fails here.
+  it('allows src/App.tsx loading dev/ pages from a DEV-guarded map', async () => {
+    const code =
+      "export const P = import.meta.env.DEV ? new Map([['#/x', lazy(() => import('./dev/X'))]]) : null;\n";
+    expect(await lintRules('src/App.tsx', code)).toEqual([]);
+  });
+
+  it('rejects src/main.tsx importing dev/ statically or without the DEV guard', async () => {
+    expect(
+      await restrictedImports('src/main.tsx', "export { installFakeMic } from './dev/fake-mic';\n"),
+    ).toBe(1);
+    expect(
+      await lintRules('src/main.tsx', "export const m = import('./dev/fake-mic');\n"),
+    ).toContain('no-restricted-syntax');
+    expect(
+      await lintRules(
+        'src/main.tsx',
+        "if (import.meta.env.PROD) {\n  await import('./dev/fake-mic');\n}\n",
+      ),
+    ).toContain('no-restricted-syntax');
+  });
+
+  it('rejects src/main.tsx loading dev/ in the else branch of the DEV guard', async () => {
+    expect(
+      await lintRules(
+        'src/main.tsx',
+        "if (import.meta.env.DEV) {\n  void 0;\n} else {\n  await import('./dev/fake-mic');\n}\n",
+      ),
+    ).toContain('no-restricted-syntax');
+  });
+
+  it('allows src/main.tsx loading dev/ inside if (import.meta.env.DEV)', async () => {
+    expect(
+      await lintRules(
+        'src/main.tsx',
+        "if (import.meta.env.DEV) {\n  const { installFakeMic } = await import('./dev/fake-mic');\n  installFakeMic([]);\n}\n",
+      ),
+    ).toEqual([]);
+  });
+
+  it.each(['../App', '../App.tsx', '../main', '../main.tsx'])(
+    'rejects dev/ importing the entry point %s',
+    async (specifier) => {
+      expect(await restrictedImports('src/dev/x.ts', `export { x } from '${specifier}';\n`)).toBe(
+        1,
+      );
+    },
+  );
+
+  it('allows dev/ importing a non-entry module named App or main', async () => {
+    const code = "export { x } from '../ui/App';\nexport { y } from './main';\n";
+    expect(await restrictedImports('src/dev/x.ts', code)).toBe(0);
+  });
+
+  // Spine AD-1, written out by hand so a wrong rule in eslint.config.js fails here. dev/ is the
+  // dev-only harness: it may import any layer, and no layer may import it.
   const allowed: Record<string, readonly string[]> = {
     ui: ['session', 'model'],
     session: ['model', 'storage', 'engine', 'audio'],
@@ -120,8 +174,9 @@ describe('ESLint layering (spine AD-1)', () => {
     audio: ['model'],
     engine: ['model'],
     model: [],
+    dev: ['ui', 'session', 'model', 'storage', 'audio', 'engine'],
   };
-  const allDirs = ['ui', 'session', 'model', 'storage', 'audio', 'engine'] as const;
+  const allDirs = ['ui', 'session', 'model', 'storage', 'audio', 'engine', 'dev'] as const;
   for (const layer of allDirs) {
     for (const target of allDirs) {
       if (target === layer) continue;

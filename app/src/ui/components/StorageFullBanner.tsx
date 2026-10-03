@@ -2,6 +2,8 @@ import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { recordingSession } from '../../session/recording-session';
 import { announce } from '../a11y/announcer';
 import { strings } from '../strings';
+import banner from './banner.module.css';
+import { ErrorIcon } from './icons';
 import styles from './StorageFullBanner.module.css';
 
 /**
@@ -26,12 +28,12 @@ export function StorageFullBanner() {
 
   if (!storageFull) return null;
   return (
-    <div className={styles.banner} data-testid="storage-full-banner">
-      <svg className={styles.icon} viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" />
-        <path d="M12 7v6M12 16.5v.5" stroke="currentColor" strokeWidth="2" />
-      </svg>
-      <p className={styles.text}>{strings['record.storageFull']}</p>
+    <div
+      className={`${banner.banner} ${banner.error} ${styles.banner}`}
+      data-testid="storage-full-banner"
+    >
+      <ErrorIcon className={banner.icon} />
+      <p className={banner.text}>{strings['record.storageFull']}</p>
       <a className={styles.link} href="#/library">
         {strings['record.storageFullLibrary']}
       </a>

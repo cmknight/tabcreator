@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ANALYSER_FFT_SIZE } from '../../src/audio/mic';
 import { READ_GAP_MS } from '../../src/session/input-derivation';
 import { createLevelWatch } from '../../src/session/level-watch';
 
@@ -7,7 +8,7 @@ const LIVE = { live: true, input: null, devices: [] };
 
 /** A fake input whose every frame is a constant `amplitude` (peak = RMS = 20·log10 amplitude). */
 function inputAt(amplitude: number) {
-  return { readFrame: vi.fn(() => new Float32Array(4096).fill(amplitude)) };
+  return { readFrame: vi.fn(() => new Float32Array(ANALYSER_FFT_SIZE).fill(amplitude)) };
 }
 
 /** A watch whose `patch` keeps the published field and counts real changes, as the store does. */

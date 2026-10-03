@@ -94,7 +94,7 @@ jobs:
 
       - name: No fake mic in the production bundle
         run: |
-          if grep -rE 'fakeMic|testdata' app/dist; then
+          if grep -rE 'fakeMic|FakeMic|fake-mic-|Fake mic:|testdata' app/dist; then
             echo "::error::fake mic code or test fixtures found in app/dist"
             exit 1
           fi
@@ -106,8 +106,13 @@ jobs:
 
       - name: No dev-only test pages in the production bundle
         run: |
-          if grep -rE '__test|StorageTestPage|maxTakeMs|warnLeadMs|__storageFullHook' app/dist; then
+          if grep -rE '__test|StorageTestPage|UiTestPage|maxTakeMs|warnLeadMs|__storageFullHook' app/dist; then
             echo "::error::dev-only test page code, the dev take-length override or the storage-full hook found in app/dist"
+            exit 1
+          fi
+          if [ -n "$(find app/dist -name '*fake-mic*' -o -name '*TestPage*')" ]; then
+            find app/dist -name '*fake-mic*' -o -name '*TestPage*'
+            echo "::error::fake mic or dev test page chunks found in app/dist"
             exit 1
           fi
 

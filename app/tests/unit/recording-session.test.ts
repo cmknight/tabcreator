@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../src/model/errors';
+import { ANALYSER_FFT_SIZE } from '../../src/audio/mic';
 import { OPEN_STRING_HZ } from '../../src/audio/tuner';
 import type { StringNo } from '../../src/model/types';
 import type { OpenedInput } from '../../src/session/input-derivation';
@@ -10,7 +11,7 @@ const RATE = 48_000;
 /** The tuner reads only the analyser's context sample rate. */
 const analyser = { context: { sampleRate: RATE } } as unknown as AnalyserNode;
 /** The frame the fake input returns; tests fill it per reading. */
-let frame = new Float32Array(4096);
+let frame = new Float32Array(ANALYSER_FFT_SIZE);
 const SILENT = { peakDb: -Infinity, rmsDb: -Infinity };
 /**
  * The device and input quality fields of a snapshot when no device is listed and the input is
@@ -66,13 +67,15 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** A constant frame at `amplitude`: peak and RMS both `20·log10(amplitude)`. */
 function level(amplitude: number) {
-  frame = new Float32Array(4096).fill(amplitude);
+  frame = new Float32Array(ANALYSER_FFT_SIZE).fill(amplitude);
 }
 
 /** A sine frame at `cents` from open string `s` (−12 dBFS peak). */
 function tone(s: StringNo, cents = 0) {
   const hz = OPEN_STRING_HZ[s] * 2 ** (cents / 1200);
-  frame = new Float32Array(4096).map((_, i) => 0.25 * Math.sin((2 * Math.PI * hz * i) / RATE));
+  frame = new Float32Array(ANALYSER_FFT_SIZE).map(
+    (_, i) => 0.25 * Math.sin((2 * Math.PI * hz * i) / RATE),
+  );
 }
 
 /** Reads the tuner every 50 ms from `from` up to and including `to`; returns the last reading. */
@@ -92,7 +95,7 @@ function readEvery(session: { readLevels(now: number): unknown }, from: number, 
 }
 
 function setup(overrides: Partial<RecordingDeps> = {}) {
-  frame = new Float32Array(4096);
+  frame = new Float32Array(ANALYSER_FFT_SIZE);
   const input = {
     analyser,
     readFrame: vi.fn(() => frame),
@@ -357,11 +360,11 @@ describe('recording session', () => {
       const { session } = setup();
       await session.allowMic();
       expect(session.readLevels(0)).toEqual(SILENT);
-      frame = new Float32Array(4096);
+      frame = new Float32Array(ANALYSER_FFT_SIZE);
       frame[0] = 0.5;
       const { peakDb, rmsDb } = session.readLevels(10);
       expect(peakDb).toBeCloseTo(20 * Math.log10(0.5), 6);
-      expect(rmsDb).toBeCloseTo(20 * Math.log10(Math.sqrt(0.25 / 4096)), 6);
+      expect(rmsDb).toBeCloseTo(20 * Math.log10(Math.sqrt(0.25 / ANALYSER_FFT_SIZE)), 6);
     });
 
     it('sets Too loud at once, notifying once, and clears it 2 s after the last loud peak', async () => {
@@ -392,7 +395,7 @@ describe('recording session', () => {
       expect(session.getSnapshot().levelWarning).toBeNull();
       session.readLevels(3000);
       expect(session.getSnapshot().levelWarning).toBe('quiet');
-      frame = new Float32Array(4096);
+      frame = new Float32Array(ANALYSER_FFT_SIZE);
       frame[0] = 1; // a loud peak with a quiet RMS
       session.readLevels(3100);
       expect(session.getSnapshot().levelWarning).toBe('loud');

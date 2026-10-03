@@ -1,18 +1,9 @@
 import { expect, test, type Page } from '@playwright/test';
+import { collectErrors } from './helpers';
 
 // Runs in the `dev` project only: the fake mic (stories US-0.4) is installed by dev builds only.
 // The storage test page is just a dev route to land on; the capture runs in page.evaluate, so no
 // app code outside audio/ calls getUserMedia.
-
-/** Collects console errors and warnings plus uncaught page errors. */
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
-  });
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
 
 async function open(page: Page, search: string): Promise<string[]> {
   const errors = collectErrors(page);

@@ -3,26 +3,13 @@ import { recordingSession, type RecoveredTake } from '../../session/recording-se
 import { announce } from '../a11y/announcer';
 import { formatClockTime, formatElapsed } from '../format';
 import { strings } from '../strings';
+import banner from './banner.module.css';
 import buttons from './buttons.module.css';
+import { WarnIcon } from './icons';
 import styles from './RecoveredTakeBanner.module.css';
 
 /** Takes whose banner text was announced on this page, so each is announced once. */
 const announced = new Set<string>();
-
-function WarnIcon() {
-  return (
-    <svg className={styles.icon} viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M12 3 2 20h20z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <path d="M12 10v4.5M12 17.2v.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 const sentence = (take: RecoveredTake) =>
   strings['record.recovered'](
@@ -47,9 +34,13 @@ export function RecoveredTakeBanner({ take }: { take: RecoveredTake }) {
   }, [take.id, text]);
 
   return (
-    <div className={styles.banner} data-testid="recovered-take-banner" data-recovered-id={take.id}>
-      <WarnIcon />
-      <p className={styles.text} id={textId}>
+    <div
+      className={`${banner.banner} ${banner.warning} ${styles.banner}`}
+      data-testid="recovered-take-banner"
+      data-recovered-id={take.id}
+    >
+      <WarnIcon className={banner.icon} />
+      <p className={`${banner.text} ${styles.text}`} id={textId}>
         {take.opening ? strings['record.recovering'] : text}
       </p>
       <div className={styles.actions}>

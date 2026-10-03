@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { expectNoSeriousAxe } from './mic-helpers';
+import { expectNoSeriousAxe, goLive, meter } from './mic-helpers';
 
 // Runs in the `dev` project only: the fake mic (US-0.4) plays a fixture as the microphone.
 // Fixtures: level_too_hot clips from 300 ms (5.55 s long), silence_60s, open_strings (6.7 s,
@@ -45,8 +45,6 @@ async function probe(page: Page): Promise<void> {
 
 const read = (page: Page) => page.evaluate(() => (window as unknown as { __probe: Probe }).__probe);
 
-const meter = (page: Page) => page.getByRole('meter', { name: 'Input level' });
-
 /** The fill's visible width and the peak tick's position (%), and whether the tick shows. */
 const bar = (page: Page) =>
   page.evaluate(() => {
@@ -62,22 +60,10 @@ const bar = (page: Page) =>
   });
 const warningLine = (page: Page) => page.getByTestId('input-level-warning');
 
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
-  });
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
-
-async function goLive(page: Page, fixture: string): Promise<string[]> {
-  const errors = collectErrors(page);
+/** Record live on `fixture`, probed from page start. */
+async function goLiveProbed(page: Page, fixture: string): Promise<string[]> {
   await probe(page);
-  await page.goto(`./?fakeMic=${fixture}#/record`);
-  await page.getByRole('button', { name: 'Allow microphone' }).click();
-  await expect(meter(page)).toBeVisible();
-  return errors;
+  return goLive(page, fixture);
 }
 
 /** The first time the warning line read `text`, relative to the meter appearing (ms). */
@@ -90,7 +76,7 @@ async function warningAfterMeter(page: Page, text: string): Promise<number | nul
 test('level_too_hot shows Too loud within 200 ms of the first clipped frame, announced once', async ({
   page,
 }) => {
-  const errors = await goLive(page, 'level_too_hot');
+  const errors = await goLiveProbed(page, 'level_too_hot');
   await expect(warningLine(page)).toHaveText(TOO_LOUD);
   // The fixture starts no later than the meter appears and clips from 300 ms in.
   const after = await warningAfterMeter(page, TOO_LOUD);
@@ -111,7 +97,7 @@ test('level_too_hot shows Too loud within 200 ms of the first clipped frame, ann
 });
 
 test('silence_60s shows Too quiet after 3 s, not before 2.9 s', async ({ page }) => {
-  const errors = await goLive(page, 'silence_60s');
+  const errors = await goLiveProbed(page, 'silence_60s');
   await expect(meter(page)).toHaveAttribute('aria-valuenow', '-60');
   await expect(meter(page)).toHaveAttribute('aria-valuetext', '−60 dBFS');
   await expect(warningLine(page)).toHaveText(TOO_QUIET, { timeout: 5000 });
@@ -133,7 +119,7 @@ test('silence_60s shows Too quiet after 3 s, not before 2.9 s', async ({ page })
 });
 
 test('open_strings shows no warning and the fill updates at ≥ 30 fps', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings');
+  const errors = await goLiveProbed(page, 'open_strings');
   const fill = page.getByTestId('input-level-fill');
 
   // Count changes of the fill's style over 1 s.
@@ -175,7 +161,7 @@ test('open_strings shows no warning and the fill updates at ≥ 30 fps', async (
 });
 
 test('after a stretch away from Record, the warning starts afresh', async ({ page }) => {
-  const errors = await goLive(page, 'silence_60s');
+  const errors = await goLiveProbed(page, 'silence_60s');
   await expect(warningLine(page)).toHaveText(TOO_QUIET, { timeout: 5000 });
   const nav = page.getByRole('navigation');
   await nav.getByRole('link', { name: 'Library' }).click();
@@ -195,7 +181,7 @@ test('after a stretch away from Record, the warning starts afresh', async ({ pag
 });
 
 test('the fill and peak tick have no transition under prefers-reduced-motion', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings');
+  const errors = await goLiveProbed(page, 'open_strings');
   const durations = () =>
     page.evaluate(() =>
       ['input-level-fill', 'input-level-peak'].map(

@@ -1,14 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
-
-/** Collects console errors and warnings plus uncaught page errors. */
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
-  });
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
+import { expect, test } from '@playwright/test';
+import { collectErrors } from './helpers';
 
 test('Settings shows the engine version', async ({ page }) => {
   const errors = collectErrors(page);

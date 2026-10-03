@@ -1,24 +1,6 @@
+/* The engine-failed banner: the shared error banner (components/banner.module.css). */
 .bannerError {
-  display: flex;
-  gap: var(--space-3);
-  align-items: center;
   margin-block-end: var(--space-6);
-  padding: var(--space-3) var(--space-4);
-  background: var(--color-surface);
-  color: var(--color-text);
-  border-left: 4px solid var(--color-danger);
-}
-
-.bannerIcon {
-  flex: none;
-  width: 20px;
-  height: 20px;
-  color: var(--color-danger);
-}
-
-.bannerText {
-  flex: 1;
-  margin: 0;
 }
 
 .panel {

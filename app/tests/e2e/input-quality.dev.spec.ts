@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
-import { expectNoSeriousAxe } from './mic-helpers';
+import { collectErrors } from './helpers';
+import { expectNoSeriousAxe, goLive, meter } from './mic-helpers';
 
 // Runs in the `dev` project only: each `?fakeMic` fixture is one fake input device (story 2.2),
 // id `fake-mic-<fixture>`, 48 kHz. `configure(id, { sampleRate, label })` applies to streams
@@ -11,16 +12,6 @@ const WARNING =
   'This microphone may be a Bluetooth headset in call mode — accuracy will be poor. Use the built-in or a wired mic.';
 const DISMISS_NAME = 'Dismiss Bluetooth warning for this session';
 
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
-  });
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
-
-const meter = (page: Page) => page.getByRole('meter', { name: 'Input level' });
 const banner = (page: Page) => page.getByTestId('input-quality-banner');
 const dismiss = (page: Page) => page.getByRole('button', { name: DISMISS_NAME });
 const select = (page: Page) => page.getByRole('combobox', { name: 'Microphone' });
@@ -35,24 +26,16 @@ async function configure(page: Page, devices: Record<string, Options>): Promise<
 }
 
 /** Opens Record with `fixtures`, configures the devices, then goes live with Allow. */
-async function goLive(
+function goLiveWith(
   page: Page,
   fixtures: string,
   devices: Record<string, Options> = {},
 ): Promise<string[]> {
-  const errors = collectErrors(page);
-  await page.goto(`./?fakeMic=${fixtures}#/record`);
-  // The app renders only once the fake mic is installed.
-  const allow = page.getByRole('button', { name: 'Allow microphone' });
-  await expect(allow).toBeVisible();
-  await configure(page, devices);
-  await allow.click();
-  await expect(meter(page)).toBeVisible();
-  return errors;
+  return goLive(page, fixtures, { before: () => configure(page, devices) });
 }
 
 test('normal input: no banner', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings');
+  const errors = await goLiveWith(page, 'open_strings');
   await page.waitForTimeout(300);
   await expect(banner(page)).toHaveCount(0);
   expect(errors).toEqual([]);
@@ -61,7 +44,7 @@ test('normal input: no banner', async ({ page }) => {
 test('low rate: the banner shows above the h1, is announced politely and passes axe', async ({
   page,
 }) => {
-  const errors = await goLive(page, 'open_strings', { [OPEN]: { sampleRate: 16000 } });
+  const errors = await goLiveWith(page, 'open_strings', { [OPEN]: { sampleRate: 16000 } });
   await expect(banner(page)).toBeVisible();
   await expect(banner(page)).toContainText(WARNING);
   await expect(dismiss(page)).toHaveText('Dismiss');
@@ -81,7 +64,7 @@ test('low rate: the banner shows above the h1, is announced politely and passes 
 
 test('dark mode: Record with the banner passes axe', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'dark' });
-  const errors = await goLive(page, 'open_strings', { [OPEN]: { sampleRate: 16000 } });
+  const errors = await goLiveWith(page, 'open_strings', { [OPEN]: { sampleRate: 16000 } });
   await expect(banner(page)).toBeVisible();
   // The dark tokens are in force, so axe's contrast check sees the dark colours.
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)).toBe(
@@ -92,7 +75,7 @@ test('dark mode: Record with the banner passes axe', async ({ page }) => {
 });
 
 test('returning to Record while the banner shows announces it again', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings', { [OPEN]: { sampleRate: 16000 } });
+  const errors = await goLiveWith(page, 'open_strings', { [OPEN]: { sampleRate: 16000 } });
   const polite = page.locator('[aria-live="polite"]');
   await expect(polite).toHaveText(WARNING);
   // Clear the region, so only a new announcement can fill it again.
@@ -109,13 +92,13 @@ test('returning to Record while the banner shows announces it again', async ({ p
 });
 
 test('headset label: the banner shows', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings', { [OPEN]: { label: 'AirPods Pro' } });
+  const errors = await goLiveWith(page, 'open_strings', { [OPEN]: { label: 'AirPods Pro' } });
   await expect(banner(page)).toBeVisible();
   expect(errors).toEqual([]);
 });
 
 test('switch away from a poor input: the banner goes', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings,silence_60s', {
+  const errors = await goLiveWith(page, 'open_strings,silence_60s', {
     [OPEN]: { label: 'AirPods Pro' },
   });
   await expect(banner(page)).toBeVisible();
@@ -126,7 +109,7 @@ test('switch away from a poor input: the banner goes', async ({ page }) => {
 });
 
 test('relabelled live to a headset: the banner shows after the devicechange', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings');
+  const errors = await goLiveWith(page, 'open_strings');
   await page.waitForTimeout(300);
   await expect(banner(page)).toHaveCount(0);
   await configure(page, { [OPEN]: { label: 'Headset' } });
@@ -137,7 +120,7 @@ test('relabelled live to a headset: the banner shows after the devicechange', as
 test('Dismiss hides it for the session, also after switching to another poor input', async ({
   page,
 }) => {
-  const errors = await goLive(page, 'open_strings,silence_60s', {
+  const errors = await goLiveWith(page, 'open_strings,silence_60s', {
     [OPEN]: { label: 'AirPods Pro' },
     [SILENCE]: { sampleRate: 16000 },
   });
@@ -164,7 +147,7 @@ test('reload after Dismiss: the banner shows again while the condition holds', a
   context,
 }) => {
   await context.grantPermissions(['microphone']);
-  const errors = await goLive(page, 'open_strings', { [OPEN]: { sampleRate: 16000 } });
+  const errors = await goLiveWith(page, 'open_strings', { [OPEN]: { sampleRate: 16000 } });
   await expect(banner(page)).toBeVisible();
   await dismiss(page).click();
   await expect(banner(page)).toHaveCount(0);
@@ -206,7 +189,7 @@ const politeLog = (page: Page) => page.evaluate(() => window.__politeLog ?? []);
 test('unplug onto a headset: the switch toast and the warning are both announced, in order', async ({
   page,
 }) => {
-  const errors = await goLive(page, 'open_strings,silence_60s', {
+  const errors = await goLiveWith(page, 'open_strings,silence_60s', {
     [SILENCE]: { label: 'AirPods Pro' },
   });
   await expect(banner(page)).toHaveCount(0);

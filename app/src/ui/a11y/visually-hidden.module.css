@@ -1,4 +1,5 @@
-/* Hidden on screen, still read by screen readers. */
+/* Hidden on screen, still read by screen readers. The one definition: the announcer's live
+   regions and the Microphone select's disabled reason both use it. */
 .visuallyHidden {
   position: absolute;
   width: 1px;

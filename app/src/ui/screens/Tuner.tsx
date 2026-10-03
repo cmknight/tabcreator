@@ -11,6 +11,7 @@ import { InputQualityBanner } from '../components/InputQualityBanner';
 import { LevelMeter } from '../components/LevelMeter';
 import { MicGate } from '../components/MicGate';
 import { MicSelect } from '../components/MicSelect';
+import { formatSigned } from '../format';
 import { strings } from '../strings';
 import styles from './Screen.module.css';
 import tunerStyles from './Tuner.module.css';
@@ -24,7 +25,7 @@ const NO_PITCH: TunerDisplay = { reading: null, held: false, inTune: false };
 const needlePercent = (cents: number) => Math.min(50, Math.max(-50, cents)) + 50;
 
 function tickLabel(cents: number): string {
-  return cents < 0 ? `−${-cents}` : cents > 0 ? `+${cents}` : '0';
+  return formatSigned(cents);
 }
 
 /**

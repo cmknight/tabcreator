@@ -18,7 +18,7 @@ export function MicErrorAnnouncer() {
       previous = next;
       if (!entered) return;
       const code = micErrorCode(next.errorCode) ?? 'mic-failed';
-      announce(strings[`record.micError.${code}.title`], 'assertive');
+      announce(strings[`global.micError.${code}.title`], 'assertive');
     });
   }, []);
   return null;

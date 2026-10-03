@@ -1,12 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
-import { expectNoSeriousAxe } from './mic-helpers';
+import { MIME, collectErrors } from './helpers';
+import { expectNoSeriousAxe, FIXTURE, goLive, meter } from './mic-helpers';
 
 // Runs in the `dev` project only: the fake mic (US-0.4) plays c_major_scale_pos1 (7.95 s at
 // 48 kHz) as the microphone. Story 3.4: Record then Stop saves a take and opens its Tab.
 // Story 3.6: the count-in (`silence_60s` where click energy is measured).
-
-const FIXTURE = 'c_major_scale_pos1';
-const MIME = 'audio/webm;codecs=opus';
 
 interface SavedTake {
   take: {
@@ -33,26 +31,9 @@ interface SavedTake {
   clicks: { raw: number[]; decoded: number[] } | null;
 }
 
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
-  });
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
-
 const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', exact: true });
 const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop', exact: true });
 const timer = (page: Page) => page.getByRole('timer');
-
-async function goLive(page: Page, fixtures = FIXTURE): Promise<string[]> {
-  const errors = collectErrors(page);
-  await page.goto(`./?fakeMic=${fixtures}#/record`);
-  await page.getByRole('button', { name: 'Allow microphone' }).click();
-  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
-  return errors;
-}
 
 /**
  * From now until the Tab opens, keeps the store's elapsed time while the take is `stopping`:
@@ -405,10 +386,7 @@ test('Space after clicking the Record nav link starts a take (links ignore Space
 });
 
 test('Space in the Microphone select does not start a take', async ({ page }) => {
-  const errors = collectErrors(page);
-  await page.goto('./?fakeMic=open_strings,silence_60s#/record');
-  await page.getByRole('button', { name: 'Allow microphone' }).click();
-  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  const errors = await goLive(page, 'open_strings,silence_60s');
   const select = page.getByRole('combobox', { name: 'Microphone' });
   await select.focus();
   await page.keyboard.press('Space');
@@ -437,10 +415,7 @@ async function countInOn(page: Page, bpm: number): Promise<void> {
 test('count-in at 120 BPM: capture opens 2.0 s after the click; the take has countInBpm and no click', async ({
   page,
 }) => {
-  const errors = collectErrors(page);
-  await page.goto('./?fakeMic=silence_60s#/record');
-  await page.getByRole('button', { name: 'Allow microphone' }).click();
-  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  const errors = await goLive(page, 'silence_60s');
   await countInOn(page, 120);
 
   await recordButton(page).click();
@@ -502,7 +477,7 @@ test('count-in: the beats 4-3-2-1 show and are announced; controls disabled; Can
   // The pref is remembered across a reload.
   // The mic was granted, so it goes live again without a click.
   await page.goto(`./?fakeMic=${FIXTURE}#/record`);
-  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  await expect(meter(page)).toBeVisible();
   await expect(countInToggle(page)).toHaveAttribute('aria-pressed', 'true');
   await expect(tempoField(page)).toHaveValue('60');
   await expect(countInToggle(page)).toBeEnabled();
@@ -595,10 +570,8 @@ function opfsFiles(page: Page): Promise<string[]> {
 test('near the cap: "30 seconds left" shows and is announced once; at the cap it stops and saves', async ({
   page,
 }) => {
-  const errors = collectErrors(page);
-  await page.goto(`./?fakeMic=${FIXTURE}&${LIMITS}#/record`);
-  await page.getByRole('button', { name: 'Allow microphone' }).click();
-  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  // The dev take-limit overrides ride in the query after the fixture.
+  const errors = await goLive(page, `${FIXTURE}&${LIMITS}`);
   await watchAnnouncements(page);
 
   await recordButton(page).click();
@@ -798,12 +771,9 @@ test('unplug mid-take: the take is saved as mic-lost, a toast, the mic live on t
     { timeout: 5_000 },
   );
   await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
-  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  await expect(meter(page)).toBeVisible();
   // Live on the silent input left.
-  await expect(page.getByRole('meter', { name: 'Input level' })).toHaveAttribute(
-    'aria-valuenow',
-    '-60',
-  );
+  await expect(meter(page)).toHaveAttribute('aria-valuenow', '-60');
   await expect(page.getByRole('region', { name: LOST_TITLE })).toHaveCount(0);
   await expect(page).toHaveURL(/#\/record$/);
 
@@ -857,7 +827,7 @@ test('storage full mid-take: saved as storage-full, the error banner with a Libr
   });
   expect(order).toBeTruthy();
   await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
-  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  await expect(meter(page)).toBeVisible();
   await expect(page).toHaveURL(/#\/record$/);
   await expectNoSeriousAxe(page);
 

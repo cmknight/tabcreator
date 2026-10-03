@@ -99,8 +99,6 @@ import {
 } from './recording-recovery';
 import { createTunerWatch, type TunerDisplay, type TunerFields } from './tuner-watch';
 
-export type { MicDevice } from '../audio/mic';
-export type { TunerReading } from '../audio/tuner';
 export { TUNER_POLL_MS } from '../audio/tuner';
 export type { TunerDisplay } from './tuner-watch';
 export type { RecoveredTake } from './recording-recovery';
@@ -129,7 +127,7 @@ export const MAX_TAKE_MS = 300_000;
 /** How long before the cap the "30 seconds left" warning shows, ms. */
 export const WARN_LEAD_MS = 30_000;
 /** The shortest take kept, ms (spine AD-9): a shorter one is deleted at stop. */
-export const MIN_TAKE_MS = 500;
+const MIN_TAKE_MS = 500;
 /** The shortest cap the dev override accepts, ms, so a max-length take is never too short. */
 const DEV_MIN_CAP_MS = 1000;
 
@@ -145,13 +143,13 @@ export interface TakeLimits {
  * A typed tempo as stored: rounded to a whole BPM and clamped to 40–240; `fallback` when it is
  * not a number at all.
  */
-export function clampBpm(value: number, fallback: number): number {
+function clampBpm(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(COUNT_IN_BPM_MAX, Math.max(COUNT_IN_BPM_MIN, Math.round(value)));
 }
 
 /** The dev-only clock hook (story 3.6): the last count-in's times on the audio clock, in s. */
-export interface RecordingClock {
+interface RecordingClock {
   /** The click's audio-clock time (`t0`). */
   clickTime: number;
   /** When the capture opens (beat five). */

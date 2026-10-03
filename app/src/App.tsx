@@ -1,4 +1,11 @@
-import { lazy, Suspense, useSyncExternalStore, type ReactNode } from 'react';
+import {
+  lazy,
+  Suspense,
+  useSyncExternalStore,
+  type ComponentType,
+  type LazyExoticComponent,
+  type ReactNode,
+} from 'react';
 import styles from './App.module.css';
 import { instanceLock } from './session/instance-lock';
 import { Announcer } from './ui/a11y/announcer';
@@ -38,10 +45,22 @@ function renderScreen(route: Route): ReactNode {
   }
 }
 
-// Dev-only test pages (spine: `#/__test/*` routes are gated on import.meta.env.DEV). Production
-// builds replace the condition with `false`, so the pages and their route strings tree-shake out.
-const StorageTestPage = import.meta.env.DEV ? lazy(() => import('./dev/StorageTestPage')) : null;
-const UiTestPage = import.meta.env.DEV ? lazy(() => import('./dev/UiTestPage')) : null;
+// Dev-only test pages by hash (spine: `#/__test/*` routes are gated on import.meta.env.DEV).
+// Production builds replace the condition with `false`, so the pages and their route strings
+// tree-shake out.
+type DevPages = ReadonlyMap<string, LazyExoticComponent<ComponentType>>;
+const DEV_PAGES: DevPages | null = import.meta.env.DEV
+  ? new Map([
+      ['#/__test/storage', lazy(() => import('./dev/StorageTestPage'))],
+      ['#/__test/ui', lazy(() => import('./dev/UiTestPage'))],
+    ])
+  : null;
+
+/** The dev-only test page for `hash`, or null (always null in production builds). */
+function renderDevPage(hash: string): ReactNode {
+  const Page = DEV_PAGES?.get(hash);
+  return Page ? <Page /> : null;
+}
 
 /**
  * The instance gate (story 3.10, spine AD-6): the shell and every screen (all of which may write
@@ -57,20 +76,12 @@ export function App() {
 
 function HeldApp() {
   const hash = useHash();
-  const DevPage = import.meta.env.DEV
-    ? hash === '#/__test/storage'
-      ? StorageTestPage
-      : hash === '#/__test/ui'
-        ? UiTestPage
-        : null
-    : null;
-  if (DevPage) {
+  const devPage = renderDevPage(hash);
+  if (devPage) {
     // Inside the shell, so the test page runs with the announcer and toast host mounted.
     return (
       <Shell current={null}>
-        <Suspense fallback={null}>
-          <DevPage />
-        </Suspense>
+        <Suspense fallback={null}>{devPage}</Suspense>
       </Shell>
     );
   }

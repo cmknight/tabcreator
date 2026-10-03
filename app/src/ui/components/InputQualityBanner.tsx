@@ -2,22 +2,9 @@ import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { recordingSession } from '../../session/recording-session';
 import { announce } from '../a11y/announcer';
 import { strings } from '../strings';
+import banner from './banner.module.css';
+import { WarnIcon } from './icons';
 import styles from './InputQualityBanner.module.css';
-
-function WarnIcon() {
-  return (
-    <svg className={styles.icon} viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M12 3 2 20h20z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <path d="M12 10v4.5M12 17.2v.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 /**
  * The input quality warning (story 2.8, US-1.2; mockup record.html (e)): shown while the mic is
@@ -43,9 +30,12 @@ export function InputQualityBanner() {
 
   if (!shown) return null;
   return (
-    <div className={styles.banner} data-testid="input-quality-banner">
-      <WarnIcon />
-      <p className={styles.text}>{strings['global.inputQualityWarning']}</p>
+    <div
+      className={`${banner.banner} ${banner.warning} ${styles.banner}`}
+      data-testid="input-quality-banner"
+    >
+      <WarnIcon className={banner.icon} />
+      <p className={banner.text}>{strings['global.inputQualityWarning']}</p>
       <button
         type="button"
         className={styles.dismiss}

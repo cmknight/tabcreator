@@ -4,23 +4,8 @@ import { announce } from '../a11y/announcer';
 import { formatElapsed } from '../format';
 import { strings } from '../strings';
 import { MIC_CARD_TITLE_ID } from './MicGate';
+import { WarnIcon } from './icons';
 import styles from './RecordButton.module.css';
-
-/** The warning icon (as the level meter's and the input quality banner's). */
-function WarnIcon() {
-  return (
-    <svg className={styles.limitIcon} viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M12 3 2 20h20z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <path d="M12 10v4.5M12 17.2v.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 /**
  * The count-in's beat number (4, 3, 2, 1), read from the store each animation frame while it
@@ -120,7 +105,7 @@ export function RecordButton() {
       )}
       {running && nearLimit && (
         <div className={styles.limit} data-testid="near-limit">
-          <WarnIcon />
+          <WarnIcon className={styles.limitIcon} />
           {strings['record.nearLimit']}
         </div>
       )}

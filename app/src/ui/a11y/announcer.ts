@@ -3,7 +3,7 @@
 
 import { createElement, Fragment, useEffect, useState } from 'react';
 import { flushSync } from 'react-dom';
-import styles from './announcer.module.css';
+import styles from './visually-hidden.module.css';
 
 export type Politeness = 'polite' | 'assertive';
 

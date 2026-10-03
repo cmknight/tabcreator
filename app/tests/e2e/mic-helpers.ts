@@ -1,5 +1,36 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page } from '@playwright/test';
+import { collectErrors } from './helpers';
+
+/** The fake mic fixture the recording specs play by default (7.95 s at 48 kHz). */
+export const FIXTURE = 'c_major_scale_pos1';
+
+/** The live input level meter. */
+export const meter = (page: Page) => page.getByRole('meter', { name: 'Input level' });
+
+/**
+ * Opens Record with the dev fake mic playing `fixtures` (`?fakeMic=`, which may carry more
+ * `&key=value` dev params; `null` opens it without, for the production lane's real capture
+ * device), clicks Allow microphone and waits for the meter. Returns the console and page errors collected from before the `goto`. `before` runs
+ * once Allow microphone shows, just before it is clicked (the app renders only once the fake mic
+ * is installed). Set up init scripts (`countGetUserMedia`, probes) before calling this.
+ */
+export async function goLive(
+  page: Page,
+  fixtures: string | null = FIXTURE,
+  { before }: { before?: () => Promise<void> } = {},
+): Promise<string[]> {
+  const errors = collectErrors(page);
+  await page.goto(fixtures === null ? './#/record' : `./?fakeMic=${fixtures}#/record`);
+  const allow = page.getByRole('button', { name: 'Allow microphone' });
+  if (before) {
+    await expect(allow).toBeVisible();
+    await before();
+  }
+  await allow.click();
+  await expect(meter(page)).toBeVisible();
+  return errors;
+}
 
 /**
  * Counts every `getUserMedia` call from page start: wraps the native method and any

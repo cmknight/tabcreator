@@ -13,7 +13,11 @@ export const TOO_LOUD_PEAK_DB = -1;
 export const CLIP_LEVEL = 10 ** (TOO_LOUD_PEAK_DB / 20);
 /** Too loud clears this long after the last loud peak. */
 export const TOO_LOUD_CLEAR_MS = 2000;
-/** RMS below this, continuously for `TOO_QUIET_AFTER_MS`, sets Too quiet. */
+/**
+ * RMS below this, continuously for `TOO_QUIET_AFTER_MS`, sets Too quiet. Separate on purpose
+ * from the tuner's pitch gate (`SILENCE_DBFS` in `audio/tuner.ts`, −50): this warns about input
+ * gain, that one decides whether a frame has a pitch. Changing either is a threshold change.
+ */
 export const TOO_QUIET_RMS_DB = -45;
 export const TOO_QUIET_AFTER_MS = 3000;
 /** The peak-hold tick keeps the highest peak this long, then follows the peak. */

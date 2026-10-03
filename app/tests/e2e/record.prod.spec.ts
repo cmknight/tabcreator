@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { watchHygiene } from './hygiene';
+import { goLive } from './mic-helpers';
 
 // The production-mic lane (`prod-mic` project): the production build, with Chromium's fake
 // capture device looping testdata/synth/c_major_scale_pos1_noisy.wav as the microphone, the
@@ -11,13 +12,6 @@ const ASSETS = join(import.meta.dirname, '..', '..', 'dist', 'assets');
 
 const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', exact: true });
 const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop', exact: true });
-
-async function goLive(page: Page): Promise<void> {
-  await page.goto('./#/record');
-  await page.getByRole('button', { name: 'Allow microphone' }).click();
-  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
-  await expect(recordButton(page)).toBeVisible();
-}
 
 // Story 3.4: recording loads the recorder worklet from its own same-origin JS file, under the
 // production CSP, with no violation.
@@ -40,7 +34,8 @@ test('Record then Stop loads the worklet as a same-origin script with no CSP vio
   expect(await served.text()).toContain('registerProcessor');
 
   const hygiene = await watchHygiene(page, baseURL!);
-  await goLive(page);
+  await goLive(page, null);
+  await expect(recordButton(page)).toBeVisible();
   await recordButton(page).click();
   // The timer runs only once the worklet is loaded and the capture started.
   await expect(page.getByRole('timer')).toHaveText('0:01', { timeout: 5_000 });
@@ -57,7 +52,8 @@ test('Space starts a take within 100 ms, and Space again stops it and opens its 
   baseURL,
 }) => {
   const hygiene = await watchHygiene(page, baseURL!);
-  await goLive(page);
+  await goLive(page, null);
+  await expect(recordButton(page)).toBeVisible();
   // Focus on the page itself, not a control: Space on a focused button is the button's own.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
@@ -96,7 +92,8 @@ test('a take runs to the 5:00 cap, stops itself, and its compressed copy is at m
 }) => {
   test.setTimeout(7 * 60_000);
   const hygiene = await watchHygiene(page, baseURL!);
-  await goLive(page);
+  await goLive(page, null);
+  await expect(recordButton(page)).toBeVisible();
   await recordButton(page).click();
   await expect(page.getByRole('timer')).toHaveText('0:01', { timeout: 5_000 });
 

@@ -2,19 +2,23 @@
 // machine (`nextTuner`) that owns the estimate history, the In tune timing and the no-pitch hold.
 // No browser APIs, no module state, no timers: recording-session drives the machine with each
 // polled frame's pitch and a timestamp, and the Tuner screen only polls the store. Imports
-// model/ only (AD-1).
+// model/ and the pure `level-meter` maths only (AD-1). Frames are `ANALYSER_FFT_SIZE`
+// (`audio/mic.ts`) samples long.
 
 import { OPEN_MIDI, type StringNo } from '../model/types';
+import { rmsDbfs } from './level-meter';
 
-/** Samples per analysed frame (the AnalyserNode fftSize the Tuner screen uses). */
-export const TUNER_WINDOW = 4096;
 /** YIN absolute threshold on the cumulative-mean-normalised difference. */
 export const YIN_THRESHOLD = 0.15;
 /** Lowest pitch reported, Hz (below low E2 82.41 Hz; covers drop D 73.42 Hz, not drop C# or C). */
 export const MIN_HZ = 70;
 /** Highest pitch reported, Hz (above open high E4 329.63 Hz). */
 export const MAX_HZ = 400;
-/** Frames quieter than this RMS level give no pitch. */
+/**
+ * Frames quieter than this RMS level give no pitch. Separate on purpose from the meter's Too
+ * quiet threshold (`TOO_QUIET_RMS_DB` in `model/level-warnings.ts`, −45): this gates pitch
+ * detection, that one warns about input gain. Changing either is a threshold change.
+ */
 export const SILENCE_DBFS = -50;
 /** Estimates kept for the median smoother. */
 export const MEDIAN_SIZE = 5;
@@ -29,20 +33,13 @@ export const OPEN_STRING_HZ: Readonly<Record<StringNo, number>> = Object.freeze(
   >,
 );
 
-/** RMS level of a frame in dBFS (full scale = 1.0). An empty or silent frame is -Infinity. */
-export function rmsDbfs(frame: Float32Array): number {
-  if (frame.length === 0) return -Infinity;
-  let sum = 0;
-  for (let i = 0; i < frame.length; i++) sum += frame[i]! * frame[i]!; // indices are in bounds
-  return 10 * Math.log10(sum / frame.length);
-}
-
 /**
  * Pitch of one frame in Hz, or `null` (US-2.1): RMS gate at `SILENCE_DBFS`, then YIN
  * (de Cheveigné & Kawahara) with the first dip below `YIN_THRESHOLD`, descent to its local
  * minimum and parabolic interpolation. No dip, or a result outside `MIN_HZ`..`MAX_HZ`, gives
- * `null`: a tuner shows no pitch rather than a wrong one. Above about 143 kHz a 4096 frame is
- * too short to hold the 70 Hz lag twice, so every frame gives `null`.
+ * `null`: a tuner shows no pitch rather than a wrong one. Above about 143 kHz an
+ * `ANALYSER_FFT_SIZE` frame is too short to hold the 70 Hz lag twice, so every frame gives
+ * `null`.
  */
 export function detectPitch(frame: Float32Array, sampleRate: number): number | null {
   if (!(sampleRate > 0) || !(rmsDbfs(frame) >= SILENCE_DBFS)) return null;

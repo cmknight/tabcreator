@@ -1,12 +1,11 @@
 import { expect, test, type Page } from '@playwright/test';
-import { expectNoSeriousAxe } from './mic-helpers';
+import { MIME, collectErrors, decodedSeconds } from './helpers';
+import { expectNoSeriousAxe, FIXTURE, goLive } from './mic-helpers';
 
 // Runs in the `dev` project only (story 3.10, US-8.5): two pages of one browser context share
 // Web Locks and BroadcastChannel, like two tabs. The fake mic (US-0.4) plays
 // c_major_scale_pos1 as the microphone.
 
-const FIXTURE = 'c_major_scale_pos1';
-const MIME = 'audio/webm;codecs=opus';
 const OTHER_TAB = 'TabCreator is open in another tab';
 /** "Use here" moves the app within 3 s (EXPERIENCE.md Open in another tab). */
 const HANDOVER_MS = 3_000;
@@ -15,15 +14,6 @@ const useHere = (page: Page) => page.getByRole('button', { name: 'Use here' });
 const otherTabHeading = (page: Page) => page.getByRole('heading', { name: OTHER_TAB });
 /** The app shell's main navigation: only there while the page runs the app. */
 const appNav = (page: Page) => page.getByRole('navigation', { name: 'Main' });
-
-function collectErrors(page: Page): string[] {
-  const errors: string[] = [];
-  page.on('console', (msg) => {
-    if (msg.type() === 'error' || msg.type() === 'warning') errors.push(msg.text());
-  });
-  page.on('pageerror', (err) => errors.push(err.message));
-  return errors;
-}
 
 /** The takes in IndexedDB (read with a connection of the test's own). */
 function readTakes(
@@ -55,21 +45,6 @@ function readTakes(
         };
       }),
   );
-}
-
-/** The decoded duration (s) of the take's compressed copy; null when missing or undecodable. */
-function decodedSeconds(page: Page, id: string): Promise<number | null> {
-  return page.evaluate(async (takeId) => {
-    try {
-      const root = await navigator.storage.getDirectory();
-      const file = await (await root.getDirectoryHandle('audio')).getFileHandle(`${takeId}.webm`);
-      const ctx = new OfflineAudioContext(1, 1, 48_000);
-      const buffer = await ctx.decodeAudioData(await (await file.getFile()).arrayBuffer());
-      return buffer.duration;
-    } catch {
-      return null;
-    }
-  }, id);
 }
 
 /** The take the page's recording store is recording (the dev server's module instance). */
@@ -174,10 +149,7 @@ test('Use here while the first tab records: its take is saved as instance-lost; 
   context,
 }) => {
   const first = await context.newPage();
-  const firstErrors = collectErrors(first);
-  await first.goto(`./?fakeMic=${FIXTURE}#/record`);
-  await first.getByRole('button', { name: 'Allow microphone' }).click();
-  await expect(first.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  const firstErrors = await goLive(first);
   await first.getByRole('button', { name: 'Record', exact: true }).click();
   await expect(first.getByRole('timer')).toHaveText('0:03', { timeout: 6_000 });
   const id = await activeTakeId(first);

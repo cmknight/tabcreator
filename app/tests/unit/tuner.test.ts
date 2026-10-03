@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import type { StringNo } from '../model/types';
+import { rmsDbfs } from '../../src/audio/level-meter';
+import { ANALYSER_FFT_SIZE } from '../../src/audio/mic';
+import type { StringNo } from '../../src/model/types';
 import {
   INITIAL_TUNER_STATE,
   IN_TUNE_CENTS,
@@ -12,16 +14,14 @@ import {
   NO_PITCH_HOLD_MS,
   SILENCE_DBFS,
   TUNER_POLL_MS,
-  TUNER_WINDOW,
   YIN_THRESHOLD,
   detectPitch,
   median,
   nearestString,
   nextTuner,
   pushEstimate,
-  rmsDbfs,
   type TunerState,
-} from './tuner';
+} from '../../src/audio/tuner';
 
 const STRINGS: StringNo[] = [1, 2, 3, 4, 5, 6];
 const RATES = [48000, 44100];
@@ -40,7 +40,7 @@ function rng(seed: number): () => number {
 }
 
 function sine(hz: number, sampleRate: number, amplitude = 0.5, phase = 0.7): Float32Array {
-  const out = new Float32Array(TUNER_WINDOW);
+  const out = new Float32Array(ANALYSER_FFT_SIZE);
   for (let i = 0; i < out.length; i++) {
     out[i] = amplitude * Math.sin((2 * Math.PI * hz * i) / sampleRate + phase);
   }
@@ -89,7 +89,7 @@ function karplusStrong(hz: number, sampleRate: number, n: number, seed: number):
 
 describe('tuner constants', () => {
   it('match US-2.1', () => {
-    expect(TUNER_WINDOW).toBe(4096);
+    expect(ANALYSER_FFT_SIZE).toBe(4096);
     expect(YIN_THRESHOLD).toBe(0.15);
     expect([MIN_HZ, MAX_HZ, SILENCE_DBFS, MEDIAN_SIZE]).toEqual([70, 400, -50, 5]);
   });
@@ -126,8 +126,8 @@ describe('detectPitch on sines', () => {
 
 describe('detectPitch gate and range', () => {
   it('returns null for an all-zero frame', () => {
-    expect(rmsDbfs(new Float32Array(TUNER_WINDOW))).toBe(-Infinity);
-    expect(detectPitch(new Float32Array(TUNER_WINDOW), 48000)).toBeNull();
+    expect(rmsDbfs(new Float32Array(ANALYSER_FFT_SIZE))).toBe(-Infinity);
+    expect(detectPitch(new Float32Array(ANALYSER_FFT_SIZE), 48000)).toBeNull();
   });
 
   it('returns null below -50 dBFS RMS', () => {
@@ -157,7 +157,7 @@ describe('detectPitch gate and range', () => {
   it('returns null on seeded white noise', () => {
     for (let seed = 1; seed <= 10; seed++) {
       const rand = rng(seed);
-      const frame = new Float32Array(TUNER_WINDOW);
+      const frame = new Float32Array(ANALYSER_FFT_SIZE);
       for (let i = 0; i < frame.length; i++) frame[i] = 0.3 * (2 * rand() - 1);
       expect(detectPitch(frame, 48000)).toBeNull();
     }
@@ -169,8 +169,8 @@ describe('detectPitch on Karplus-Strong plucks', () => {
 
   it.each(cases)('$sr Hz, string $s', ({ sr, s }) => {
     const start = Math.round(0.1 * sr);
-    const tone = karplusStrong(OPEN_STRING_HZ[s], sr, start + TUNER_WINDOW, 100 + s);
-    const got = detectPitch(tone.subarray(start, start + TUNER_WINDOW), sr);
+    const tone = karplusStrong(OPEN_STRING_HZ[s], sr, start + ANALYSER_FFT_SIZE, 100 + s);
+    const got = detectPitch(tone.subarray(start, start + ANALYSER_FFT_SIZE), sr);
     expect(got).not.toBeNull();
     const near = nearestString(got!);
     expect(near.string).toBe(s);

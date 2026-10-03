@@ -20,7 +20,7 @@ if (import.meta.env.DEV) {
       .split(',')
       .map((name) => name.trim())
       .filter((name) => name !== '');
-    const { installFakeMic } = await import('./audio/fake-mic');
+    const { installFakeMic } = await import('./dev/fake-mic');
     window.__fakeMic = installFakeMic(fixtures);
   }
 }

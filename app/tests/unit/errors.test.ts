@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { APP_ERROR_CODES, AppError, isAppError } from './errors';
+import { APP_ERROR_CODES, AppError, isAppError } from '../../src/model/errors';
 
 describe('AppError', () => {
   it('keeps code, message and cause', () => {

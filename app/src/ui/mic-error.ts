@@ -1,6 +1,6 @@
 import type { AppErrorCode } from '../model/errors';
 
-/** The codes the mic error card has copy for (`record.micError.<code>.*`). */
+/** The codes the mic error card has copy for (`global.micError.<code>.*`). */
 const MIC_ERROR_CODES = [
   'mic-denied',
   'mic-no-device',

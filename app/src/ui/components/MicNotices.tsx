@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { recordingSession } from '../../session/recording-session';
+import { inputDisplayName } from '../format';
 import { showToast } from '../toast';
 import { strings } from '../strings';
 
@@ -26,8 +27,7 @@ export function MicNotices() {
       }
       // An unlabelled input is named as the Microphone select names it.
       const n = devices.findIndex((d) => d.deviceId === activeDeviceId) + 1 || 1;
-      const label = notice.label || strings['global.microphoneUnnamed'](n);
-      showToast({ message: strings['global.micSwitched'](label) });
+      showToast({ message: strings['global.micSwitched'](inputDisplayName(notice.label, n)) });
     });
   }, []);
   return null;

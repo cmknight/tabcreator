@@ -2,7 +2,9 @@ import { useEffect, useId, useLayoutEffect, useRef, useSyncExternalStore } from 
 import { INITIAL_PEAK_HOLD, nextPeakHold } from '../../model/level-warnings';
 import { recordingSession } from '../../session/recording-session';
 import { announce } from '../a11y/announcer';
+import { formatSigned } from '../format';
 import { strings } from '../strings';
+import { WarnIcon } from './icons';
 import styles from './LevelMeter.module.css';
 
 /** The meter's scale, in dBFS. */
@@ -24,22 +26,7 @@ function ariaDb(db: number): number {
 }
 
 function tickLabel(db: number): string {
-  return db < 0 ? `−${-db}` : `${db}`;
-}
-
-function WarnIcon() {
-  return (
-    <svg className={styles.warnIcon} viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M12 3 2 20h20z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <path d="M12 10v4.5M12 17.2v.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
+  return formatSigned(db);
 }
 
 /**
@@ -141,7 +128,7 @@ export function LevelMeter() {
       <div className={styles.warning} data-testid="input-level-warning">
         {levelWarning && (
           <>
-            <WarnIcon />
+            <WarnIcon className={styles.warnIcon} />
             {strings[levelWarning === 'loud' ? 'global.levelTooLoud' : 'global.levelTooQuiet']}
           </>
         )}

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { levelsDbfs } from '../../src/audio/level-meter';
+import { levelsDbfs, rmsDbfs } from '../../src/audio/level-meter';
+import { ANALYSER_FFT_SIZE } from '../../src/audio/mic';
 
-const N = 4096;
+const N = ANALYSER_FFT_SIZE;
 
 function sine(amplitude: number, cycles = 64): Float32Array {
   const frame = new Float32Array(N);
@@ -32,5 +33,13 @@ describe('levelsDbfs', () => {
     frame[10] = 0.25;
     frame[20] = -0.5;
     expect(levelsDbfs(frame).peakDb).toBeCloseTo(20 * Math.log10(0.5), 6);
+  });
+});
+
+describe('rmsDbfs', () => {
+  it('gives the meter and the tuner gate the same value at exactly −50 dBFS', () => {
+    const frame = new Float32Array(N).fill(10 ** (-50 / 20));
+    expect(levelsDbfs(frame).rmsDb).toBe(rmsDbfs(frame));
+    expect(rmsDbfs(frame)).toBeCloseTo(-50, 6);
   });
 });
