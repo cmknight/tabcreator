@@ -17,6 +17,9 @@ js-sys = "=0.3.106"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 console_error_panic_hook = "=0.1.7"
+# rubato: the sinc resampler for pre-processing (spine Stack, US-4.1). Default features off:
+# only the async sinc resampler is used, so the FFT resampler's realfft/rustfft stay out.
+rubato = { version = "=5.0.0", default-features = false }
 
 [profile.test]
 opt-level = 3

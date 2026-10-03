@@ -8,6 +8,8 @@
 //! This is the platform-baseline stub: `analyze` detects nothing and `map_frets` picks the
 //! lowest-fret position per note. Real detection and Viterbi fret mapping arrive in later epics.
 
+pub mod preprocess;
+
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
@@ -25,6 +27,40 @@ pub struct EngineAnalyzeInput {
     pub trim_start_ms: f64,
     pub trim_end_ms: Option<f64>,
     pub skip_start_ms: f64,
+}
+
+/// Every detection tunable, derived from the user's settings in one place (US-4.6). The
+/// pre-processing constants live in [`preprocess`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Params {
+    /// Onset threshold factor `k = 2.0 − 1.0·s`.
+    pub onset_k: f64,
+    /// Note confidence threshold `c = 0.7 − 0.4·s`.
+    pub confidence_c: f64,
+    /// Noise gate `g = −40 − 20·s` dBFS.
+    pub gate_dbfs: f64,
+    /// Shortest note kept, ms.
+    pub min_note_ms: f64,
+    /// Highest fret the mapping may use.
+    pub max_fret: u32,
+}
+
+impl Params {
+    /// Maps settings to tunables, with sensitivity `s` clamped to 0..=1.
+    pub fn from_settings(input: &EngineAnalyzeInput) -> Self {
+        let s = if input.sensitivity.is_nan() {
+            0.0
+        } else {
+            input.sensitivity.clamp(0.0, 1.0)
+        };
+        Self {
+            onset_k: 2.0 - 1.0 * s,
+            confidence_c: 0.7 - 0.4 * s,
+            gate_dbfs: -40.0 - 20.0 * s,
+            min_note_ms: input.min_note_ms,
+            max_fret: input.max_fret,
+        }
+    }
 }
 
 /// A note passed to `map_frets`: `{midi, startMs, endMs}`.
@@ -87,6 +123,9 @@ pub fn map_frets(notes_json: &str, locks_json: &str, max_fret: u32) -> Result<St
     map_frets_core(notes_json, locks_json, max_fret).map_err(|message| JsError::new(&message))
 }
 
+/// Progress reported once pre-processing is done (AD-8 stage weights).
+const PROGRESS_PREPROCESSED: f64 = 0.111;
+
 /// Pure core of [`analyze`]; `progress` receives monotone fractions in 0..=1.
 pub fn analyze_core(
     pcm: &[f32],
@@ -99,9 +138,18 @@ pub fn analyze_core(
     if !(sample_rate.is_finite() && sample_rate > 0.0) {
         return Err(format!("invalid sample rate: {sample_rate}"));
     }
-    let _ = (pcm, input);
     progress(0.0);
-    // Stub: no detection yet.
+    let _params = Params::from_settings(&input);
+    let _signal = preprocess::preprocess(
+        pcm,
+        sample_rate,
+        input.trim_start_ms,
+        input.trim_end_ms,
+        input.skip_start_ms,
+    )?;
+    // Pre-processing is 0.111 of the work (AD-8 weights).
+    progress(PROGRESS_PREPROCESSED);
+    // No pitch, onset or note detection yet.
     progress(1.0);
     Ok(
         serde_json::json!({ "notes": [], "tuningOffsetCents": 0, "belowRangeNotes": 0 })
@@ -190,6 +238,51 @@ mod tests {
         assert_eq!(v["notes"], json!([]));
         assert!(seen.windows(2).all(|w| w[0] <= w[1]));
         assert_eq!(seen.last(), Some(&1.0));
+    }
+
+    #[test]
+    fn analyze_reports_preprocessing_progress() {
+        let mut seen = Vec::new();
+        analyze_core(&[0.0; 4800], 48_000.0, INPUT, |f| seen.push(f)).unwrap();
+        assert_eq!(seen, vec![0.0, 0.111, 1.0]);
+    }
+
+    fn input_with_sensitivity(s: f64) -> EngineAnalyzeInput {
+        EngineAnalyzeInput {
+            sensitivity: s,
+            min_note_ms: 40.0,
+            max_fret: 22,
+            trim_start_ms: 0.0,
+            trim_end_ms: None,
+            skip_start_ms: 0.0,
+        }
+    }
+
+    #[test]
+    fn params_map_sensitivity() {
+        for (s, k, c, g) in [
+            (0.0, 2.0, 0.7, -40.0),
+            (0.5, 1.5, 0.5, -50.0),
+            (1.0, 1.0, 0.3, -60.0),
+        ] {
+            let p = Params::from_settings(&input_with_sensitivity(s));
+            assert!((p.onset_k - k).abs() < 1e-12, "s={s}: k={}", p.onset_k);
+            assert!(
+                (p.confidence_c - c).abs() < 1e-12,
+                "s={s}: c={}",
+                p.confidence_c
+            );
+            assert!((p.gate_dbfs - g).abs() < 1e-12, "s={s}: g={}", p.gate_dbfs);
+            assert_eq!((p.min_note_ms, p.max_fret), (40.0, 22));
+        }
+    }
+
+    #[test]
+    fn params_clamp_sensitivity() {
+        let p = |s| Params::from_settings(&input_with_sensitivity(s));
+        assert_eq!(p(-0.5), p(0.0));
+        assert_eq!(p(3.0), p(1.0));
+        assert_eq!(p(f64::NAN), p(0.0));
     }
 
     #[test]
