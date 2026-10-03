@@ -84,6 +84,13 @@ export const strings = {
   'record.storageFull': 'Storage is full — recording stopped and saved',
   /** The storage-full banner's link to the Library. */
   'record.storageFullLibrary': 'Go to Library',
+  /** The recovered-take banner (EXPERIENCE.md Recovered take): the take's start time and length. */
+  'record.recovered': (time: string, length: string) =>
+    `An unfinished take from ${time} was recovered (${length})`,
+  /** The banner's text while Open rebuilds the take. */
+  'record.recovering': 'Recovering…',
+  'record.recoveredOpen': 'Open',
+  'record.recoveredDiscard': 'Discard',
   /** The recording timer's accessible name: "Elapsed time 0:42". */
   'record.elapsed': (time: string) => `Elapsed time ${time}`,
   /** The Space shortcut's description in the keyboard shortcuts dialog (EXPERIENCE.md). */

@@ -152,7 +152,7 @@ describe('raw writer client', () => {
   it('rejects compressed audio of an unknown type with storage-failed', async () => {
     const { store } = setup();
     await expect(
-      store.writeCompressed('t1', new Blob([], { type: 'audio/wav' })),
+      store.writeCompressed('t1', new Blob([], { type: 'audio/flac' })),
     ).rejects.toMatchObject({ code: 'storage-failed' });
   });
 });
@@ -198,5 +198,69 @@ describe('readRaw', () => {
     const read = await store.readRaw('t1');
     expect(read.length).toBe(3);
     expect([...read]).toEqual([0.25, -0.5, 1]);
+  });
+});
+
+/** A fake OPFS root with `raw/` and `audio/` files given by name and byte size (never read). */
+function sizedRoot(
+  dirs: Partial<Record<'raw' | 'audio', Record<string, number>>>,
+): () => Promise<FileSystemDirectoryHandle> {
+  const notFound = () => new DOMException('not found', 'NotFoundError');
+  const dirHandle = (files: Record<string, number>) => ({
+    async getFileHandle(name: string) {
+      const size = files[name];
+      if (size === undefined) throw notFound();
+      return {
+        getFile: async () => ({
+          size,
+          arrayBuffer: async () => {
+            throw new Error('the file must not be read');
+          },
+        }),
+      };
+    },
+    async *keys() {
+      yield* Object.keys(files);
+    },
+  });
+  const root = {
+    async getDirectoryHandle(name: string) {
+      const files = dirs[name as 'raw' | 'audio'];
+      if (!files) throw notFound();
+      return dirHandle(files);
+    },
+  };
+  return () => Promise.resolve(root as unknown as FileSystemDirectoryHandle);
+}
+
+describe('rawSampleCount', () => {
+  it('is the file size / 4, rounded down, without reading the file', async () => {
+    const store = createAudioStore({ root: sizedRoot({ raw: { 't1.f32': 4 * 48_000 + 3 } }) });
+    expect(await store.rawSampleCount('t1')).toBe(48_000);
+  });
+
+  it('is 0 with no raw file or no raw/ directory', async () => {
+    expect(await createAudioStore({ root: sizedRoot({ raw: {} }) }).rawSampleCount('t1')).toBe(0);
+    expect(await createAudioStore({ root: sizedRoot({}) }).rawSampleCount('t1')).toBe(0);
+  });
+});
+
+describe('listCompressed', () => {
+  it('lists audio/ files with a known extension by id and extension', async () => {
+    const store = createAudioStore({
+      root: sizedRoot({
+        audio: { 'b.webm': 10, 'a.wav': 10, 'c.m4a': 1, 'd.txt': 1, noext: 1, 'e.ogg': 1 },
+      }),
+    });
+    expect(await store.listCompressed()).toEqual([
+      { id: 'a', ext: 'wav' },
+      { id: 'b', ext: 'webm' },
+      { id: 'c', ext: 'm4a' },
+      { id: 'e', ext: 'ogg' },
+    ]);
+  });
+
+  it('is empty with no audio/ directory', async () => {
+    expect(await createAudioStore({ root: sizedRoot({}) }).listCompressed()).toEqual([]);
   });
 });

@@ -37,6 +37,9 @@ export const MIGRATIONS: readonly Migration[] = [
   // 2: no schema or record change. `Take.stopReason` gained `'storage-full'` (story 3.9); the
   // stored v1 records are already valid v2 records.
   () => {},
+  // 3: no schema or record change. The OPFS audio path set gained `audio/{id}.wav` (recovery's
+  // WAV fallback, story 3.11); stored v2 records are already valid v3 records.
+  () => {},
 ];
 
 export const DB_VERSION = MIGRATIONS.length;

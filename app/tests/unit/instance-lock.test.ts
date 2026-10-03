@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../src/model/errors';
 import {
   createInstanceLock,
+  delayedRecoveryScan,
   HANDOVER_WAIT_MS,
   INSTANCE_LOCK_NAME,
+  RECOVERY_SCAN_DELAY_MS,
   type ChannelLike,
   type InstanceLock,
   type InstanceLockDeps,
@@ -136,6 +138,7 @@ function tab(overrides: Partial<InstanceLockDeps> = {}): Tab {
     reload: vi.fn(() => log.push('reload')),
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    onHeld: vi.fn(),
     ...overrides,
   };
   const lock = createInstanceLock(deps);
@@ -457,6 +460,72 @@ describe('instance lock', () => {
     });
     t.lock.dispose();
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('onHeld: called once on the start grant, not for a tab that is refused', async () => {
+    const first = await started();
+    expect(first.deps.onHeld).toHaveBeenCalledTimes(1);
+    const second = await started();
+    expect(second.deps.onHeld).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(first.deps.onHeld).toHaveBeenCalledTimes(1);
+  });
+
+  it('onHeld: called on the Use here grant (released or stolen), never on the holder that lost', async () => {
+    const first = await started();
+    const second = await started();
+    second.lock.useHere();
+    await settle();
+    expect(second.deps.onHeld).toHaveBeenCalledTimes(1);
+    expect(first.deps.onHeld).toHaveBeenCalledTimes(1);
+
+    const deaf = (): ChannelLike => ({ onmessage: null, postMessage() {}, close() {} });
+    locks = new FakeLocks();
+    bus = new FakeBus();
+    await started({ createChannel: deaf });
+    const stealer = await started();
+    stealer.lock.useHere();
+    await vi.advanceTimersByTimeAsync(HANDOVER_WAIT_MS);
+    expect(stealer.lock.getSnapshot()).toBe('held');
+    expect(stealer.deps.onHeld).toHaveBeenCalledTimes(1);
+  });
+
+  it('onHeld: a take-back that reloads is not a grant the app runs under', async () => {
+    const first = await started();
+    const second = await started();
+    second.lock.useHere();
+    await settle();
+    first.lock.useHere();
+    await settle();
+    expect(first.deps.reload).toHaveBeenCalledTimes(1);
+    expect(first.deps.onHeld).toHaveBeenCalledTimes(1);
+  });
+
+  it('onHeld: a throw does not stop the hold', async () => {
+    const t = await started({
+      onHeld: vi.fn(() => {
+        throw new Error('boom');
+      }),
+    });
+    expect(t.lock.getSnapshot()).toBe('held');
+  });
+
+  it('the recovery scan delay is past the handover window', () => {
+    expect(RECOVERY_SCAN_DELAY_MS).toBe(HANDOVER_WAIT_MS + 500);
+  });
+
+  it('the app-wide onHeld scans once, RECOVERY_SCAN_DELAY_MS after the grant', async () => {
+    const scan = vi.fn();
+    const t = await started({
+      onHeld: delayedRecoveryScan((fn, ms) => setTimeout(fn, ms), scan),
+    });
+    expect(t.lock.getSnapshot()).toBe('held');
+    await vi.advanceTimersByTimeAsync(RECOVERY_SCAN_DELAY_MS - 1);
+    expect(scan).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(scan).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(scan).toHaveBeenCalledTimes(1);
   });
 
   it('no Web Locks: unsupported, with no channel', async () => {

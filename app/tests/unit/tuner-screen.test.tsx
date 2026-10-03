@@ -25,6 +25,7 @@ const LIVE: RecordingSnapshot = {
   nearLimit: false,
   savedSeq: 0,
   storageFull: false,
+  recovered: [],
 };
 
 function renderReading(string: StringNo, cents: number, held = false) {

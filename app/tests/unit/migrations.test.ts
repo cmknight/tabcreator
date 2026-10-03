@@ -43,9 +43,9 @@ beforeEach(() => {
 });
 
 describe('migrations', () => {
-  it('names the database tabcreator at version 2', () => {
+  it('names the database tabcreator at version 3', () => {
     expect(DB_NAME).toBe('tabcreator');
-    expect(DB_VERSION).toBe(2);
+    expect(DB_VERSION).toBe(3);
   });
 
   it('migration 1 creates takes (key id, index createdAt) and tabs (key takeId) from version 0', async () => {
@@ -68,11 +68,37 @@ describe('migrations', () => {
       { take: V1_TAKE, tab: null },
     ]);
     // A second connection at v2 makes the v1 connection close (versionchange).
-    const v2 = createTakeDb({ name: NAME });
+    const v2 = createTakeDb({ name: NAME, migrations: MIGRATIONS.slice(0, 2) });
     expect(await v2.getTake('fixture-recorded')).toEqual(V1_RECORDED);
     expect(await v2.getTake('fixture-1')).toEqual(V1_TAKE);
     const raw = await openDB(NAME);
-    expect(raw.version).toBe(DB_VERSION);
+    expect(raw.version).toBe(2);
+    raw.close();
+  });
+
+  it('migration 3 upgrades stored v2 takes unchanged (the WAV audio path)', async () => {
+    const v2 = createTakeDb({ name: NAME, migrations: MIGRATIONS.slice(0, 2) });
+    const v2Recording: Take = {
+      ...V1_TAKE,
+      id: 'fixture-recording',
+      status: 'recording',
+      durationMs: 0,
+      audioMime: null,
+      analysisVersion: null,
+    };
+    const v2StorageFull: Take = { ...V1_RECORDED, id: 'fixture-full', stopReason: 'storage-full' };
+    await v2.importTakes([
+      { take: v2Recording, tab: null },
+      { take: v2StorageFull, tab: null },
+      { take: V1_TAKE, tab: null },
+    ]);
+    // A second connection at v3 makes the v2 connection close (versionchange).
+    const v3 = createTakeDb({ name: NAME });
+    expect(await v3.getTake('fixture-recording')).toEqual(v2Recording);
+    expect(await v3.getTake('fixture-full')).toEqual(v2StorageFull);
+    expect(await v3.getTake('fixture-1')).toEqual(V1_TAKE);
+    const raw = await openDB(NAME);
+    expect(raw.version).toBe(3);
     raw.close();
   });
 

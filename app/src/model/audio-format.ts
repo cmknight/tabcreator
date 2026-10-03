@@ -5,6 +5,8 @@ export const AUDIO_FORMATS = [
   { mime: 'audio/webm;codecs=opus', ext: 'webm' },
   { mime: 'audio/ogg;codecs=opus', ext: 'ogg' },
   { mime: 'audio/mp4', ext: 'm4a' },
+  // Recovery's fallback when re-encoding a raw file fails (story 3.11): 16-bit PCM WAV.
+  { mime: 'audio/wav', ext: 'wav' },
 ] as const;
 
 export type AudioFormat = (typeof AUDIO_FORMATS)[number];

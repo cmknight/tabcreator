@@ -28,6 +28,7 @@ const IDLE = {
   nearLimit: false,
   savedSeq: 0,
   storageFull: false,
+  recovered: [],
 };
 
 /** The prefs' analysis defaults the fakes return; `record()` copies them into the take. */

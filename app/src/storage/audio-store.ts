@@ -4,7 +4,7 @@
 // Raw appends go through the OPFS worker (sync access handle, flushed per append), so a crash
 // loses at most the chunk being written. Rejects only with AppError.
 
-import { AUDIO_FORMATS, extensionFor } from '../model/audio-format';
+import { AUDIO_FORMATS, extensionFor, type AudioExtension } from '../model/audio-format';
 import { AppError } from '../model/errors';
 import { assertWritable, hasErrorName, toStorageError } from './write-guard';
 
@@ -46,6 +46,22 @@ export interface AudioStore {
   deleteRaw(takeId: string): Promise<void>;
   /** Take ids that have a raw file. */
   listRaw(): Promise<string[]>;
+  /**
+   * How many whole samples the take's raw file holds, from its size (bytes / 4) without reading
+   * it; 0 when there is no raw file.
+   */
+  rawSampleCount(takeId: string): Promise<number>;
+  /**
+   * The compressed files in `audio/`, by take id and extension; a file whose extension is not
+   * in `AUDIO_FORMATS` is not listed.
+   */
+  listCompressed(): Promise<CompressedFile[]>;
+}
+
+/** One compressed audio file: `audio/{id}.{ext}`. */
+export interface CompressedFile {
+  id: string;
+  ext: AudioExtension;
 }
 
 export interface AudioStoreOptions {
@@ -280,6 +296,36 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
         return ids.sort();
       } catch (err) {
         throw toStorageError(err, 'List raw audio');
+      }
+    },
+
+    async rawSampleCount(takeId) {
+      try {
+        const raw = await dir(RAW_DIR, false);
+        const handle = raw && (await fileIfPresent(raw, `${takeId}${RAW_EXT}`));
+        if (!handle) return 0;
+        // A crash mid-append can leave a partial sample at the end; it is not counted.
+        return Math.floor((await handle.getFile()).size / Float32Array.BYTES_PER_ELEMENT);
+      } catch (err) {
+        throw toStorageError(err, 'Size raw audio');
+      }
+    },
+
+    async listCompressed() {
+      try {
+        const audio = (await dir(AUDIO_DIR, false)) as KeyedDirectory | null;
+        if (!audio) return [];
+        const files: CompressedFile[] = [];
+        for await (const name of audio.keys()) {
+          const dot = name.lastIndexOf('.');
+          if (dot <= 0) continue;
+          const ext = name.slice(dot + 1);
+          const format = AUDIO_FORMATS.find((f) => f.ext === ext);
+          if (format) files.push({ id: name.slice(0, dot), ext: format.ext });
+        }
+        return files.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      } catch (err) {
+        throw toStorageError(err, 'List compressed audio');
       }
     },
   };

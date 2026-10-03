@@ -14,6 +14,10 @@
 // (a stolen tab must not keep running the app): a save still going then is cut off by the close
 // and the fence, and its take stays `recording` for recovery (story 3.11). The database's
 // `blocked` shows `upgrade-blocked`.
+//
+// Every grant (the start's, or Use here's without a reload) calls `onHeld`. The app-wide lock
+// runs the recovery scan (story 3.11) `RECOVERY_SCAN_DELAY_MS` later: after a steal, the old tab
+// may still be saving its take within the handover window, and that take must not be offered.
 
 import { engineClient } from '../engine/engine-client';
 import { db, type ConnectionState } from '../storage/db';
@@ -22,6 +26,18 @@ import { recordingSession } from './recording-session';
 export const INSTANCE_LOCK_NAME = 'tabcreator-instance';
 /** How long "Use here" waits for the holder to release before stealing the lock, ms. */
 export const HANDOVER_WAIT_MS = 3000;
+/** How long after a grant the recovery scan starts, ms: past the old holder's handover window. */
+export const RECOVERY_SCAN_DELAY_MS = HANDOVER_WAIT_MS + 500;
+
+/** The app-wide `onHeld`: runs `scan` `RECOVERY_SCAN_DELAY_MS` after each grant. */
+export function delayedRecoveryScan(
+  setTimer: (fn: () => void, ms: number) => unknown,
+  scan: () => unknown,
+): () => void {
+  return () => {
+    setTimer(() => void scan(), RECOVERY_SCAN_DELAY_MS);
+  };
+}
 
 /**
  * `acquiring`: the first request is pending. `held`: this tab runs the app. `other-tab`: another
@@ -69,6 +85,8 @@ export interface InstanceLockDeps {
   reload: () => void;
   setTimeout: (fn: () => void, ms: number) => unknown;
   clearTimeout: (handle: unknown) => void;
+  /** Called on every grant this tab runs the app under (the start's, or Use here's). */
+  onHeld: () => void;
 }
 
 export interface InstanceLock {
@@ -112,6 +130,11 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
     holding = true;
     releasing = false;
     set('held');
+    try {
+      deps.onHeld();
+    } catch {
+      // The app runs regardless (the recovery scan waits for the next start).
+    }
     return new Promise<void>((resolve) => {
       releaseHeld = resolve;
     });
@@ -294,6 +317,11 @@ export const instanceLock: InstanceLock = createInstanceLock({
   reload: () => location.reload(),
   setTimeout: (fn, ms) => setTimeout(fn, ms),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  // The scan is a no-op once the store has been handed over (this tab lost the lock meanwhile).
+  onHeld: delayedRecoveryScan(
+    (fn, ms) => setTimeout(fn, ms),
+    () => recordingSession.scanForRecovery(),
+  ),
 });
 
 // Dev only. main.tsx imports this module, so Vite turns an edit here or in anything it imports

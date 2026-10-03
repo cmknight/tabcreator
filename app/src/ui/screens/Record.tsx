@@ -4,6 +4,7 @@ import { LevelMeter } from '../components/LevelMeter';
 import { MicGate } from '../components/MicGate';
 import { MicSelect } from '../components/MicSelect';
 import { RecordButton } from '../components/RecordButton';
+import { RecoveredTakeBanners } from '../components/RecoveredTakeBanner';
 import { StorageFullBanner } from '../components/StorageFullBanner';
 import { strings } from '../strings';
 import styles from './Screen.module.css';
@@ -12,6 +13,8 @@ import recordStyles from './Record.module.css';
 export function Record() {
   return (
     <section className={styles.screen}>
+      {/* First, above the h1 and outside the gate: unfinished takes found at start (story 3.11). */}
+      <RecoveredTakeBanners />
       {/* Above the h1: shown after a take stopped because storage is full, until the next take. */}
       <StorageFullBanner />
       {/* First, above the h1 (mockup order); it renders only while the mic is live. */}

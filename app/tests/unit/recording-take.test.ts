@@ -1519,3 +1519,145 @@ describe('handover: transitions still in flight', () => {
     expect(t.session.getSnapshot().errorCode).toBeUndefined();
   });
 });
+
+describe('recovery in the store (story 3.11)', () => {
+  /** Recovery deps over one unfinished take `id` with `samples` of raw audio. */
+  function recoveryDeps(id: string, samples: number): NonNullable<RecordingDeps['recovery']> {
+    const stored: Take = {
+      id,
+      title: 'Take',
+      createdAt: new Date(NOW).toISOString(),
+      status: 'recording',
+      durationMs: 0,
+      sampleRate: RATE,
+      tuning: 'EADGBE',
+      micLabel: 'USB',
+      audioMime: null,
+      trimStartMs: 0,
+      trimEndMs: null,
+      settings: { ...ANALYSIS_DEFAULTS },
+      analysisVersion: null,
+      updatedAt: new Date(NOW).toISOString(),
+    };
+    return {
+      listTakes: vi.fn(async () => [stored]),
+      getTake: vi.fn(async (takeId: string) => (takeId === id ? stored : null)),
+      listRaw: vi.fn(async () => [id]),
+      listCompressed: vi.fn(async () => []),
+      rawSampleCount: vi.fn(async () => samples),
+      readRaw: vi.fn(async () => new Float32Array(samples)),
+      readCompressed: vi.fn(async () => null),
+      deleteRaw: vi.fn(async () => {}),
+      deleteAudio: vi.fn(async () => {}),
+      encodePcm: vi.fn(async () => new Blob(['x'], { type: 'audio/webm;codecs=opus' })),
+      encodeWav: vi.fn(() => new Blob(['x'], { type: 'audio/wav' })),
+    };
+  }
+
+  it('publishes the offered takes in the snapshot; Open saves recovered without savedSeq', async () => {
+    const t = setup({ recovery: recoveryDeps('old', RATE * 10) });
+    await t.session.scanForRecovery();
+    expect(t.session.getSnapshot().recovered).toEqual([
+      { id: 'old', createdAt: new Date(NOW).toISOString(), durationMs: 10_000, opening: false },
+    ]);
+    await t.session.openRecovered('old');
+    expect(t.deps.patchTake).toHaveBeenCalledWith(
+      'old',
+      expect.objectContaining({ status: 'recorded', stopReason: 'recovered' }),
+      'recording-session',
+    );
+    expect(t.log).toEqual([
+      'writeCompressed old audio/webm;codecs=opus',
+      'patchTake old',
+      'navigate old',
+    ]);
+    expect(t.session.getSnapshot()).toMatchObject({ recovered: [], savedSeq: 0 });
+  });
+
+  it('own take: the take this tab is recording is never offered', async () => {
+    const t = await recording({ recovery: recoveryDeps('take-1', RATE * 2) });
+    await t.session.scanForRecovery();
+    expect(t.session.getSnapshot().recovered).toEqual([]);
+    expect(t.deps.deleteTake).not.toHaveBeenCalled();
+  });
+
+  it('after a handover the scan does nothing', async () => {
+    const recovery = recoveryDeps('old', RATE * 2);
+    const t = setup({ recovery });
+    await t.session.releaseForHandover();
+    await t.session.scanForRecovery();
+    expect(recovery.listTakes).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot().recovered).toEqual([]);
+  });
+
+  it('Discard deletes the take and drops its banner', async () => {
+    const t = setup({ recovery: recoveryDeps('old', RATE * 2) });
+    await t.session.scanForRecovery();
+    await t.session.discardRecovered('old');
+    expect(t.deps.deleteTake).toHaveBeenCalledWith('old', 'recording-session');
+    expect(t.session.getSnapshot().recovered).toEqual([]);
+  });
+
+  it('beforeunload: guarded only while a take runs', async () => {
+    const remove = vi.fn();
+    let handler: ((event: BeforeUnloadEvent) => void) | null = null;
+    const addUnloadGuard = vi.fn((h: (event: BeforeUnloadEvent) => void) => {
+      handler = h;
+      return remove;
+    });
+    const t = setup({ addUnloadGuard });
+    await t.session.allowMic();
+    expect(addUnloadGuard).not.toHaveBeenCalled();
+    const started = t.session.record();
+    expect(addUnloadGuard).toHaveBeenCalledTimes(1);
+    t.created.resolve();
+    await started;
+    expect(addUnloadGuard).toHaveBeenCalledTimes(1);
+    const event = { preventDefault: vi.fn(), returnValue: undefined as unknown };
+    handler!(event as unknown as BeforeUnloadEvent);
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(event.returnValue).toBe(true);
+    t.setElapsed(5000);
+    t.emit(chunk(1));
+    await t.session.stop('user');
+    expect(t.session.getSnapshot().recording).toBe('idle');
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(addUnloadGuard).toHaveBeenCalledTimes(1);
+  });
+
+  it('beforeunload: guarded while a recovered take is being rebuilt, removed when done', async () => {
+    const remove = vi.fn();
+    const addUnloadGuard = vi.fn(() => remove);
+    const recovery = recoveryDeps('old', RATE * 2);
+    let finish!: (blob: Blob) => void;
+    vi.mocked(recovery.encodePcm).mockReturnValueOnce(
+      new Promise<Blob>((resolve) => (finish = resolve)),
+    );
+    const t = setup({ recovery, addUnloadGuard });
+    await t.session.scanForRecovery();
+    expect(addUnloadGuard).not.toHaveBeenCalled();
+    const opening = t.session.openRecovered('old');
+    await flush();
+    expect(t.session.getSnapshot().recording).toBe('idle');
+    expect(addUnloadGuard).toHaveBeenCalledTimes(1);
+    expect(remove).not.toHaveBeenCalled();
+    finish(new Blob(['x'], { type: 'audio/webm;codecs=opus' }));
+    await opening;
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('beforeunload: a count-in is guarded too, and its cancel removes the guard', async () => {
+    const remove = vi.fn();
+    const addUnloadGuard = vi.fn(() => remove);
+    const t = setup({ addUnloadGuard });
+    t.prefs.countIn = { on: true, bpm: 120 };
+    const session = createRecordingSession(t.deps);
+    await session.allowMic();
+    void session.record();
+    await flush();
+    expect(session.getSnapshot().recording).toBe('count-in');
+    expect(addUnloadGuard).toHaveBeenCalledTimes(1);
+    await session.stop('user');
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+});

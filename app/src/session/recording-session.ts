@@ -62,6 +62,12 @@
 // stop pipeline with `stopReason: 'instance-lost'` (no navigation; when the save fails the take
 // stays `recording` for recovery), a count-in is cancelled, and the input is released. From then
 // on the store is handed over: it opens no input and starts no take.
+//
+// Recovery (story 3.11, US-3.2, spine AD-15): the recovery module (recording-recovery.ts) scans
+// for unfinished takes once the instance lock is held (`scanForRecovery`), never touching this
+// tab's own take; the offered takes are the snapshot's `recovered`, rebuilt by
+// `openRecovered` or deleted by `discardRecovered`. While a take counts in, records or saves,
+// a `beforeunload` guard asks before the page is left.
 
 import type { LevelsDbfs } from '../audio/level-meter';
 import {
@@ -76,6 +82,7 @@ import {
   type MicPermission,
 } from '../audio/mic';
 import { COUNT_IN_BEATS, countInSchedule } from '../audio/metronome';
+import { encodePcm, encodeWavBlob, WAV_MIME } from '../audio/encode';
 import { RECORDING_MIME } from '../audio/recorder';
 import { AppError, isAppError, type AppErrorCode } from '../model/errors';
 import type { AnalysisSettings, StopReason, Take } from '../model/types';
@@ -85,12 +92,18 @@ import { DEFAULT_PREFS, loadPrefs, updatePrefs } from '../storage/prefs';
 import type { InputTransition, OpenedInput } from './input-derivation';
 import { createInputQualityWatch, type InputQualityFields } from './input-quality-watch';
 import { createLevelWatch, type LevelFields } from './level-watch';
+import {
+  createRecordingRecovery,
+  type RecoveredTake,
+  type RecoveryDeps,
+} from './recording-recovery';
 import { createTunerWatch, type TunerDisplay, type TunerFields } from './tuner-watch';
 
 export type { MicDevice } from '../audio/mic';
 export type { TunerReading } from '../audio/tuner';
 export { TUNER_POLL_MS } from '../audio/tuner';
 export type { TunerDisplay } from './tuner-watch';
+export type { RecoveredTake } from './recording-recovery';
 
 export type MicState = 'setup' | 'requesting' | 'live' | 'error';
 
@@ -201,6 +214,8 @@ export interface RecordingSnapshot extends LevelFields, InputQualityFields, Tune
    * next take starts.
    */
   storageFull: boolean;
+  /** Unfinished takes offered for recovery, oldest first (the Record screen's banners). */
+  recovered: readonly RecoveredTake[];
 }
 
 export interface RecordingSession {
@@ -276,6 +291,19 @@ export interface RecordingSession {
    * rejects.
    */
   releaseForHandover(): Promise<void>;
+  /**
+   * The recovery scan (once the instance lock is held): removes orphan files and too-short
+   * unfinished takes, and offers the other unfinished takes in `recovered`. A no-op after a
+   * handover; never rejects.
+   */
+  scanForRecovery(): Promise<void>;
+  /** Open on a recovered take: rebuilds its audio, saves it `recovered`, opens its Tab. */
+  openRecovered(id: string): Promise<void>;
+  /**
+   * Discard on a recovered take: deletes it and its files; `deleted` runs after the delete,
+   * before its entry leaves `recovered`.
+   */
+  discardRecovered(id: string, deleted?: () => void): Promise<void>;
 }
 
 /** The shell functions the store drives; injected so tests can fake audio/ and storage/. */
@@ -310,6 +338,35 @@ export interface RecordingDeps {
   newId: () => string;
   /** The length limits; `MAX_TAKE_MS` and `WARN_LEAD_MS` when absent (dev overrides only). */
   limits?: TakeLimits;
+  /** Recovery's storage and encoding; absent, the scan finds nothing (tests of other parts). */
+  recovery?: RecoveryDeps;
+  /**
+   * Adds the `beforeunload` handler (the guard while a take runs); returns its removal. Absent,
+   * no guard is set.
+   */
+  addUnloadGuard?: (handler: (event: BeforeUnloadEvent) => void) => () => void;
+}
+
+/** Recovery deps that find nothing (a store created without `recovery`). */
+const NO_RECOVERY: RecoveryDeps = {
+  listTakes: () => Promise.resolve([]),
+  getTake: () => Promise.resolve(null),
+  listRaw: () => Promise.resolve([]),
+  listCompressed: () => Promise.resolve([]),
+  rawSampleCount: () => Promise.resolve(0),
+  readRaw: () => Promise.reject(new AppError('audio-missing', 'No recovery storage')),
+  readCompressed: () => Promise.resolve(null),
+  deleteRaw: () => Promise.resolve(),
+  deleteAudio: () => Promise.resolve(),
+  encodePcm: () => Promise.reject(new Error('No encoder')),
+  encodeWav: () => new Blob([], { type: WAV_MIME }),
+};
+
+/** The `beforeunload` guard: asks before the page is left. */
+function guardUnload(event: BeforeUnloadEvent) {
+  event.preventDefault();
+  // Older browsers ask only when `returnValue` is set.
+  event.returnValue = true;
 }
 
 /** A take from `record()` until it is saved, fails or is abandoned. */
@@ -403,6 +460,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     nearLimit: false,
     savedSeq: 0,
     storageFull: false,
+    recovered: [],
     ...levels.transition(idle),
     ...quality.transition(idle),
     ...tuning.transition(idle),
@@ -432,9 +490,27 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   /** The published take id: none while idle or counting in (no take exists yet). */
   const takeId = () => (recording === 'count-in' ? null : (active?.id ?? null));
 
+  /** Removes the `beforeunload` guard; set only while a take runs. */
+  let removeUnloadGuard: (() => void) | null = null;
+
   function notify(next: RecordingSnapshot) {
     snapshot = next;
+    syncUnloadGuard();
     for (const l of listeners) l();
+  }
+
+  /**
+   * The guard is on while the published recording state is not `idle`, or while a recovered
+   * take is being rebuilt (a real-time encode a reload would lose).
+   */
+  function syncUnloadGuard() {
+    const on = snapshot.recording !== 'idle' || snapshot.recovered.some((t) => t.opening);
+    if (on && !removeUnloadGuard && deps.addUnloadGuard) {
+      removeUnloadGuard = deps.addUnloadGuard(guardUnload);
+    } else if (!on && removeUnloadGuard) {
+      removeUnloadGuard();
+      removeUnloadGuard = null;
+    }
   }
 
   /** A derivation's read publishes its fields; notifies only when one of them changes. */
@@ -475,6 +551,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       nearLimit: nearLimit(),
       savedSeq: snapshot.savedSeq,
       storageFull: snapshot.storageFull,
+      recovered: snapshot.recovered,
       ...levels.transition(t),
       ...quality.transition(t),
       ...tuning.transition(t),
@@ -1252,6 +1329,17 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     return handover;
   }
 
+  const recovery = createRecordingRecovery(deps.recovery ?? NO_RECOVERY, {
+    activeTakeId: () => active?.id ?? null,
+    isRecording: () => recording !== 'idle',
+    handedOver: () => handover !== null,
+    publish: (recovered) => patch({ recovered }),
+    writeCompressed: (id, blob) => deps.writeCompressed(id, blob),
+    patchTake: (id, fields, writer) => deps.patchTake(id, fields, writer),
+    deleteTake: (id, writer) => deps.deleteTake(id, writer),
+    navigate: (id) => deps.navigate(id),
+  });
+
   let resuming = false;
 
   async function resume() {
@@ -1294,6 +1382,9 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     readCountInBeat,
     setCountIn,
     releaseForHandover,
+    scanForRecovery: () => recovery.scan(),
+    openRecovered: (id) => recovery.open(id),
+    discardRecovered: (id, deleted) => recovery.discard(id, deleted),
   };
 }
 
@@ -1325,6 +1416,23 @@ export const recordingSession: RecordingSession = createRecordingSession({
   openRawWriter: (takeId) => audioStore.openRawWriter(takeId),
   writeCompressed: (takeId, blob) => audioStore.writeCompressed(takeId, blob),
   deleteTake: (id, writer) => db.deleteTake(id, writer),
+  recovery: {
+    listTakes: () => db.listTakes(),
+    getTake: (id) => db.getTake(id),
+    listRaw: () => audioStore.listRaw(),
+    listCompressed: () => audioStore.listCompressed(),
+    rawSampleCount: (id) => audioStore.rawSampleCount(id),
+    readRaw: (id) => audioStore.readRaw(id),
+    readCompressed: (id) => audioStore.readCompressed(id),
+    deleteRaw: (id) => audioStore.deleteRaw(id),
+    deleteAudio: (id) => audioStore.deleteAudio(id),
+    encodePcm,
+    encodeWav: encodeWavBlob,
+  },
+  addUnloadGuard: (handler) => {
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  },
   // The `tab` route's hash (ui/router.ts routeToHash); session/ may not import ui/.
   navigate: (takeId) => {
     window.location.hash = `#/tab/${encodeURIComponent(takeId)}`;

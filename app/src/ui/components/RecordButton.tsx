@@ -1,15 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { recordingSession } from '../../session/recording-session';
 import { announce } from '../a11y/announcer';
+import { formatElapsed } from '../format';
 import { strings } from '../strings';
 import { MIC_CARD_TITLE_ID } from './MicGate';
 import styles from './RecordButton.module.css';
-
-/** `m:ss` for a duration in ms, rounded down to the second. */
-export function formatElapsed(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
-}
 
 /** The warning icon (as the level meter's and the input quality banner's). */
 function WarnIcon() {

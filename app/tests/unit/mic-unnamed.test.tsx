@@ -28,6 +28,7 @@ const LIVE: RecordingSnapshot = {
   nearLimit: false,
   savedSeq: 0,
   storageFull: false,
+  recovered: [],
 };
 
 describe('unnamed microphone label', () => {

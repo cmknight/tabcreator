@@ -7,6 +7,7 @@ describe('audio format table', () => {
       ['audio/webm;codecs=opus', 'webm'],
       ['audio/ogg;codecs=opus', 'ogg'],
       ['audio/mp4', 'm4a'],
+      ['audio/wav', 'wav'],
     ]);
     for (const f of AUDIO_FORMATS) {
       expect(extensionFor(f.mime)).toBe(f.ext);
@@ -20,8 +21,8 @@ describe('audio format table', () => {
   });
 
   it('throws on an unknown MIME type', () => {
-    expect(() => extensionFor('audio/wav')).toThrow(/Unsupported audio MIME type/);
+    expect(() => extensionFor('audio/flac')).toThrow(/Unsupported audio MIME type/);
     expect(() => extensionFor('')).toThrow();
-    expect(mimeForExtension('wav')).toBeNull();
+    expect(mimeForExtension('flac')).toBeNull();
   });
 });
