@@ -1,7 +1,9 @@
-import { lazy, Suspense, type ReactNode } from 'react';
+import { lazy, Suspense, useSyncExternalStore, type ReactNode } from 'react';
 import styles from './App.module.css';
+import { instanceLock } from './session/instance-lock';
 import { Announcer } from './ui/a11y/announcer';
 import { ShortcutListener } from './ui/a11y/shortcuts';
+import { InstanceScreen } from './ui/components/InstanceScreen';
 import { MicErrorAnnouncer } from './ui/components/MicErrorAnnouncer';
 import { MicNotices } from './ui/components/MicNotices';
 import { RecordingAnnouncer } from './ui/components/RecordingAnnouncer';
@@ -41,7 +43,19 @@ function renderScreen(route: Route): ReactNode {
 const StorageTestPage = import.meta.env.DEV ? lazy(() => import('./dev/StorageTestPage')) : null;
 const UiTestPage = import.meta.env.DEV ? lazy(() => import('./dev/UiTestPage')) : null;
 
+/**
+ * The instance gate (story 3.10, spine AD-6): the shell and every screen (all of which may write
+ * storage) mount only while this tab holds the instance lock; otherwise the full-screen instance
+ * notice replaces them, and nothing while the first request is pending.
+ */
 export function App() {
+  const state = useSyncExternalStore(instanceLock.subscribe, instanceLock.getSnapshot);
+  if (state === 'acquiring') return null;
+  if (state !== 'held') return <InstanceScreen state={state} />;
+  return <HeldApp />;
+}
+
+function HeldApp() {
   const hash = useHash();
   const DevPage = import.meta.env.DEV
     ? hash === '#/__test/storage'

@@ -179,6 +179,34 @@ describe('engine client', () => {
     first.emit({ type: 'result', reqId: 1, payload: 'late' });
   });
 
+  it('cancelAll rejects every request with analysis-cancelled and terminates the in-flight worker', async () => {
+    const { client, workers, ready } = setup();
+    ready();
+    const y = client.analyze('Y', pcm(), 48000, INPUT);
+    const z = client.mapFrets('Z', [note], [], 24);
+    const x = client.analyze('X', pcm(), 48000, INPUT);
+    const first = workers[0];
+    if (!first) throw new Error('no worker');
+    client.cancelAll();
+    expect(first.terminated).toBe(true);
+    for (const p of [y, z, x]) expect((await rejection(p)).code).toBe('analysis-cancelled');
+    // Nothing is left to run: no worker is respawned until the next request.
+    expect(workers).toHaveLength(1);
+    first.emit({ type: 'result', reqId: 1, payload: 'late' });
+    const next = client.mapFrets('W', [note], [], 24);
+    expect(workers).toHaveLength(2);
+    ready();
+    workers[1]?.reply('W');
+    await expect(next).resolves.toBe('W');
+  });
+
+  it('cancelAll with nothing pending keeps the idle worker', () => {
+    const { client, current, ready } = setup();
+    ready();
+    client.cancelAll();
+    expect(current().terminated).toBe(false);
+  });
+
   it('rejects a failed request with analysis-failed and keeps serving', async () => {
     const { client, current, ready } = setup();
     ready();

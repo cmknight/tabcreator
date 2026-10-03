@@ -56,6 +56,12 @@
 // Clipping (US-1.3, spine AD-14): the capture reports each chunk's clipped samples (|x| at or
 // above the meter's Too loud threshold); the take's total is kept in memory as `clipCount`, and
 // every saved take's stop patch carries `clipped: clipCount > 0`.
+//
+// Handover (story 3.10, US-8.5, spine AD-6): `releaseForHandover()` runs when this tab gives the
+// instance lock to another tab. A recording (or stopping) take is stopped and saved through the
+// stop pipeline with `stopReason: 'instance-lost'` (no navigation; when the save fails the take
+// stays `recording` for recovery), a count-in is cancelled, and the input is released. From then
+// on the store is handed over: it opens no input and starts no take.
 
 import type { LevelsDbfs } from '../audio/level-meter';
 import {
@@ -262,6 +268,14 @@ export interface RecordingSession {
    * and rounded; a non-number keeps the current one. A no-op unless `idle`.
    */
   setCountIn(patch: Partial<CountInPrefs>): void;
+  /**
+   * Gives the mic and any take up for another tab (the instance lock's handover): cancels a
+   * count-in; stops a recording or stopping take and saves it as `instance-lost` (no
+   * navigation); then closes the input (`mic` back to `setup`). Afterwards the store opens no
+   * input and starts no take. Resolves when done (the same promise on a repeat call); never
+   * rejects.
+   */
+  releaseForHandover(): Promise<void>;
 }
 
 /** The shell functions the store drives; injected so tests can fake audio/ and storage/. */
@@ -412,6 +426,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   let recording: RecordingState = 'idle';
   /** The count-in in progress; set only while `count-in`. */
   let countIn: CountIn | null = null;
+  /** The handover in progress or done (`releaseForHandover`); null before one. */
+  let handover: Promise<void> | null = null;
 
   /** The published take id: none while idle or counting in (no take exists yet). */
   const takeId = () => (recording === 'count-in' ? null : (active?.id ?? null));
@@ -584,6 +600,20 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   }
 
   /**
+   * An input transition failed: the error card with `code`. After a handover the store shows no
+   * card (the tab no longer runs the app): the mic stays `setup`.
+   */
+  function micFailed(code: AppErrorCode) {
+    set(handover ? { mic: 'setup' } : { mic: 'error', errorCode: code });
+  }
+
+  /** `holds` for an input just opened: after a handover (`releaseForHandover`) none is kept. */
+  function keeps(opened: OpenedInput): boolean {
+    if (handover && input === opened) input = null;
+    return holds(opened);
+  }
+
+  /**
    * The device an ended input ran on: its listed id as resolved when it went live, else its
    * track's id when that is a real one (not Chrome's `default` or `communications` alias), else
    * null (unresolved).
@@ -622,6 +652,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   }
 
   function allowMic(): Promise<void> {
+    if (handover) return Promise.resolve();
     if (snapshot.mic === 'requesting' || snapshot.mic === 'live') return Promise.resolve();
     return enqueue(allow);
   }
@@ -639,16 +670,17 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       live = await goLive(await requestPreferred());
     } catch (err) {
       input = null;
-      set({ mic: 'error', errorCode: asAppError(err).code });
+      micFailed(asAppError(err).code);
       return;
     }
-    if (!holds(live.opened)) return;
+    if (!keeps(live.opened)) return;
     savePrefs({ micGranted: true });
     set({ mic: 'live', devices: live.devices, activeDeviceId: live.activeDeviceId });
   }
 
   function selectMic(deviceId: string): Promise<void> {
     if (
+      handover ||
       snapshot.mic !== 'live' ||
       running ||
       recording !== 'idle' ||
@@ -670,10 +702,10 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       live = await goLive(await deps.requestMic(deviceId));
     } catch (err) {
       input = null;
-      set({ mic: 'error', errorCode: asAppError(err).code });
+      micFailed(asAppError(err).code);
       return;
     }
-    if (!holds(live.opened)) return;
+    if (!keeps(live.opened)) return;
     savePrefs({ micDeviceId: deviceId });
     set({ mic: 'live', devices: live.devices, activeDeviceId: live.activeDeviceId });
   }
@@ -708,7 +740,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     const devices = await listDevices();
     const unplugged = endedId !== null && !devices.some((d) => d.deviceId === endedId);
     if (!unplugged || devices.length === 0) {
-      set({ mic: 'error', errorCode: 'mic-lost' });
+      micFailed('mic-lost');
       return;
     }
     let live;
@@ -716,10 +748,10 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       live = await goLive(await deps.requestMic());
     } catch (err) {
       input = null;
-      set({ mic: 'error', errorCode: asAppError(err).code });
+      micFailed(asAppError(err).code);
       return;
     }
-    if (!holds(live.opened)) return;
+    if (!keeps(live.opened)) return;
     const now = activeDevice(live.opened, live.devices);
     set({
       mic: 'live',
@@ -844,14 +876,11 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     const opened = input;
     input = null;
     if (opened) release(opened);
-    set({
-      mic: 'error',
-      errorCode: isAppError(err) ? err.code : 'storage-failed',
-    });
+    micFailed(isAppError(err) ? err.code : 'storage-failed');
   }
 
   function record(): Promise<void> {
-    if (snapshot.mic !== 'live' || running || recording !== 'idle' || !input) {
+    if (handover || snapshot.mic !== 'live' || running || recording !== 'idle' || !input) {
       return Promise.resolve();
     }
     return enqueue(startTake).catch(() => {});
@@ -892,7 +921,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   async function startTake() {
     const opened = input;
     // Re-checked: a transition queued ahead of this one may have changed the input.
-    if (snapshot.mic !== 'live' || recording !== 'idle' || !opened) return;
+    if (handover || snapshot.mic !== 'live' || recording !== 'idle' || !opened) return;
     // Cleared for every take, so it never describes an earlier count-in.
     if (import.meta.env.DEV) delete window.__recordingClock;
     const take: ActiveTake = {
@@ -1123,7 +1152,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
    * The stop pipeline: stops the capture (already stopped at the cap for `max-length`), then
    * saves the take, or deletes it when it is under `MIN_TAKE_MS`. A take whose raw appends hit
    * `storage-full` is saved as `storage-full` whatever `reason` asked. A `user` or `max-length`
-   * save opens its Tab; a failure stop (`mic-lost`, `storage-full`) stays on Record, and when
+   * save opens its Tab; a failure stop (`mic-lost`, `storage-full`, `instance-lost`) stays on
+   * Record, and when
    * its save fails the take is left `recording` for recovery with no error card (the
    * `storage-full` banner still shows). Settles as what became of the take.
    */
@@ -1173,7 +1203,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       capture.abort();
       // The raw file keeps what was written; recovery (story 3.11) rebuilds the take.
       void take.appends.then(() => writer.close()).catch(() => {});
-      if (take.storageFull || stopReason === 'mic-lost') {
+      if (take.storageFull || stopReason === 'mic-lost' || stopReason === 'instance-lost') {
         // A failure stop: the mic is handled by its own path (kept live, or the idle rule).
         active = null;
         setRecording('idle', take.storageFull ? { storageFull: true } : {});
@@ -1190,6 +1220,36 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     });
     if (stopReason === 'user' || stopReason === 'max-length') deps.navigate(take.id);
     return 'saved';
+  }
+
+  function releaseForHandover(): Promise<void> {
+    if (handover) return handover;
+    if (recording === 'count-in') cancelCountIn();
+    // Marked stopping now, so the cap or a full disk does not queue a save of its own first.
+    if (recording === 'recording' && active) {
+      stopWatchingLimits(active);
+      setRecording('stopping');
+    }
+    // Idle: nothing to wait for (an allow waiting on a permission prompt must not hold it up).
+    const saving =
+      recording === 'idle'
+        ? Promise.resolve()
+        : enqueue(async () => {
+            // Queued after a take being created (`starting`) or saved by a Stop: the first now
+            // records, the second has gone.
+            if (active && (recording === 'recording' || recording === 'stopping')) {
+              stopWatchingLimits(active);
+              setRecording('stopping');
+              await finishTake('instance-lost');
+            }
+          }).catch(() => {});
+    handover = saving.then(() => {
+      const opened = input;
+      input = null;
+      if (opened) release(opened);
+      set({ mic: 'setup' });
+    });
+    return handover;
   }
 
   let resuming = false;
@@ -1233,6 +1293,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     readElapsedMs: () => active?.capture?.elapsedMs() ?? 0,
     readCountInBeat,
     setCountIn,
+    releaseForHandover,
   };
 }
 

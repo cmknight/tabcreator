@@ -66,3 +66,4 @@ A good performance is never lost, whatever happens to the tab.
   - entry 9: unplug a real USB mic mid-take;
   - entry 10: hand over between two real tabs;
   - entry 11: close the tab mid-take and reopen.
+- From story 3.10 (for entry 11): after a steal, the old tab may still write its instance-lost take for up to 3 s (HANDOVER_WAIT_MS) after the new tab holds the lock. Recovery must not act on a `recording` take whose save may still land within that window.

@@ -53,6 +53,11 @@ export interface TakeDb {
   /** Removes the Take and Tab in one transaction, then its audio and raw files best-effort. */
   deleteTake(id: string, writer: TakeWriter): Promise<void>;
   fenceWrites(): void;
+  /**
+   * Closes the connection for good (the instance lock's handover, spine AD-6): every later call,
+   * read or write, rejects with `instance-taken`. Transactions already running finish first.
+   */
+  close(): void;
   /** Called on every connection state change. Returns the unsubscribe function. */
   onConnectionState(listener: (state: ConnectionState) => void): () => void;
 }
@@ -98,12 +103,31 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
   const stateListeners = new Set<(state: ConnectionState) => void>();
   let connection: Promise<Db> | null = null;
   let lost = false;
+  /** Set by `close()`: this tab handed the app over. */
+  let closed = false;
+
+  /**
+   * `toStorageError`, except that once `close()` has run a browser failure (for example the
+   * InvalidStateError of a transaction on the closed connection, by an operation that got the
+   * connection before the close) is `instance-taken`, not `storage-failed`.
+   */
+  function storageError(err: unknown, what: string): AppError {
+    if (closed && !(err instanceof AppError)) {
+      return new AppError('instance-taken', `${what}: database closed: instance lost`, {
+        cause: err,
+      });
+    }
+    return toStorageError(err, what);
+  }
 
   function report(state: ConnectionState) {
     for (const l of [...stateListeners]) l(state);
   }
 
   function connect(): Promise<Db> {
+    if (closed) {
+      return Promise.reject(new AppError('instance-taken', 'Database closed: instance lost'));
+    }
     if (lost) {
       return Promise.reject(
         new AppError('storage-failed', 'Database connection closed by a newer version'),
@@ -139,7 +163,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
       },
       (err: unknown) => {
         connection = null;
-        throw toStorageError(err, 'Open database');
+        throw storageError(err, 'Open database');
       },
     );
     connection = opening;
@@ -150,7 +174,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     try {
       return await fn(await connect());
     } catch (err) {
-      throw toStorageError(err, what);
+      throw storageError(err, what);
     }
   }
 
@@ -169,7 +193,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     try {
       tx = db.transaction(stores, 'readwrite');
     } catch (err) {
-      throw toStorageError(err, what);
+      throw storageError(err, what);
     }
     const done = tx.done;
     done.catch(() => {
@@ -188,7 +212,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
       } catch {
         // Already aborted or finished.
       }
-      throw toStorageError(cause, what);
+      throw storageError(cause, what);
     }
   }
 
@@ -288,6 +312,18 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     },
 
     fenceWrites,
+
+    close() {
+      if (closed) return;
+      closed = true;
+      const open = connection;
+      connection = null;
+      // An open still in flight is closed as soon as it succeeds.
+      void open?.then(
+        (db) => db.close(),
+        () => {},
+      );
+    },
 
     onConnectionState(listener) {
       stateListeners.add(listener);

@@ -79,6 +79,12 @@ export interface EngineClient {
   ): Promise<(FretPosition | null)[]>;
   version(): Promise<string>;
   cancel(takeId: string): void;
+  /**
+   * Rejects every queued and in-flight request with `analysis-cancelled` (the instance lock's
+   * handover, spine AD-6). An in-flight request's worker is terminated; the next request starts
+   * a fresh one.
+   */
+  cancelAll(): void;
 }
 
 interface Request {
@@ -274,6 +280,21 @@ export function createEngineClient(createWorker: () => EngineWorker): EngineClie
         ready = false;
         r.reject(cancelled());
         pump();
+      }
+    },
+
+    cancelAll() {
+      const pending = queue.splice(0);
+      const running = inFlight;
+      if (running) {
+        inFlight = null;
+        worker?.terminate();
+        worker = null;
+        ready = false;
+        pending.unshift(running);
+      }
+      for (const r of pending) {
+        r.reject(new AppError('analysis-cancelled', `cancelled take ${r.takeId}: instance lost`));
       }
     },
   };

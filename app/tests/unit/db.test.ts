@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { IDBFactory } from 'fake-indexeddb';
+import { IDBDatabase, IDBFactory } from 'fake-indexeddb';
 import { openDB } from 'idb';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { AppError } from '../../src/model/errors';
@@ -390,6 +390,63 @@ describe('fenceWrites', () => {
     expect(await db.listTakes()).toHaveLength(1);
     expect(audio.deleteAudio).not.toHaveBeenCalled();
     expect(events).toEqual([]);
+  });
+});
+
+describe('close', () => {
+  it('closes the connection: later reads and writes reject instance-taken', async () => {
+    await db.createTake(makeTake());
+    db.close();
+    expect((await rejection(db.getTake('take-1'))).code).toBe('instance-taken');
+    expect((await rejection(db.listTakes())).code).toBe('instance-taken');
+    expect((await rejection(db.patchTake('take-1', { title: 'X' }, 'take-session'))).code).toBe(
+      'instance-taken',
+    );
+    // Closed for real: a newer version opens without being blocked by this connection.
+    const states: ConnectionState[] = [];
+    db.onConnectionState((s) => states.push(s));
+    const newer = await openDB(NAME, DB_VERSION + 1);
+    newer.close();
+    expect(states).toEqual([]);
+    // A second close does nothing.
+    db.close();
+  });
+
+  it('an operation that got the connection before close() rejects instance-taken', async () => {
+    await db.createTake(makeTake());
+    const original = IDBDatabase.prototype.transaction;
+    // The close lands between the operation getting its connection and opening its transaction.
+    const closeFirst = function (this: IDBDatabase, ...args: Parameters<typeof original>) {
+      db.close();
+      this.close();
+      return original.apply(this, args);
+    };
+    const spy = vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementationOnce(closeFirst);
+    const write = await rejection(db.patchTake('take-1', { title: 'X' }, 'take-session'));
+    expect(write.code).toBe('instance-taken');
+    expect(write.cause).toMatchObject({ name: 'InvalidStateError' });
+    spy.mockRestore();
+  });
+
+  it('a read that got the connection before close() rejects instance-taken', async () => {
+    await db.createTake(makeTake());
+    const original = IDBDatabase.prototype.transaction;
+    const closeFirst = function (this: IDBDatabase, ...args: Parameters<typeof original>) {
+      db.close();
+      this.close();
+      return original.apply(this, args);
+    };
+    vi.spyOn(IDBDatabase.prototype, 'transaction').mockImplementationOnce(closeFirst);
+    expect((await rejection(db.getTake('take-1'))).code).toBe('instance-taken');
+  });
+
+  it('closes an open still in flight once it succeeds', async () => {
+    const pending = db.listTakes();
+    db.close();
+    await expect(pending).resolves.toEqual([]);
+    const newer = await openDB(NAME, DB_VERSION + 1);
+    expect(newer.version).toBe(DB_VERSION + 1);
+    newer.close();
   });
 });
 

@@ -52,6 +52,16 @@ export const strings = {
     'This microphone may be a Bluetooth headset in call mode — accuracy will be poor. Use the built-in or a wired mic.',
   'global.dismiss': 'Dismiss',
   'global.inputQualityDismissLabel': 'Dismiss Bluetooth warning for this session',
+  /** The full-screen notice while another tab runs the app (EXPERIENCE.md Open in another tab). */
+  'global.instanceOtherTab': 'TabCreator is open in another tab',
+  /** Its button: moves the app to this tab. */
+  'global.instanceUseHere': 'Use here',
+  /** The notice's status line while Use here moves the app to this tab. */
+  'global.instanceMovingHere': 'Moving TabCreator here…',
+  /** The full-screen notice while a database upgrade waits (EXPERIENCE.md Update blocked). */
+  'global.instanceUpgradeBlocked': 'Close other TabCreator tabs to finish updating',
+  /** The full-screen notice without the browser APIs the app needs (EXPERIENCE.md). */
+  'global.unsupported': 'TabCreator needs a recent desktop Chrome',
   'record.title': 'Record',
   'record.micSetupTitle': 'TabCreator needs your microphone',
   'record.micSetupText': 'Audio is analysed on this computer and never uploaded.',

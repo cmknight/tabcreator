@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './ui/theme.css';
 import { App } from './App';
+import { instanceLock } from './session/instance-lock';
 import { strings } from './ui/strings';
 
 const root = document.getElementById('root');
@@ -23,6 +24,10 @@ if (import.meta.env.DEV) {
     window.__fakeMic = installFakeMic(fixtures);
   }
 }
+
+// The instance lock is requested before the first render: no screen that can write storage
+// mounts until it is held (story 3.10, spine AD-6).
+instanceLock.start();
 
 createRoot(root).render(
   <StrictMode>

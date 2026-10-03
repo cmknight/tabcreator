@@ -1,0 +1,33 @@
+/* The full-screen instance notices (mockup settings.html .unsupported): centred, the app name
+   muted above the heading, replacing the whole app shell. */
+.screen {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--space-12) var(--space-gutter);
+  text-align: center;
+}
+
+.appName {
+  display: block;
+  margin-bottom: var(--space-3);
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.title {
+  margin: 0;
+  font: var(--font-heading);
+}
+
+.actions {
+  margin-top: var(--space-6);
+}
+
+.status {
+  min-height: 1.5em;
+  margin: var(--space-3) 0 0;
+  color: var(--color-text-muted);
+}

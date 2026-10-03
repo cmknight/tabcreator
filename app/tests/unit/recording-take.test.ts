@@ -1303,3 +1303,219 @@ describe('the count-in pref', () => {
     localStorage.clear();
   });
 });
+
+describe('handover (releaseForHandover)', () => {
+  const SAVED_LOG = [
+    'createTake take-1',
+    'openRawWriter take-1',
+    'capture.stop',
+    'writeCompressed take-1 audio/webm;codecs=opus',
+    'writer.close after 3 appends',
+    'patchTake take-1',
+  ];
+
+  it('recording: saved as instance-lost with no navigation, then the input released', async () => {
+    const t = await recording();
+    const done = t.session.releaseForHandover();
+    expect(t.session.getSnapshot().recording).toBe('stopping');
+    await done;
+    expect(t.log).toEqual([...SAVED_LOG, 'input.close']);
+    expect(t.deps.patchTake).toHaveBeenCalledWith(
+      'take-1',
+      {
+        status: 'recorded',
+        durationMs: 2500,
+        audioMime: 'audio/webm;codecs=opus',
+        stopReason: 'instance-lost',
+        clipped: false,
+      },
+      'recording-session',
+    );
+    expect(t.deps.navigate).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'setup',
+      recording: 'idle',
+      activeTakeId: null,
+      savedSeq: 1,
+    });
+    // Handed over: no input opens and no take starts.
+    await t.session.allowMic();
+    await t.session.record();
+    expect(t.deps.requestMic).toHaveBeenCalledTimes(1);
+    expect(t.input.capture).toHaveBeenCalledTimes(1);
+    // A repeat call is the same handover.
+    await t.session.releaseForHandover();
+    expect(t.input.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('a save that fails leaves the take recording, with no error card', async () => {
+    const t = await recording({
+      writeCompressed: vi.fn(() => Promise.reject(new AppError('instance-taken', 'fenced'))),
+    });
+    await t.session.releaseForHandover();
+    expect(t.deps.patchTake).not.toHaveBeenCalled();
+    expect(t.deps.deleteTake).not.toHaveBeenCalled();
+    expect(t.writer.close).toHaveBeenCalledTimes(1);
+    expect(t.input.close).toHaveBeenCalledTimes(1);
+    expect(t.session.getSnapshot()).toMatchObject({ mic: 'setup', recording: 'idle' });
+    expect(t.session.getSnapshot().errorCode).toBeUndefined();
+  });
+
+  it('a take still being created is saved once it records', async () => {
+    const t = setup();
+    await t.session.allowMic();
+    const started = t.session.record();
+    await flush();
+    expect(t.session.getSnapshot().recording).toBe('starting');
+    const done = t.session.releaseForHandover();
+    t.emit(chunk(1));
+    t.created.resolve();
+    await started;
+    t.emit(chunk(2));
+    await done;
+    expect(t.deps.patchTake).toHaveBeenCalledWith(
+      'take-1',
+      expect.objectContaining({ status: 'recorded', stopReason: 'instance-lost' }),
+      'recording-session',
+    );
+    expect(t.deps.navigate).not.toHaveBeenCalled();
+    expect(t.input.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Stop already saving finishes as user; the input is released after it', async () => {
+    const t = await recording();
+    const stopped = t.session.stop('user');
+    const done = t.session.releaseForHandover();
+    await stopped;
+    await done;
+    expect(t.deps.patchTake).toHaveBeenCalledTimes(1);
+    expect(t.deps.patchTake).toHaveBeenCalledWith(
+      'take-1',
+      expect.objectContaining({ stopReason: 'user' }),
+      'recording-session',
+    );
+    expect(t.log.at(-1)).toBe('input.close');
+  });
+
+  it('idle: the input is released and the mic back to setup', async () => {
+    const t = setup();
+    await t.session.allowMic();
+    await t.session.releaseForHandover();
+    expect(t.input.close).toHaveBeenCalledTimes(1);
+    expect(t.deps.createTake).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot()).toMatchObject({ mic: 'setup', recording: 'idle' });
+  });
+
+  it('an allow still waiting is not held up, and its input is closed when it opens', async () => {
+    const t = setup();
+    const mic = deferred<MediaStream>();
+    vi.mocked(t.deps.requestMic).mockReturnValueOnce(mic.promise);
+    const allowed = t.session.allowMic();
+    await t.session.releaseForHandover();
+    mic.resolve({} as MediaStream);
+    await allowed;
+    expect(t.input.close).toHaveBeenCalledTimes(1);
+    expect(t.session.getSnapshot().mic).not.toBe('live');
+    expect(t.session.getAnalyser()).toBeNull();
+  });
+
+  describe('during a count-in', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('cancels it: clicks cancelled, capture aborted, no take, the input released', async () => {
+      const t = setup();
+      t.prefs.countIn = { on: true, bpm: 120 };
+      const session = createRecordingSession(t.deps);
+      const allowed = session.allowMic();
+      await vi.advanceTimersByTimeAsync(0);
+      await allowed;
+      const started = session.record();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(session.getSnapshot().recording).toBe('count-in');
+      const done = session.releaseForHandover();
+      await vi.advanceTimersByTimeAsync(0);
+      await done;
+      t.setClock(20);
+      await vi.advanceTimersByTimeAsync(2_500);
+      await started;
+      expect(t.cancelClicks).toHaveBeenCalledTimes(1);
+      expect(t.capture.abort).toHaveBeenCalledTimes(1);
+      expect(t.deps.createTake).not.toHaveBeenCalled();
+      expect(t.input.close).toHaveBeenCalledTimes(1);
+      expect(session.getSnapshot()).toMatchObject({ mic: 'setup', recording: 'idle' });
+    });
+  });
+});
+
+describe('handover: transitions still in flight', () => {
+  it('a device switch still waiting is closed when it opens', async () => {
+    const t = setup();
+    await t.session.allowMic();
+    const mic = deferred<MediaStream>();
+    vi.mocked(t.deps.requestMic).mockReturnValueOnce(mic.promise);
+    const switching = t.session.selectMic('mic-b');
+    await flush();
+    // The old input is closed before the new device is asked for.
+    expect(t.input.close).toHaveBeenCalledTimes(1);
+    await t.session.releaseForHandover();
+    mic.resolve({} as MediaStream);
+    await switching;
+    // The input that opened late is closed too (the fake returns the same input object).
+    expect(t.input.close).toHaveBeenCalledTimes(2);
+    expect(t.session.getSnapshot().mic).not.toBe('live');
+    expect(t.session.getAnalyser()).toBeNull();
+    expect(t.deps.updatePrefs).not.toHaveBeenCalledWith({ micDeviceId: 'mic-b' });
+  });
+
+  it('an unplug fallback still waiting is closed when it opens', async () => {
+    const t = setup();
+    await t.session.allowMic();
+    vi.mocked(t.deps.listMics).mockResolvedValue([{ ...DEVICE, deviceId: 'mic-b' }]);
+    const mic = deferred<MediaStream>();
+    vi.mocked(t.deps.requestMic).mockReturnValueOnce(mic.promise);
+    await t.endTrack();
+    expect(t.deps.requestMic).toHaveBeenCalledTimes(2);
+    await t.session.releaseForHandover();
+    mic.resolve({} as MediaStream);
+    await flush();
+    await flush();
+    expect(t.input.close).toHaveBeenCalledTimes(2);
+    expect(t.session.getSnapshot().mic).toBe('setup');
+    expect(t.session.getSnapshot().notice).toBeUndefined();
+    expect(t.session.getAnalyser()).toBeNull();
+  });
+
+  it('an allow that fails after the handover leaves the mic in setup, with no error card', async () => {
+    const t = setup();
+    const mic = deferred<MediaStream>();
+    vi.mocked(t.deps.requestMic).mockReturnValueOnce(mic.promise);
+    const allowed = t.session.allowMic();
+    expect(t.session.getSnapshot().mic).toBe('requesting');
+    await t.session.releaseForHandover();
+    mic.reject(new AppError('mic-denied', 'denied'));
+    await allowed;
+    expect(t.session.getSnapshot().mic).toBe('setup');
+    expect(t.session.getSnapshot().errorCode).toBeUndefined();
+  });
+
+  it('an unplug whose fallback fails after the handover leaves the mic in setup', async () => {
+    const t = setup();
+    await t.session.allowMic();
+    vi.mocked(t.deps.listMics).mockResolvedValue([{ ...DEVICE, deviceId: 'mic-b' }]);
+    const mic = deferred<MediaStream>();
+    vi.mocked(t.deps.requestMic).mockReturnValueOnce(mic.promise);
+    await t.endTrack();
+    await t.session.releaseForHandover();
+    mic.reject(new AppError('mic-failed', 'failed'));
+    await flush();
+    await flush();
+    expect(t.session.getSnapshot().mic).toBe('setup');
+    expect(t.session.getSnapshot().errorCode).toBeUndefined();
+  });
+});
