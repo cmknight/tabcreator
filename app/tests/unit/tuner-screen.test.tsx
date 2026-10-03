@@ -19,6 +19,8 @@ const LIVE: RecordingSnapshot = {
   inputQualityPoor: false,
   inputQualityDismissed: false,
   tunedStrings: [],
+  recording: 'idle',
+  activeTakeId: null,
 };
 
 function renderReading(string: StringNo, cents: number, held = false) {

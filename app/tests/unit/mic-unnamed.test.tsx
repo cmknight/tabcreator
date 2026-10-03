@@ -22,6 +22,8 @@ const LIVE: RecordingSnapshot = {
   inputQualityPoor: false,
   inputQualityDismissed: false,
   tunedStrings: [],
+  recording: 'idle',
+  activeTakeId: null,
 };
 
 describe('unnamed microphone label', () => {

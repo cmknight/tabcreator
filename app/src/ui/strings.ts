@@ -54,6 +54,12 @@ export const strings = {
   'record.allowMic': 'Allow microphone',
   'record.tryAgain': 'Try again',
   'record.tuneFirst': 'Tune first',
+  'record.record': 'Record',
+  'record.stop': 'Stop',
+  /** The indicator above the timer while a take records. */
+  'record.recording': 'Recording',
+  /** The recording timer's accessible name: "Elapsed time 0:42". */
+  'record.elapsed': (time: string) => `Elapsed time ${time}`,
   'record.micError.mic-denied.title': 'Microphone access is blocked',
   'record.micError.mic-denied.body':
     'Chrome is blocking the microphone for this site. To allow it:',

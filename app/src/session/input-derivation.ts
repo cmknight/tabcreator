@@ -10,10 +10,13 @@
 
 import type { MicDevice, MicInput } from '../audio/mic';
 
-/** The live input as the store holds it (and as `RecordingDeps.openInput` returns it). */
+/**
+ * The live input as the store holds it (and as `RecordingDeps.openInput` returns it). `capture`
+ * is the store's only way to the recorder (spine AD-2).
+ */
 export type OpenedInput = Pick<
   MicInput,
-  'analyser' | 'readFrame' | 'close' | 'deviceId' | 'groupId' | 'label' | 'sampleRate'
+  'analyser' | 'readFrame' | 'capture' | 'close' | 'deviceId' | 'groupId' | 'label' | 'sampleRate'
 >;
 
 /** A mic transition as the derivations see it. */

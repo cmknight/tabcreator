@@ -3,6 +3,9 @@
 // Processing is always off, so the engine hears the raw instrument.
 
 import { AppError, type AppErrorCode } from '../model/errors';
+import { loadRecorderWorklet, startCapture, type Capture } from './recorder';
+
+export type { Capture } from './recorder';
 
 /** Analyser window shared by the meter and the tuner. */
 export const ANALYSER_FFT_SIZE = 4096;
@@ -133,6 +136,12 @@ export interface MicInput {
    * reused: it is overwritten by the next `readFrame` call.
    */
   readFrame(): Float32Array;
+  /**
+   * Starts recording this input in its own AudioContext (audio/recorder.ts): 1 s mono chunks at
+   * the context's rate go to `onChunk`, and a compressed copy is kept for `Capture.stop`.
+   * Rejects with `AppError` `mic-failed`. Stop (or abort) the capture before `close()`.
+   */
+  capture(onChunk: (samples: Float32Array) => void): Promise<Capture>;
   /** Stops the stream's tracks and closes the AudioContext. */
   close(): void;
 }
@@ -181,9 +190,12 @@ export function openInput(stream: MediaStream, onEnded?: (error: AppError) => vo
     ctx = new AudioContext();
     const analyser = ctx.createAnalyser();
     analyser.fftSize = ANALYSER_FFT_SIZE;
-    ctx.createMediaStreamSource(stream).connect(analyser);
+    const source = ctx.createMediaStreamSource(stream);
+    source.connect(analyser);
     // Opened from the Allow click, so the context may start; resuming is best-effort.
     void ctx.resume().catch(() => {});
+    // Loaded now, so Record starts without waiting on it; a failure is retried at Record.
+    if (ctx.audioWorklet) void loadRecorderWorklet(ctx).catch(() => {});
     const frame = new Float32Array(analyser.fftSize);
     const context = ctx;
     for (const track of tracks) track.addEventListener('ended', handleEnded);
@@ -196,6 +208,7 @@ export function openInput(stream: MediaStream, onEnded?: (error: AppError) => vo
         analyser.getFloatTimeDomainData(frame);
         return frame;
       },
+      capture: (onChunk) => startCapture(context, source, onChunk),
       close() {
         detach();
         stopTracks(stream);

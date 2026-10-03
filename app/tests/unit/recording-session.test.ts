@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../src/model/errors';
 import { OPEN_STRING_HZ } from '../../src/audio/tuner';
 import type { StringNo } from '../../src/model/types';
+import type { OpenedInput } from '../../src/session/input-derivation';
 import { createRecordingSession, type RecordingDeps } from '../../src/session/recording-session';
 
 const stream = {} as MediaStream;
@@ -21,7 +22,31 @@ const IDLE = {
   inputQualityPoor: false,
   inputQualityDismissed: false,
   tunedStrings: [],
+  recording: 'idle',
+  activeTakeId: null,
 };
+
+/** The prefs' analysis defaults the fakes return; `record()` copies them into the take. */
+const ANALYSIS_DEFAULTS = { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 };
+/** The capture method of an input no test records from. */
+const noCapture = () => Promise.reject(new Error('not recording'));
+
+/** The recording deps (storage, navigation, clock, ids) for tests that never record. */
+function recordingFakes(): Pick<
+  RecordingDeps,
+  'createTake' | 'patchTake' | 'openRawWriter' | 'writeCompressed' | 'navigate' | 'now' | 'newId'
+> {
+  const unused = () => Promise.reject(new Error('not recording'));
+  return {
+    createTake: vi.fn(unused),
+    patchTake: vi.fn(unused),
+    openRawWriter: vi.fn(unused),
+    writeCompressed: vi.fn(unused),
+    navigate: vi.fn(),
+    now: () => 0,
+    newId: () => 'take-1',
+  };
+}
 
 /** Lets pending promise callbacks and timers at 0 ms run. */
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -58,6 +83,7 @@ function setup(overrides: Partial<RecordingDeps> = {}) {
   const input = {
     analyser,
     readFrame: vi.fn(() => frame),
+    capture: vi.fn<OpenedInput['capture']>(noCapture),
     close: vi.fn(),
     deviceId: null,
     groupId: null,
@@ -74,8 +100,12 @@ function setup(overrides: Partial<RecordingDeps> = {}) {
     listMics: vi.fn<RecordingDeps['listMics']>(() => Promise.resolve([])),
     onDeviceChange: vi.fn<RecordingDeps['onDeviceChange']>(() => () => {}),
     updatePrefs: vi.fn(),
-    loadPrefs: vi.fn<RecordingDeps['loadPrefs']>(() => ({ micGranted: false })),
+    loadPrefs: vi.fn<RecordingDeps['loadPrefs']>(() => ({
+      analysisDefaults: ANALYSIS_DEFAULTS,
+      micGranted: false,
+    })),
     micPermission: vi.fn<RecordingDeps['micPermission']>(() => Promise.resolve('prompt')),
+    ...recordingFakes(),
     ...overrides,
   };
   const session = createRecordingSession(deps);
@@ -233,7 +263,7 @@ describe('recording session', () => {
   describe('resume', () => {
     it('requests once without a click when micGranted and the permission is granted', async () => {
       const { session, deps } = setup({
-        loadPrefs: vi.fn(() => ({ micGranted: true })),
+        loadPrefs: vi.fn(() => ({ analysisDefaults: ANALYSIS_DEFAULTS, micGranted: true })),
         micPermission: vi.fn(() => Promise.resolve('granted' as const)),
       });
       await Promise.all([session.resume(), session.resume()]);
@@ -247,7 +277,7 @@ describe('recording session', () => {
       'stays in setup when the permission is %s',
       async (state) => {
         const { session, deps } = setup({
-          loadPrefs: vi.fn(() => ({ micGranted: true })),
+          loadPrefs: vi.fn(() => ({ analysisDefaults: ANALYSIS_DEFAULTS, micGranted: true })),
           micPermission: vi.fn(() => Promise.resolve(state)),
         });
         await session.resume();
@@ -278,7 +308,7 @@ describe('recording session', () => {
     it('does nothing when Allow was clicked while the permission check ran', async () => {
       let grant: (state: 'granted') => void = () => {};
       const { session, deps } = setup({
-        loadPrefs: vi.fn(() => ({ micGranted: true })),
+        loadPrefs: vi.fn(() => ({ analysisDefaults: ANALYSIS_DEFAULTS, micGranted: true })),
         micPermission: vi.fn(() => new Promise<'granted'>((r) => (grant = r))),
       });
       const resumed = session.resume();
@@ -291,7 +321,7 @@ describe('recording session', () => {
 
     it('does not retry from mic-lost', async () => {
       const { session, deps, endTrack } = setup({
-        loadPrefs: vi.fn(() => ({ micGranted: true })),
+        loadPrefs: vi.fn(() => ({ analysisDefaults: ANALYSIS_DEFAULTS, micGranted: true })),
         micPermission: vi.fn(() => Promise.resolve('granted' as const)),
       });
       await session.resume();
@@ -445,6 +475,7 @@ describe('recording session', () => {
           return {
             analyser,
             readFrame: () => frame,
+            capture: noCapture,
             close: entry.close,
             deviceId,
             groupId: `g${deviceId}`,
@@ -462,8 +493,13 @@ describe('recording session', () => {
         updatePrefs: vi.fn((patch: { micDeviceId?: string | null }) => {
           if (patch.micDeviceId !== undefined) saved = patch.micDeviceId;
         }),
-        loadPrefs: vi.fn(() => ({ micGranted: true, micDeviceId: saved })),
+        loadPrefs: vi.fn(() => ({
+          analysisDefaults: ANALYSIS_DEFAULTS,
+          micGranted: true,
+          micDeviceId: saved,
+        })),
         micPermission: vi.fn(() => Promise.resolve('granted' as const)),
+        ...recordingFakes(),
       };
       const session = createRecordingSession(deps);
       return {
@@ -508,6 +544,7 @@ describe('recording session', () => {
       deps.openInput = vi.fn(() => ({
         analyser,
         readFrame: () => frame,
+        capture: noCapture,
         close: vi.fn(),
         deviceId: 'default',
         groupId: 'gb',
@@ -668,6 +705,7 @@ describe('recording session', () => {
       setup.deps.openInput = vi.fn(() => ({
         analyser,
         readFrame: () => frame,
+        capture: noCapture,
         close: vi.fn(),
         deviceId,
         groupId: null,
@@ -896,6 +934,7 @@ describe('recording session', () => {
         deps.openInput = vi.fn(() => ({
           analyser,
           readFrame: () => frame,
+          capture: noCapture,
           close: vi.fn(),
           deviceId: 'default',
           groupId: null,

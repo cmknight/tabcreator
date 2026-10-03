@@ -2,6 +2,7 @@ import { InputQualityBanner } from '../components/InputQualityBanner';
 import { LevelMeter } from '../components/LevelMeter';
 import { MicGate } from '../components/MicGate';
 import { MicSelect } from '../components/MicSelect';
+import { RecordButton } from '../components/RecordButton';
 import { strings } from '../strings';
 import styles from './Screen.module.css';
 import recordStyles from './Record.module.css';
@@ -23,6 +24,7 @@ export function Record() {
       <MicGate>
         <MicSelect />
         <LevelMeter />
+        <RecordButton />
       </MicGate>
     </section>
   );

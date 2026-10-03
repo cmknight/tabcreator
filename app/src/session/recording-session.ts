@@ -18,10 +18,19 @@
 //
 // Decision (epic 2, 2026-10-02): this store writes `micGranted` and `micDeviceId` through
 // storage/prefs.ts, although AD-3 names settings-session as the prefs store.
+//
+// Recording (story 3.4, spine AD-9, AD-14, AD-15): `record()` creates the take at the click
+// and starts the live input's capture; raw chunks are appended through the raw writer in order,
+// those that arrive before the take and writer exist held and appended first. `stop('user')`
+// stops the capture, saves the compressed copy, closes the raw writer, patches the take
+// `recorded`, then navigates to its Tab. Both run through the transition queue, so an ended
+// track is handled only between them; one that ends mid-take leaves the take `recording` with
+// its raw chunks for recovery.
 
 import type { LevelsDbfs } from '../audio/level-meter';
 import {
   activeDevice,
+  type Capture,
   listMics,
   micPermission,
   onDeviceChange,
@@ -30,8 +39,12 @@ import {
   type MicDevice,
   type MicPermission,
 } from '../audio/mic';
+import { RECORDING_MIME } from '../audio/recorder';
 import { AppError, isAppError, type AppErrorCode } from '../model/errors';
-import { loadPrefs, updatePrefs } from '../storage/prefs';
+import type { AnalysisSettings, StopReason, Take } from '../model/types';
+import { audioStore, type RawWriter } from '../storage/audio-store';
+import { db, type TakePatch } from '../storage/db';
+import { DEFAULT_PREFS, loadPrefs, updatePrefs } from '../storage/prefs';
 import type { InputTransition, OpenedInput } from './input-derivation';
 import { createInputQualityWatch, type InputQualityFields } from './input-quality-watch';
 import { createLevelWatch, type LevelFields } from './level-watch';
@@ -43,6 +56,9 @@ export { TUNER_POLL_MS } from '../audio/tuner';
 export type { TunerDisplay } from './tuner-watch';
 
 export type MicState = 'setup' | 'requesting' | 'live' | 'error';
+
+/** Where a take is: none, being created, capturing, or being saved. */
+export type RecordingState = 'idle' | 'starting' | 'recording' | 'stopping';
 
 /** A one-off fact for the shell to show; `seq` grows with each new notice. */
 export interface MicNotice {
@@ -63,6 +79,10 @@ export interface RecordingSnapshot extends LevelFields, InputQualityFields, Tune
   activeDeviceId: string | null;
   /** The latest notice; kept until the next one replaces it. */
   notice?: MicNotice;
+  /** The take's state; carried through mic transitions. */
+  recording: RecordingState;
+  /** The id of the take being recorded (or created, or saved); null while `idle`. */
+  activeTakeId: string | null;
 }
 
 export interface RecordingSession {
@@ -103,6 +123,20 @@ export interface RecordingSession {
   getAnalyser(): AnalyserNode | null;
   /** Hides the input quality warning until the page reloads, whatever input is chosen. */
   dismissInputQuality(): void;
+  /**
+   * Starts a take: while live with no take in progress (and no input transition running), sets
+   * `starting`, creates the take and starts the capture, then `recording`. A no-op otherwise.
+   * Never rejects: a failure stops the capture, creates no take (unless storage already did)
+   * and shows the error card with its code.
+   */
+  record(): Promise<void>;
+  /**
+   * Stops the take while `recording`: sets `stopping`, saves it, patches it `recorded` with
+   * `stopReason`, then navigates to its Tab. A no-op otherwise. Never rejects.
+   */
+  stop(reason: Extract<StopReason, 'user'>): Promise<void>;
+  /** Audio-clock time the take has recorded so far, in ms; 0 with no capture running. */
+  readElapsedMs(): number;
 }
 
 /** The shell functions the store drives; injected so tests can fake audio/ and storage/. */
@@ -112,8 +146,58 @@ export interface RecordingDeps {
   listMics: () => Promise<MicDevice[]>;
   onDeviceChange: (listener: () => void) => () => void;
   updatePrefs: (patch: { micGranted?: boolean; micDeviceId?: string | null }) => unknown;
-  loadPrefs: () => { micGranted: boolean; micDeviceId?: string | null };
+  loadPrefs: () => {
+    micGranted: boolean;
+    micDeviceId?: string | null;
+    analysisDefaults: AnalysisSettings;
+  };
   micPermission: () => Promise<MicPermission>;
+  createTake: (take: Take) => Promise<unknown>;
+  patchTake: (id: string, patch: TakePatch, writer: 'recording-session') => Promise<unknown>;
+  openRawWriter: (takeId: string) => Promise<RawWriter>;
+  writeCompressed: (takeId: string, blob: Blob) => Promise<void>;
+  /** Opens the take's Tab screen (`#/tab/<id>`). */
+  navigate: (takeId: string) => void;
+  /** The wall clock, ms since the epoch (`Date.now`). */
+  now: () => number;
+  /** A new take id (`crypto.randomUUID`). */
+  newId: () => string;
+}
+
+/** A take from `record()` until it is saved, fails or is abandoned. */
+interface ActiveTake {
+  id: string;
+  /** The input it records; an ended track of this input abandons it. */
+  input: OpenedInput;
+  capture: Capture | null;
+  writer: RawWriter | null;
+  /** Chunks that arrived before the writer existed, in order. */
+  held: Float32Array[];
+  /** The raw appends, chained in order. */
+  appends: Promise<void>;
+  /** Samples appended to the raw file so far. */
+  samples: number;
+  /** Set when the take is given up; later chunks are dropped. */
+  abandoned: boolean;
+}
+
+/** Runs `fn`, turning a synchronous throw into a rejection. */
+function attempt<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return fn();
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
+const pad = (n: number) => String(n).padStart(2, '0');
+
+/** `Take YYYY-MM-DD HH:mm` in local time. */
+export function takeTitle(date: Date): string {
+  return (
+    `Take ${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  );
 }
 
 const asAppError = (err: unknown) =>
@@ -131,6 +215,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     mic: 'setup',
     devices: [],
     activeDeviceId: null,
+    recording: 'idle',
+    activeTakeId: null,
     ...levels.transition(idle),
     ...quality.transition(idle),
     ...tuning.transition(idle),
@@ -149,6 +235,9 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   let noticeSeq = 0;
   let stopDeviceChange: (() => void) | null = null;
   const listeners = new Set<() => void>();
+  /** The take in progress; its state is `recording`. */
+  let active: ActiveTake | null = null;
+  let recording: RecordingState = 'idle';
 
   function notify(next: RecordingSnapshot) {
     snapshot = next;
@@ -187,6 +276,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
           ? (next.activeDeviceId ?? null)
           : snapshot.activeDeviceId,
       ...(notice ? { notice } : {}),
+      recording,
+      activeTakeId: active?.id ?? null,
       ...levels.transition(t),
       ...quality.transition(t),
       ...tuning.transition(t),
@@ -374,7 +465,12 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   }
 
   function selectMic(deviceId: string): Promise<void> {
-    if (snapshot.mic !== 'live' || running || deviceId === snapshot.activeDeviceId) {
+    if (
+      snapshot.mic !== 'live' ||
+      running ||
+      recording !== 'idle' ||
+      deviceId === snapshot.activeDeviceId
+    ) {
       return Promise.resolve();
     }
     return enqueue(() => switchTo(deviceId));
@@ -408,6 +504,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
    */
   async function ended(endedInput: OpenedInput) {
     if (!holds(endedInput)) return;
+    // Mid-take mic loss is story 3.9's; for now the take stays `recording` for recovery.
+    if (active?.input === endedInput) abandon(active);
     const endedId = endedDeviceId(endedInput);
     input = null;
     release(endedInput);
@@ -438,6 +536,173 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
         seq: ++noticeSeq,
       },
     });
+  }
+
+  /** Publishes the recording state and the active take id; notifies only on a change. */
+  function setRecording(next: RecordingState) {
+    recording = next;
+    patch({ recording, activeTakeId: active?.id ?? null });
+  }
+
+  /** A captured chunk: counted, then appended (or held until the writer exists). */
+  function onChunk(take: ActiveTake, samples: Float32Array) {
+    if (take.abandoned) return;
+    if (take.writer) appendRaw(take, take.writer, samples);
+    else take.held.push(samples);
+  }
+
+  function appendRaw(take: ActiveTake, writer: RawWriter, samples: Float32Array) {
+    take.appends = take.appends
+      .then(() => writer.append(samples))
+      // Counted once written, so `durationMs` never exceeds the raw file.
+      .then(() => {
+        take.samples += samples.length;
+      })
+      .catch(() => {
+        // Failure stops are a later story; the chain goes on with the next chunk.
+      });
+  }
+
+  /** Gives the take up (its input is going away): drops the capture, closes the writer. */
+  function abandon(take: ActiveTake) {
+    take.abandoned = true;
+    take.capture?.abort();
+    const writer = take.writer;
+    void take.appends.then(() => writer?.close()).catch(() => {});
+    if (active === take) active = null;
+    setRecording('idle');
+  }
+
+  /**
+   * A record or stop failure: no take in progress, the input closed, and the error card with
+   * the failure's code (the mic's error path).
+   */
+  function failRecording(err: unknown) {
+    active = null;
+    recording = 'idle';
+    const opened = input;
+    input = null;
+    if (opened) release(opened);
+    set({
+      mic: 'error',
+      errorCode: isAppError(err) ? err.code : 'storage-failed',
+    });
+  }
+
+  function record(): Promise<void> {
+    if (snapshot.mic !== 'live' || running || recording !== 'idle' || !input) {
+      return Promise.resolve();
+    }
+    return enqueue(startTake).catch(() => {});
+  }
+
+  /** The new take's record (spine AD-14: settings copied from prefs, never linked). */
+  function newTake(id: string, opened: OpenedInput): Take {
+    let settings: AnalysisSettings;
+    try {
+      settings = { ...deps.loadPrefs().analysisDefaults };
+    } catch {
+      settings = { ...DEFAULT_PREFS.analysisDefaults };
+    }
+    const created = new Date(deps.now());
+    const createdAt = created.toISOString();
+    return {
+      id,
+      title: takeTitle(created),
+      createdAt,
+      status: 'recording',
+      durationMs: 0,
+      sampleRate: opened.analyser.context.sampleRate,
+      tuning: 'EADGBE',
+      micLabel: activeDevice(opened, snapshot.devices)?.label || opened.label,
+      audioMime: null,
+      trimStartMs: 0,
+      trimEndMs: null,
+      settings,
+      analysisVersion: null,
+      updatedAt: createdAt,
+    };
+  }
+
+  async function startTake() {
+    const opened = input;
+    // Re-checked: a transition queued ahead of this one may have changed the input.
+    if (snapshot.mic !== 'live' || recording !== 'idle' || !opened) return;
+    const take: ActiveTake = {
+      id: deps.newId(),
+      input: opened,
+      capture: null,
+      writer: null,
+      held: [],
+      appends: Promise.resolve(),
+      samples: 0,
+      abandoned: false,
+    };
+    active = take;
+    setRecording('starting');
+    let captured: PromiseSettledResult<Capture>;
+    let opening: PromiseSettledResult<RawWriter>;
+    try {
+      const record = newTake(take.id, opened);
+      // Both at once: the take is created at the click, and the capture's early chunks are held.
+      [captured, opening] = await Promise.allSettled([
+        attempt(() => opened.capture((samples) => onChunk(take, samples))),
+        attempt(() => deps.createTake(record).then(() => deps.openRawWriter(take.id))),
+      ]);
+    } catch (err) {
+      take.abandoned = true;
+      failRecording(err);
+      return;
+    }
+    if (captured.status === 'rejected' || opening.status === 'rejected') {
+      take.abandoned = true;
+      if (captured.status === 'fulfilled') captured.value.abort();
+      if (opening.status === 'fulfilled') void opening.value.close().catch(() => {});
+      failRecording(
+        captured.status === 'rejected'
+          ? captured.reason
+          : (opening as PromiseRejectedResult).reason,
+      );
+      return;
+    }
+    take.capture = captured.value;
+    take.writer = opening.value;
+    for (const samples of take.held.splice(0)) appendRaw(take, opening.value, samples);
+    setRecording('recording');
+  }
+
+  function stop(reason: Extract<StopReason, 'user'>): Promise<void> {
+    if (recording !== 'recording') return Promise.resolve();
+    setRecording('stopping');
+    return enqueue(() => finishTake(reason)).catch(() => {});
+  }
+
+  async function finishTake(reason: StopReason) {
+    const take = active;
+    if (!take || take.abandoned || !take.capture || !take.writer) return;
+    const { capture, writer } = take;
+    try {
+      const { parts } = await capture.stop();
+      await take.appends;
+      const durationMs = Math.round((take.samples / capture.sampleRate) * 1000);
+      await deps.writeCompressed(take.id, new Blob(parts, { type: RECORDING_MIME }));
+      await writer.close();
+      await deps.patchTake(
+        take.id,
+        { status: 'recorded', durationMs, audioMime: RECORDING_MIME, stopReason: reason },
+        'recording-session',
+      );
+    } catch (err) {
+      take.abandoned = true;
+      capture.abort();
+      // The raw file keeps what was written; recovery (a later story) rebuilds the take.
+      void take.appends.then(() => writer.close()).catch(() => {});
+      failRecording(err);
+      return;
+    }
+    active = null;
+    setRecording('idle');
+    deps.navigate(take.id);
   }
 
   let resuming = false;
@@ -476,6 +741,9 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     readTuner,
     getAnalyser: () => input?.analyser ?? null,
     dismissInputQuality: () => quality.dismiss(),
+    record,
+    stop,
+    readElapsedMs: () => active?.capture?.elapsedMs() ?? 0,
   };
 }
 
@@ -487,4 +755,14 @@ export const recordingSession: RecordingSession = createRecordingSession({
   updatePrefs,
   loadPrefs,
   micPermission,
+  createTake: (take) => db.createTake(take),
+  patchTake: (id, patch, writer) => db.patchTake(id, patch, writer),
+  openRawWriter: (takeId) => audioStore.openRawWriter(takeId),
+  writeCompressed: (takeId, blob) => audioStore.writeCompressed(takeId, blob),
+  // The `tab` route's hash (ui/router.ts routeToHash); session/ may not import ui/.
+  navigate: (takeId) => {
+    window.location.hash = `#/tab/${encodeURIComponent(takeId)}`;
+  },
+  now: () => Date.now(),
+  newId: () => crypto.randomUUID(),
 });

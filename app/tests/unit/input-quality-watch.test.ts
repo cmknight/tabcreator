@@ -11,6 +11,7 @@ function opened(
   return {
     analyser: {} as AnalyserNode,
     readFrame: () => new Float32Array(0),
+    capture: () => Promise.reject(new Error('not recording')),
     close: () => {},
     deviceId,
     groupId: null,
