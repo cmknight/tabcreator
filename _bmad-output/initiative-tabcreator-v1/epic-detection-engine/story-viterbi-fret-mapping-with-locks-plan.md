@@ -3,7 +3,7 @@ title: 'Viterbi fret mapping with locks'
 type: 'feature'
 ticket: '5'
 created: '2026-10-03'
-status: 'built'
+status: done
 baseline_revision: 'a9846874fe10c8f4303b49fa76906d443a6750e4'
 route: 'full'
 route_source: 'auto'
