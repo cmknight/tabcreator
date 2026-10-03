@@ -3,6 +3,7 @@ import { expectNoSeriousAxe } from './mic-helpers';
 
 // Runs in the `dev` project only: the fake mic (US-0.4) plays c_major_scale_pos1 (7.95 s at
 // 48 kHz) as the microphone. Story 3.4: Record then Stop saves a take and opens its Tab.
+// Story 3.6: the count-in (`silence_60s` where click energy is measured).
 
 const FIXTURE = 'c_major_scale_pos1';
 const MIME = 'audio/webm;codecs=opus';
@@ -15,6 +16,7 @@ interface SavedTake {
     audioMime: string | null;
     durationMs: number;
     sampleRate: number;
+    countInBpm?: number;
   } | null;
   rawSamples: number | null;
   /** RMS over the raw samples; null when the raw file is missing. */
@@ -23,6 +25,11 @@ interface SavedTake {
   decodedRms: number | null;
   /** The compressed file's decoded duration in s; null when missing or undecodable. */
   decodedSeconds: number | null;
+  /**
+   * The loudest 30 ms Goertzel amplitude at each count-in click frequency (1000 and 1500 Hz) in
+   * the raw and the decoded audio; a click at −12 dBFS would read about 0.25.
+   */
+  clicks: { raw: number[]; decoded: number[] } | null;
 }
 
 function collectErrors(page: Page): string[] {
@@ -83,6 +90,28 @@ function readSaved(page: Page, id: string): Promise<SavedTake> {
         get.onerror = () => reject(get.error);
       };
     });
+    /** The loudest Goertzel amplitude at `hz` over 30 ms windows, hopped by 10 ms. */
+    const tone = (samples: Float32Array, rate: number, hz: number) => {
+      const n = Math.round(rate * 0.03);
+      const hop = Math.round(rate * 0.01);
+      const coeff = 2 * Math.cos((2 * Math.PI * hz) / rate);
+      let loudest = 0;
+      for (let at = 0; at + n <= samples.length; at += hop) {
+        let s1 = 0;
+        let s2 = 0;
+        for (let i = at; i < at + n; i++) {
+          const s0 = samples[i]! + coeff * s1 - s2;
+          s2 = s1;
+          s1 = s0;
+        }
+        const power = Math.max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2);
+        loudest = Math.max(loudest, (2 * Math.sqrt(power)) / n);
+      }
+      return loudest;
+    };
+    const CLICK_HZ = [1000, 1500];
+    let rawClicks: number[] | null = null;
+    let decodedClicks: number[] | null = null;
     const rms = (samples: Float32Array) => {
       let sum = 0;
       for (const v of samples) sum += v * v;
@@ -96,6 +125,8 @@ function readSaved(page: Page, id: string): Promise<SavedTake> {
       const samples = new Float32Array(await (await raw.getFile()).arrayBuffer());
       rawSamples = samples.length;
       rawRms = rms(samples);
+      const rate = take?.sampleRate ?? 48_000;
+      rawClicks = CLICK_HZ.map((hz) => tone(samples, rate, hz));
     } catch {
       rawSamples = null;
       rawRms = null;
@@ -108,11 +139,13 @@ function readSaved(page: Page, id: string): Promise<SavedTake> {
       const buffer = await ctx.decodeAudioData(await (await file.getFile()).arrayBuffer());
       decodedSeconds = buffer.duration;
       decodedRms = rms(buffer.getChannelData(0));
+      decodedClicks = CLICK_HZ.map((hz) => tone(buffer.getChannelData(0), buffer.sampleRate, hz));
     } catch {
       decodedSeconds = null;
       decodedRms = null;
     }
-    return { take, rawSamples, rawRms, decodedSeconds, decodedRms };
+    const clicks = rawClicks && decodedClicks ? { raw: rawClicks, decoded: decodedClicks } : null;
+    return { take, rawSamples, rawRms, decodedSeconds, decodedRms, clicks };
   }, id);
 }
 
@@ -241,13 +274,21 @@ test('Space on the focused Record button toggles once (its own click)', async ({
 const blur = (page: Page) =>
   page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
-/** The number of saved takes (0 before the store exists). */
+/**
+ * The number of saved takes (0 before the database exists). Never creates the database: an open
+ * that would create it is aborted, so the app's own first open still runs its upgrade.
+ */
 function takeCount(page: Page): Promise<number> {
   return page.evaluate(
     () =>
       new Promise<number>((resolve, reject) => {
         const open = indexedDB.open('tabcreator');
-        open.onerror = () => reject(open.error);
+        let missing = false;
+        open.onupgradeneeded = () => {
+          missing = true;
+          open.transaction?.abort();
+        };
+        open.onerror = () => (missing ? resolve(0) : reject(open.error));
         open.onsuccess = () => {
           const db = open.result;
           if (!db.objectStoreNames.contains('takes')) {
@@ -337,5 +378,129 @@ test('Space in the Microphone select does not start a take', async ({ page }) =>
   await page.keyboard.press('Space');
   await expectNoTake(page);
   await page.keyboard.press('Escape');
+  expect(errors).toEqual([]);
+});
+
+// Story 3.6: the count-in.
+
+const countInToggle = (page: Page) => page.getByRole('button', { name: 'Count-in', exact: true });
+const tempoField = (page: Page) => page.getByRole('spinbutton', { name: 'Tempo' });
+const cancelButton = (page: Page) => page.getByRole('button', { name: 'Cancel count-in' });
+const beat = (page: Page) => page.getByTestId('count-in-beat');
+
+/** Turns the count-in on at `bpm` through the Record screen's controls. */
+async function countInOn(page: Page, bpm: number): Promise<void> {
+  await countInToggle(page).click();
+  await expect(countInToggle(page)).toHaveAttribute('aria-pressed', 'true');
+  await tempoField(page).fill(String(bpm));
+  await tempoField(page).press('Enter');
+  await expect(tempoField(page)).toHaveValue(String(bpm));
+  await blur(page);
+}
+
+test('count-in at 120 BPM: capture opens 2.0 s after the click; the take has countInBpm and no click', async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  await page.goto('./?fakeMic=silence_60s#/record');
+  await page.getByRole('button', { name: 'Allow microphone' }).click();
+  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  await countInOn(page, 120);
+
+  await recordButton(page).click();
+  await expect(cancelButton(page)).toBeVisible();
+  // No take during the count-in: it is created at the capture start.
+  expect(await takeCount(page)).toBe(0);
+  await expect(stopButton(page)).toBeVisible({ timeout: 5_000 });
+  const clock = await page.evaluate(() => window.__recordingClock);
+  expect(clock).toBeDefined();
+  expect(Math.abs(clock!.captureStart - clock!.clickTime - 2)).toBeLessThanOrEqual(0.02);
+  await expect(timer(page)).toHaveText('0:03', { timeout: 6_000 });
+
+  await stopButton(page).click();
+  const id = await tabTakeId(page);
+  const saved = await readSaved(page, id);
+  expect(saved.take).toMatchObject({ status: 'recorded', countInBpm: 120 });
+  expect(saved.take!.durationMs).toBeGreaterThan(2_500);
+  // No click in either copy: the click frequencies stay at the silence floor.
+  expect(saved.clicks).not.toBeNull();
+  for (const amplitude of [...saved.clicks!.raw, ...saved.clicks!.decoded]) {
+    expect(amplitude).toBeLessThan(0.001);
+  }
+  expect(errors).toEqual([]);
+});
+
+test('count-in: the beats 4-3-2-1 show and are announced; controls disabled; Cancel', async ({
+  page,
+}) => {
+  const errors = await goLive(page);
+  await countInOn(page, 60);
+  await recordButton(page).click();
+
+  await expect(cancelButton(page)).toHaveText('Cancel');
+  // Not a toggle during the count-in: no aria-pressed.
+  await expect(cancelButton(page)).not.toHaveAttribute('aria-pressed');
+  await expect(page.getByText('Count-in · 60 BPM')).toBeVisible();
+  await expect(timer(page)).toHaveCount(0);
+  await expect(countInToggle(page)).toBeDisabled();
+  await expect(tempoField(page)).toBeDisabled();
+  const alert = page.getByRole('alert');
+  for (const n of ['4', '3', '2', '1']) {
+    await expect(beat(page)).toHaveText(n, { timeout: 2_000 });
+    await expect(alert).toHaveText(n, { timeout: 2_000 });
+    if (n === '3') await expectNoSeriousAxe(page);
+  }
+
+  // Recording: the timer is back, the controls stay disabled.
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true', { timeout: 3_000 });
+  await expect(beat(page)).toHaveCount(0);
+  await expect(timer(page)).toBeVisible();
+  await expect(countInToggle(page)).toBeDisabled();
+  await expect(tempoField(page)).toBeDisabled();
+  await stopButton(page).click();
+  const id = await tabTakeId(page);
+  expect((await readSaved(page, id)).take).toMatchObject({ status: 'recorded', countInBpm: 60 });
+
+  // The pref is remembered across a reload.
+  // The mic was granted, so it goes live again without a click.
+  await page.goto(`./?fakeMic=${FIXTURE}#/record`);
+  await expect(page.getByRole('meter', { name: 'Input level' })).toBeVisible();
+  await expect(countInToggle(page)).toHaveAttribute('aria-pressed', 'true');
+  await expect(tempoField(page)).toHaveValue('60');
+  await expect(countInToggle(page)).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test('count-in: Esc, the Cancel button and Space each cancel; no take is created', async ({
+  page,
+}) => {
+  const errors = await goLive(page);
+  await countInOn(page, 60);
+
+  // Esc.
+  await recordButton(page).click();
+  await expect(cancelButton(page)).toBeVisible();
+  await blur(page);
+  await page.keyboard.press('Escape');
+  await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
+
+  // The Record button, reading Cancel.
+  await recordButton(page).click();
+  await cancelButton(page).click();
+  await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
+
+  // Space, from the page.
+  await blur(page);
+  await page.keyboard.press('Space');
+  await expect(cancelButton(page)).toBeVisible();
+  await page.keyboard.press('Space');
+  await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
+
+  // Past when the last count-in would have opened its capture: still nothing.
+  await page.waitForTimeout(4_500);
+  expect(await takeCount(page)).toBe(0);
+  await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
+  await expect(countInToggle(page)).toBeEnabled();
+  await expect(page).toHaveURL(/#\/record$/);
   expect(errors).toEqual([]);
 });

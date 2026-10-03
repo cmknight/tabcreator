@@ -1,0 +1,38 @@
+/* The count-in row (DESIGN.md Form controls, Pressed / selected; mockup record.html .countin,
+   .numfield): the toggle and the Tempo field, wrapping on narrow screens. */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: center;
+  margin-top: var(--space-4);
+}
+
+.field {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  font: var(--font-ui);
+}
+
+.input {
+  box-sizing: border-box;
+  width: 84px;
+  height: var(--size-control);
+  padding: 0 var(--space-2);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-numeric);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.unit {
+  color: var(--color-text-muted);
+  font: var(--font-ui-small);
+}

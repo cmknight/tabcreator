@@ -1,3 +1,4 @@
+import { CountInControls } from '../components/CountInControls';
 import { InputQualityBanner } from '../components/InputQualityBanner';
 import { LevelMeter } from '../components/LevelMeter';
 import { MicGate } from '../components/MicGate';
@@ -24,6 +25,7 @@ export function Record() {
       <MicGate>
         <MicSelect />
         <LevelMeter />
+        <CountInControls />
         <RecordButton />
       </MicGate>
     </section>

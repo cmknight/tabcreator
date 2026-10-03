@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RecordingSnapshot } from '../../src/session/recording-session';
 import {
+  cancelCountIn,
   dispatchShortcut,
   guarded,
   installShortcuts,
@@ -33,6 +34,51 @@ describe('the registry', () => {
     expect(space).toHaveLength(1);
     expect(space[0]).toMatchObject({ route: 'record', description: 'Record / stop' });
   });
+
+  it('registers Esc as a global entry: Cancel count-in', () => {
+    const esc = SHORTCUTS.filter((s) => s.key === 'Escape');
+    expect(esc).toHaveLength(1);
+    expect(esc[0]).toMatchObject({ route: 'global', description: 'Cancel count-in' });
+  });
+});
+
+describe('Esc cancels a count-in', () => {
+  function store(recording: RecordingSnapshot['recording']) {
+    const stop = vi.fn(() => Promise.resolve());
+    const entry = cancelCountIn({
+      getSnapshot: () =>
+        ({ mic: 'live', recording, countIn: { on: false, bpm: 100 } }) as RecordingSnapshot,
+      stop,
+    });
+    return { entry, stop };
+  }
+
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  it.each(['#/record', '#/library', '#/nowhere'])('during a count-in on %s', (hash) => {
+    window.location.hash = hash;
+    const s = store('count-in');
+    const remove = installShortcuts(window, [s.entry]);
+    const event = press(document.body, 'Escape');
+    remove();
+    expect(s.stop).toHaveBeenCalledWith('user');
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it.each(['idle', 'starting', 'recording', 'stopping'] as const)(
+    'does nothing and leaves Esc to the page while %s',
+    (recording) => {
+      window.location.hash = '#/record';
+      const s = store(recording);
+      const remove = installShortcuts(window, [s.entry]);
+      const event = press(document.body, 'Escape');
+      remove();
+      expect(s.stop).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+    },
+  );
 });
 
 describe('dispatch', () => {
@@ -154,12 +200,17 @@ describe('the guard', () => {
 });
 
 describe('Space on Record', () => {
-  function store(mic: RecordingSnapshot['mic'], recording: RecordingSnapshot['recording']) {
+  function store(
+    mic: RecordingSnapshot['mic'],
+    recording: RecordingSnapshot['recording'],
+    countInOn = false,
+  ) {
     const record = vi.fn(() => Promise.resolve());
     const stop = vi.fn(() => Promise.resolve());
     const mark = vi.fn();
+    const countIn = { on: countInOn, bpm: 100 };
     const toggle = recordToggle(
-      { getSnapshot: () => ({ mic, recording }) as RecordingSnapshot, record, stop },
+      { getSnapshot: () => ({ mic, recording, countIn }) as RecordingSnapshot, record, stop },
       mark,
     );
     return { toggle, record, stop, mark };
@@ -180,6 +231,25 @@ describe('Space on Record', () => {
     expect(s.stop).toHaveBeenCalledWith('user');
     expect(s.mark).toHaveBeenCalledWith(false);
     expect(s.record).not.toHaveBeenCalled();
+  });
+
+  it('with count-in on, starts and stops a take without the latency marks', () => {
+    const idle = store('live', 'idle', true);
+    idle.toggle();
+    expect(idle.record).toHaveBeenCalledTimes(1);
+    expect(idle.mark).not.toHaveBeenCalled();
+    const rec = store('live', 'recording', true);
+    rec.toggle();
+    expect(rec.stop).toHaveBeenCalledWith('user');
+    expect(rec.mark).not.toHaveBeenCalled();
+  });
+
+  it('cancels a count-in, with no latency mark', () => {
+    const s = store('live', 'count-in');
+    s.toggle();
+    expect(s.stop).toHaveBeenCalledWith('user');
+    expect(s.record).not.toHaveBeenCalled();
+    expect(s.mark).not.toHaveBeenCalled();
   });
 
   it.each(['starting', 'stopping'] as const)('is ignored while %s', (recording) => {
@@ -207,7 +277,8 @@ describe('Space on Record', () => {
       const record = vi.fn(() => Promise.resolve());
       const stop = vi.fn(() => Promise.resolve());
       const toggle = recordToggle({
-        getSnapshot: () => ({ mic: 'live', recording }) as RecordingSnapshot,
+        getSnapshot: () =>
+          ({ mic: 'live', recording, countIn: { on: false, bpm: 100 } }) as RecordingSnapshot,
         record,
         stop,
       });

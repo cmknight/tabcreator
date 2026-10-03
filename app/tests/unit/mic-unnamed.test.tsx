@@ -24,6 +24,7 @@ const LIVE: RecordingSnapshot = {
   tunedStrings: [],
   recording: 'idle',
   activeTakeId: null,
+  countIn: { on: false, bpm: 100 },
 };
 
 describe('unnamed microphone label', () => {

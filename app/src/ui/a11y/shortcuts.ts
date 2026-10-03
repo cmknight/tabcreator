@@ -1,7 +1,8 @@
 // The app's only keyboard-shortcut registry (spine AD-18). `ShortcutListener` is mounted once,
 // in the shell, and installs the one `keydown` listener every shortcut goes through; nothing
 // else in the app listens to `keydown` for shortcuts. Each entry names its key, the route it
-// works on, a description (for the later `?` dialog) and a handler.
+// works on (or `global`: every route), a description (for the later `?` dialog), a handler and
+// optionally when it applies; a key it does not apply to is left to the page.
 //
 // The guard (EXPERIENCE.md Interaction Primitives): a shortcut never fires while focus is in a
 // text field (input, textarea, select, contenteditable), nor on an element where the key has a
@@ -21,11 +22,13 @@ import { strings } from '../strings';
 export interface Shortcut {
   /** `KeyboardEvent.key`, e.g. `' '` for Space. */
   key: string;
-  /** The route the shortcut works on. */
-  route: Route['name'];
+  /** The route the shortcut works on; `global` works on every route. */
+  route: Route['name'] | 'global';
   /** What it does, as the `?` dialog lists it. */
   description: string;
   handler: () => void;
+  /** Whether it applies now; when false the key is not handled (default: always). */
+  when?: () => boolean;
 }
 
 /** The latency mark set at a handled Space keydown on Record (story 3.5, Done when 1). */
@@ -74,23 +77,38 @@ function markKeydown(restart: boolean): void {
 type RecordToggleStore = Pick<RecordingSession, 'getSnapshot' | 'record' | 'stop'>;
 
 /**
- * Space on Record: while the mic is live, idle → `record()`, recording → `stop('user')`;
- * ignored while the take starts or stops, or with no live mic.
+ * Space on Record: while the mic is live, idle → `record()`, recording → `stop('user')`,
+ * count-in → `stop('user')` (cancels it); ignored while the take starts or stops, or with no
+ * live mic. The latency marks are set (and cleared) only with the count-in off: with it on, the
+ * capture opens at beat five, so the pair would measure the count-in, not the latency.
  */
 export function recordToggle(
   store: RecordToggleStore,
   mark: (restart: boolean) => void = markKeydown,
 ): () => void {
   return () => {
-    const { mic, recording }: RecordingSnapshot = store.getSnapshot();
+    const { mic, recording, countIn }: RecordingSnapshot = store.getSnapshot();
     if (mic !== 'live') return;
     if (recording === 'idle') {
-      mark(true);
+      if (!countIn.on) mark(true);
       void store.record();
     } else if (recording === 'recording') {
-      mark(false);
+      if (!countIn.on) mark(false);
+      void store.stop('user');
+    } else if (recording === 'count-in') {
       void store.stop('user');
     }
+  };
+}
+
+/** Esc: cancels a count-in; applies only while one runs (otherwise Esc is left to the page). */
+export function cancelCountIn(store: Pick<RecordingSession, 'getSnapshot' | 'stop'>): Shortcut {
+  return {
+    key: 'Escape',
+    route: 'global',
+    description: strings['global.shortcutCancelCountIn'],
+    when: () => store.getSnapshot().recording === 'count-in',
+    handler: () => void store.stop('user'),
   };
 }
 
@@ -102,11 +120,13 @@ export const SHORTCUTS: readonly Shortcut[] = [
     description: strings['record.shortcutRecordStop'],
     handler: recordToggle(recordingSession),
   },
+  cancelCountIn(recordingSession),
 ];
 
 /**
- * Runs the shortcut `event` matches on `route` (null: no known route), if any and unless the
- * guard skips it. Returns whether a shortcut matched; its default is then prevented.
+ * Runs the shortcut `event` matches on `route` (null: no known route, so only global ones), if
+ * any and unless the guard skips it. Returns whether a shortcut matched; its default is then
+ * prevented.
  */
 export function dispatchShortcut(
   event: KeyboardEvent,
@@ -115,8 +135,12 @@ export function dispatchShortcut(
 ): boolean {
   if (event.defaultPrevented) return false;
   if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
-  if (route === null) return false;
-  const entry = shortcuts.find((s) => s.key === event.key && s.route === route);
+  const entry = shortcuts.find(
+    (s) =>
+      s.key === event.key &&
+      (s.route === 'global' || (route !== null && s.route === route)) &&
+      (s.when?.() ?? true),
+  );
   if (!entry || guarded(event.target, event.key)) return false;
   event.preventDefault();
   if (!event.repeat) entry.handler();

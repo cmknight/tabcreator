@@ -83,3 +83,22 @@
   height: 28px;
   border-radius: 5px;
 }
+
+/* During a count-in (mockup record.html alt (a)): a muted indicator, and the beat number in the
+   display type in the numeric font, in place of the timer. */
+.counting {
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+.beat {
+  min-height: 96px;
+  margin: var(--space-2) 0 var(--space-4);
+
+  /* The numeric font at the mockup's beat size (DESIGN.md: display type for the beat number). */
+  font: var(--font-numeric);
+  font-size: 96px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}

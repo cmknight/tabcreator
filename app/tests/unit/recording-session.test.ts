@@ -24,6 +24,7 @@ const IDLE = {
   tunedStrings: [],
   recording: 'idle',
   activeTakeId: null,
+  countIn: { on: false, bpm: 100 },
 };
 
 /** The prefs' analysis defaults the fakes return; `record()` copies them into the take. */
@@ -83,6 +84,8 @@ function setup(overrides: Partial<RecordingDeps> = {}) {
   const input = {
     analyser,
     readFrame: vi.fn(() => frame),
+    clock: () => 0,
+    clicks: () => () => {},
     capture: vi.fn<OpenedInput['capture']>(noCapture),
     close: vi.fn(),
     deviceId: null,
@@ -475,6 +478,8 @@ describe('recording session', () => {
           return {
             analyser,
             readFrame: () => frame,
+            clock: () => 0,
+            clicks: () => () => {},
             capture: noCapture,
             close: entry.close,
             deviceId,
@@ -544,6 +549,8 @@ describe('recording session', () => {
       deps.openInput = vi.fn(() => ({
         analyser,
         readFrame: () => frame,
+        clock: () => 0,
+        clicks: () => () => {},
         capture: noCapture,
         close: vi.fn(),
         deviceId: 'default',
@@ -705,6 +712,8 @@ describe('recording session', () => {
       setup.deps.openInput = vi.fn(() => ({
         analyser,
         readFrame: () => frame,
+        clock: () => 0,
+        clicks: () => () => {},
         capture: noCapture,
         close: vi.fn(),
         deviceId,
@@ -934,6 +943,8 @@ describe('recording session', () => {
         deps.openInput = vi.fn(() => ({
           analyser,
           readFrame: () => frame,
+          clock: () => 0,
+          clicks: () => () => {},
           capture: noCapture,
           close: vi.fn(),
           deviceId: 'default',

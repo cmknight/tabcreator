@@ -62,6 +62,21 @@ export const strings = {
   'record.elapsed': (time: string) => `Elapsed time ${time}`,
   /** The Space shortcut's description in the keyboard shortcuts dialog (EXPERIENCE.md). */
   'record.shortcutRecordStop': 'Record / stop',
+  /** The count-in toggle (EXPERIENCE.md Count-in controls). */
+  'record.countIn': 'Count-in',
+  /** The count-in tempo field's label and unit. */
+  'record.tempo': 'Tempo',
+  'record.bpm': 'BPM',
+  /** The Record button's label during a count-in. */
+  'record.cancel': 'Cancel',
+  /** The Record button's accessible name during a count-in. */
+  'record.cancelCountIn': 'Cancel count-in',
+  /** The indicator above the beat number during a count-in: "Count-in · 90 BPM". */
+  'record.countInState': (bpm: number) => `Count-in · ${bpm} BPM`,
+  /** A count-in beat, as shown and announced (4, 3, 2, 1). */
+  'record.countInBeat': (beat: number) => `${beat}`,
+  /** The Esc shortcut's description in the keyboard shortcuts dialog (EXPERIENCE.md). */
+  'global.shortcutCancelCountIn': 'Cancel count-in',
   'record.micError.mic-denied.title': 'Microphone access is blocked',
   'record.micError.mic-denied.body':
     'Chrome is blocking the microphone for this site. To allow it:',

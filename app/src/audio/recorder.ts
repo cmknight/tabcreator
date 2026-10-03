@@ -3,9 +3,10 @@
 //   - the recorder worklet (recorder-worklet.ts), which posts 1 s mono Float32 chunks at the
 //     context's rate, and
 //   - a gain gate into a MediaStreamAudioDestinationNode, whose stream feeds MediaRecorder
-//     (Opus, 96 kbps). The gate lets a later story (count-in) open it at beat five.
-// Start and stop are scheduled a short lookahead ahead on the audio clock: the worklet and the
-// gate switch at exactly those frames. MediaRecorder cannot be scheduled on the audio clock, so
+//     (Opus, 96 kbps).
+// Start and stop are scheduled on the audio clock: the start a short lookahead ahead, or at a
+// given time (the count-in's beat five), the stop a lookahead ahead; the worklet and the gate
+// switch at exactly those frames. MediaRecorder cannot be scheduled on the audio clock, so
 // it is started and stopped by timers aimed at the same times; the compressed copy is offset
 // from the raw chunks only by that timer jitter (and the encoder's own start latency), a few ms.
 
@@ -27,6 +28,8 @@ const TIMESLICE_MS = 1000;
 export interface Capture {
   /** The context's sample rate: the rate of every chunk. */
   readonly sampleRate: number;
+  /** The audio-clock time (s) the capture opens at: the first captured frame's time. */
+  readonly startTime: number;
   /** Audio-clock time captured so far, in ms (0 before the start time; frozen once stopping). */
   elapsedMs(): number;
   /**
@@ -91,13 +94,16 @@ const msUntil = (ctx: BaseAudioContext, time: number) =>
 
 /**
  * Starts capturing `source` (a node of `ctx`). `onChunk` receives each 1 s chunk in order (the
- * last one shorter). Rejects with `AppError` `mic-failed` when the context cannot run or the
- * graph cannot be built.
+ * last one shorter). The capture opens at audio-clock time `startAt` (s) when given (a count-in's
+ * beat five), else a short lookahead from now; a `startAt` already too close or past opens it
+ * after that lookahead instead (`Capture.startTime` says when). Rejects with `AppError`
+ * `mic-failed` when the context cannot run or the graph cannot be built.
  */
 export async function startCapture(
   ctx: AudioContext,
   source: AudioNode,
   onChunk: (samples: Float32Array) => void,
+  startAt?: number,
 ): Promise<Capture> {
   let worklet: AudioWorkletNode | undefined;
   let gate: GainNode | undefined;
@@ -178,7 +184,7 @@ export async function startCapture(
     media.onerror = () => {
       mediaError = true;
     };
-    startTime = ctx.currentTime + LOOKAHEAD_S;
+    startTime = Math.max(startAt ?? -Infinity, ctx.currentTime + LOOKAHEAD_S);
     gate.gain.setValueAtTime(1, startTime);
     worklet.port.postMessage({ type: 'start', frame: Math.round(startTime * ctx.sampleRate) });
     // Started when the gate opens, so the compressed copy begins with the raw chunks.
@@ -238,6 +244,7 @@ export async function startCapture(
 
   return {
     sampleRate: ctx.sampleRate,
+    startTime,
     elapsedMs() {
       const now = stopTime === null ? ctx.currentTime : Math.min(ctx.currentTime, stopTime);
       return Math.max(0, (now - startTime) * 1000);
