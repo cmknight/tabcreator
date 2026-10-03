@@ -3,7 +3,7 @@ title: 'Accuracy harness and report (tracer)'
 type: 'feature'
 ticket: '1'
 created: '2026-10-03'
-status: 'built'
+status: done
 baseline_revision: 'dbbf38dd28bfaf82f147cf526864d1162d5a6b6c'
 route: 'full'
 route_source: 'auto'
