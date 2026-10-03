@@ -1,11 +1,12 @@
 //! Fixture sets, pooled rows and the Markdown accuracy report.
 
+use super::baseline::{AccuracyBaseline, Metric, delta_cell, delta_points, set_key};
 use super::metrics::Counts;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 /// Which set a fixture's numbers pool into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Set {
     /// Clean fixtures at `tempoBpm` <= 120 or null, with ground-truth notes.
@@ -152,7 +153,11 @@ fn thresholds_cell(p: &PooledRow) -> String {
         .join("; ")
 }
 
-const SCORED_HEADER: &str = "| Fixture | Truth | Detected | TP | FP | FN | F1 | Octave errors | Fret agreement | Analyze ms |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n";
+const SCORED_HEADER: &str = "| Fixture | Truth | Detected | TP | FP | FN | F1 | Octave errors | Fret agreement | Analyze ms |";
+const SCORED_ALIGN: &str = "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|";
+
+/// Said once in a table header when there is no `main` baseline to compare with.
+pub const NO_MAIN: &str = "n/a (no main baseline)";
 
 /// `count (rate)`, as in every octave-errors cell.
 fn octave_cell(c: &Counts) -> String {
@@ -169,10 +174,11 @@ fn fret_cell(c: &Counts) -> String {
     )
 }
 
-fn scored_row(out: &mut String, name: &str, c: &Counts, analyze_ms: f64) {
+/// `delta` is the "ΔF1 vs main" cell (empty without a main baseline).
+fn scored_row(out: &mut String, name: &str, c: &Counts, analyze_ms: f64, delta: &str) {
     let _ = writeln!(
         out,
-        "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {analyze_ms:.3} |",
+        "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {analyze_ms:.3} | {delta} |",
         c.truth,
         c.detected,
         c.tp,
@@ -192,6 +198,8 @@ pub struct RunInfo {
     pub silence_60s_ms: Option<f64>,
     /// `None` when `testdata/real` does not exist.
     pub real_folder: Option<String>,
+    /// `main`'s committed baseline, for the "Δ vs main" cells; `None` when not given.
+    pub main_baseline: Option<AccuracyBaseline>,
 }
 
 /// Renders the Markdown report.
@@ -213,13 +221,22 @@ pub fn render(info: &RunInfo, rows: &[FixtureRow]) -> String {
     );
 
     let _ = writeln!(out, "## Pooled\n");
+    let main = info.main_baseline.as_ref();
+    let (delta_hdr, delta_align) = if main.is_some() {
+        (
+            " ΔF1 vs main | ΔOctave vs main | ΔFret vs main |",
+            "---:|---:|---:|",
+        )
+    } else {
+        (" Δ vs main: n/a (no main baseline) |", "---|")
+    };
     let _ = writeln!(
         out,
-        "| Set | Fixtures | Truth | Detected | TP | FP | FN | F1 | Octave errors | Fret agreement | Thresholds |"
+        "| Set | Fixtures | Truth | Detected | TP | FP | FN | F1 | Octave errors | Fret agreement | Thresholds |{delta_hdr}"
     );
     let _ = writeln!(
         out,
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|{delta_align}"
     );
     for set in Set::ALL {
         if set == Set::PhantomOnly {
@@ -230,9 +247,27 @@ pub fn render(info: &RunInfo, rows: &[FixtureRow]) -> String {
             continue;
         }
         let c = &p.counts;
+        let deltas = match main {
+            Some(m) => {
+                let was = m.sets.get(set_key(set));
+                Metric::ALL
+                    .into_iter()
+                    .map(|metric| {
+                        let now = match metric {
+                            Metric::F1 => p.f1,
+                            Metric::OctaveRate => p.octave_rate,
+                            Metric::FretAgreement => p.fret_agreement,
+                        };
+                        delta_cell(delta_points(was.and_then(|w| metric.of(w)), now))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            }
+            None => String::new(),
+        };
         let _ = writeln!(
             out,
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {deltas} |",
             set.title(),
             p.fixtures,
             c.truth,
@@ -282,13 +317,35 @@ pub fn render(info: &RunInfo, rows: &[FixtureRow]) -> String {
             let _ = writeln!(out);
             continue;
         }
-        out.push_str(SCORED_HEADER);
+        let _ = writeln!(
+            out,
+            "{SCORED_HEADER} {} |\n{SCORED_ALIGN}{}",
+            if main.is_some() {
+                "ΔF1 vs main".to_owned()
+            } else {
+                format!("ΔF1 vs main: {NO_MAIN}")
+            },
+            if main.is_some() { "---:|" } else { "---|" }
+        );
         for r in &members {
-            scored_row(&mut out, &r.name, &r.counts, r.analyze_ms);
+            let delta = main.map_or(String::new(), |m| {
+                let was = m
+                    .fixtures
+                    .get(&r.name)
+                    .and_then(|f| Counts::from(f.counts).f1());
+                delta_cell(delta_points(was, r.counts.f1()))
+            });
+            scored_row(&mut out, &r.name, &r.counts, r.analyze_ms, &delta);
         }
         let p = pool(set, rows);
         let total_ms: f64 = members.iter().map(|r| r.analyze_ms).sum();
-        scored_row(&mut out, "**pooled**", &p.counts, total_ms);
+        let delta = main.map_or(String::new(), |m| {
+            delta_cell(delta_points(
+                m.sets.get(set_key(set)).and_then(|w| w.f1),
+                p.f1,
+            ))
+        });
+        scored_row(&mut out, "**pooled**", &p.counts, total_ms, &delta);
         let _ = writeln!(out, "\nThresholds: {}\n", thresholds_cell(&p));
     }
     out
@@ -339,6 +396,7 @@ mod tests {
             profile: "debug",
             silence_60s_ms: None,
             real_folder: None,
+            main_baseline: None,
         };
         let out = render(&info, &[]);
         assert!(out.contains("none (no `testdata/real` folder)"), "{out}");
@@ -375,6 +433,7 @@ mod tests {
             profile: "release",
             silence_60s_ms: Some(12.25),
             real_folder: Some("/x/testdata/real".to_owned()),
+            main_baseline: None,
         };
         let out = render(&info, &rows);
         for r in &rows {
@@ -419,6 +478,77 @@ mod tests {
             out.contains("| take_01 | 5 | 5 | 3 | 2 | 2 | 0.600 | 0 (0.0%) | n/a (0/0) | 1.500 |"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn no_main_baseline_is_said_once_per_table_header() {
+        let rows = [
+            row("clean_one", Set::CleanGate, 4, 4, 4),
+            row("silence_60s", Set::PhantomOnly, 0, 0, 0),
+        ];
+        let info = RunInfo {
+            engine_version: "0.0.0".to_owned(),
+            profile: "debug",
+            silence_60s_ms: None,
+            real_folder: None,
+            main_baseline: None,
+        };
+        let out = render(&info, &rows);
+        assert!(
+            out.contains("| Thresholds | Δ vs main: n/a (no main baseline) |\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("| Analyze ms | ΔF1 vs main: n/a (no main baseline) |\n"),
+            "{out}"
+        );
+        // The pooled and clean-gate tables; empty sets and phantom-only have no F1 table.
+        assert_eq!(out.matches(NO_MAIN).count(), 2, "{out}");
+        assert!(
+            out.contains(
+                "| clean_one | 4 | 4 | 4 | 0 | 0 | 1.000 | 0 (0.0%) | n/a (0/0) | 1.500 |  |"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn main_baseline_adds_delta_cells_in_points() {
+        use crate::accuracy::baseline::build_baseline;
+        let mut main = build_baseline("0.1.0", &[row("clean_one", Set::CleanGate, 4, 4, 4)]);
+        // Clean-gate F1 on main is 0.02 higher than now.
+        let now_rows = [row("clean_one", Set::CleanGate, 50, 49, 49)];
+        let now_f1 = pool(Set::CleanGate, &now_rows).f1.unwrap();
+        main.sets.get_mut("clean-gate").unwrap().f1 = Some(now_f1 + 0.02);
+        let info = RunInfo {
+            engine_version: "0.1.0".to_owned(),
+            profile: "debug",
+            silence_60s_ms: None,
+            real_folder: None,
+            main_baseline: Some(main),
+        };
+        let out = render(&info, &now_rows);
+        assert!(
+            out.contains("| Thresholds | ΔF1 vs main | ΔOctave vs main | ΔFret vs main |\n"),
+            "{out}"
+        );
+        assert!(!out.contains(NO_MAIN), "{out}");
+        assert!(
+            out.contains("fret ≥ 80%: not met | −2.0 | 0.0 | n/a |"),
+            "{out}"
+        );
+        // Per fixture: main's clean_one had F1 1.000, now 0.990.
+        assert!(out.contains("| 1.500 | −1.0 |"), "{out}");
+        // The per-fixture table's pooled row carries the set's ΔF1.
+        assert!(
+            out.contains(
+                "| **pooled** | 50 | 49 | 49 | 0 | 1 | 0.990 | 0 (0.0%) | n/a (0/0) | 1.500 | −2.0 |"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("| Analyze ms | ΔF1 vs main |\n"), "{out}");
+        // Noisy-gate is absent on both sides.
+        assert!(out.contains("| noisy-gate | 0 |"), "{out}");
     }
 
     #[test]

@@ -73,11 +73,49 @@ jobs:
       # US-8.4: the fixture accuracy report (thresholds shown, not enforced), built in release
       # so its analyze timing is meaningful. Published to the job summary and as an artifact
       # even when a later step fails.
+      # Also the gate against main (AD-7, CAP-23): main's committed baseline and output hashes
+      # are read through `git show`; a file main lacks leaves its check skipped.
       - name: Accuracy report
         working-directory: engine
         env:
           ACCURACY_REPORT: ${{ runner.temp }}/accuracy-report.md
-        run: cargo test --release --locked --test fixtures
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+          REF: ${{ github.ref }}
+        run: |
+          compare=""
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            compare="origin/$BASE_REF"
+            git fetch --no-tags --depth=1 origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF" || true
+          elif [ "$REF" = "refs/heads/main" ]; then
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+              compare="$BEFORE"
+              git fetch --no-tags --depth=1 origin "$BEFORE" || true
+            fi
+          else
+            compare="origin/main"
+            git fetch --no-tags --depth=1 origin "+refs/heads/main:refs/remotes/origin/main" || true
+          fi
+          if [ -n "$compare" ]; then
+            if ! git rev-parse --verify --quiet "$compare^{commit}" > /dev/null; then
+              echo "::error::cannot resolve comparison commit $compare"
+              exit 1
+            fi
+            echo "Comparing against $compare"
+            if git show "$compare:engine/tests/accuracy-baseline.json" > "$RUNNER_TEMP/main-accuracy-baseline.json" 2>/dev/null; then
+              export ACCURACY_MAIN_BASELINE="$RUNNER_TEMP/main-accuracy-baseline.json"
+            else
+              echo "::notice::$compare has no copy of engine/tests/accuracy-baseline.json (metric gate skipped)"
+            fi
+            if git show "$compare:engine/tests/fixture-outputs.json" > "$RUNNER_TEMP/main-fixture-outputs.json" 2>/dev/null; then
+              export ACCURACY_MAIN_OUTPUTS="$RUNNER_TEMP/main-fixture-outputs.json"
+            else
+              echo "::notice::$compare has no copy of engine/tests/fixture-outputs.json (hash gate skipped)"
+            fi
+          fi
+          echo "ACCURACY_MAIN_BASELINE=${ACCURACY_MAIN_BASELINE:-unset} ACCURACY_MAIN_OUTPUTS=${ACCURACY_MAIN_OUTPUTS:-unset}"
+          cargo test --release --locked --test fixtures
 
       - name: Accuracy report to job summary
         if: always()
