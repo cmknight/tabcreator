@@ -1,6 +1,7 @@
 // The Tab screen's hook onto its take session (spine AD-3): one session per mounted take id (the
 // screen is keyed by take id), read with useSyncExternalStore and disposed on unmount. Disposal
-// detaches only; an analysis in flight carries on (spine AD-16).
+// detaches only; an analysis in flight carries on (spine AD-16). Returns the snapshot and the
+// session, whose actions (Cancel, Analyse, Retry) the screen calls.
 
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { createAppTakeSession, type TakeSession, type TakeSnapshot } from '../session/take-session';
@@ -8,8 +9,9 @@ import { createAppTakeSession, type TakeSession, type TakeSnapshot } from '../se
 export function useTakeSession(
   takeId: string,
   create: (takeId: string) => TakeSession = createAppTakeSession,
-): TakeSnapshot {
+): { snapshot: TakeSnapshot; session: TakeSession } {
   const [session] = useState(() => create(takeId));
   useEffect(() => () => session.dispose(), [session]);
-  return useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot);
+  return { snapshot, session };
 }

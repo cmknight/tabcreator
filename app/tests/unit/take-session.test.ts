@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../src/model/errors';
 import type { Tab, Take } from '../../src/model/types';
 import type { AnalysisOutcome, ProgressListener } from '../../src/session/analysis';
@@ -31,25 +31,35 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 function harness(take: Take | null, tab: Tab | null = null) {
   let storageListener: StorageListener | null = null;
   const listeners = new Set<ProgressListener>();
-  let finish!: (outcome: AnalysisOutcome) => void;
-  let fail!: (err: unknown) => void;
-  const run = new Promise<AnalysisOutcome>((res, rej) => {
-    finish = res;
-    fail = rej;
-  });
+  const savers = new Set<() => void>();
+  // One run per ensureAnalysed or retryCommit call; finish and fail settle the latest.
+  const runs: { resolve: (o: AnalysisOutcome) => void; reject: (e: unknown) => void }[] = [];
+  const newRun = () =>
+    new Promise<AnalysisOutcome>((resolve, reject) => {
+      runs.push({ resolve, reject });
+    });
+  const finish = (outcome: AnalysisOutcome) => runs.at(-1)!.resolve(outcome);
+  const fail = (err: unknown) => runs.at(-1)!.reject(err);
   const deps: TakeSessionDeps = {
     db: {
       getTake: vi.fn(async () => take),
       getTab: vi.fn(async () => tab),
     },
     analysis: {
-      ensureAnalysed: vi.fn((_take, onProgress) => {
+      ensureAnalysed: vi.fn((_take, onProgress, onSaving) => {
         if (onProgress) listeners.add(onProgress);
-        return run;
+        if (onSaving) savers.add(onSaving);
+        return newRun();
       }),
       detach: vi.fn((_id, onProgress) => {
         listeners.delete(onProgress);
       }),
+      cancel: vi.fn(() => {
+        runs.at(-1)?.reject(new AppError('analysis-cancelled', 'cancelled'));
+        return true;
+      }),
+      retryCommit: vi.fn(() => newRun()),
+      pendingCommit: vi.fn(() => false),
     },
     cancel: vi.fn(),
     subscribeStorage: vi.fn((listener) => {
@@ -62,6 +72,7 @@ function harness(take: Take | null, tab: Tab | null = null) {
   return {
     deps,
     progress: (p: number) => listeners.forEach((l) => l(p)),
+    saving: () => savers.forEach((l) => l()),
     finish,
     fail,
     emit: (event: StorageEvent) => storageListener?.(event),
@@ -208,6 +219,234 @@ describe('take session', () => {
       ...ANALYZED,
       title: 'Renamed',
       audioMime: null,
+    });
+  });
+});
+
+// Story 5.7 (US-4.5): Cancel, Analyse, Retry and the storage-full retry.
+describe('take session actions', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  async function running(h: ReturnType<typeof harness>) {
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'running', progress: 0 });
+    return session;
+  }
+
+  it('cancel: cancelled at once, the run cancelled and detached; it does not restart by itself', async () => {
+    const h = harness(TAKE);
+    const session = await running(h);
+    h.progress(0.3);
+    session.cancel();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'cancelled' });
+    expect(h.deps.analysis.cancel).toHaveBeenCalledWith('t1');
+    expect(h.deps.analysis.detach).toHaveBeenCalledTimes(1);
+    h.progress(0.6); // a late progress report changes nothing
+    await settle();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'cancelled' });
+    expect(session.getSnapshot().take?.status).toBe('recorded');
+    // A StrictMode remount of the same session does not restart it.
+    session.dispose();
+    session.subscribe(() => {});
+    await settle();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'cancelled' });
+    expect(h.deps.analysis.ensureAnalysed).toHaveBeenCalledTimes(1);
+  });
+
+  it('analyse after a cancel: running again, then the committed tab', async () => {
+    const h = harness(TAKE);
+    const session = await running(h);
+    session.cancel();
+    await settle();
+    session.analyse();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'running', progress: 0 });
+    expect(h.deps.analysis.ensureAnalysed).toHaveBeenCalledTimes(2);
+    h.progress(0.5);
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'running', progress: 0.5 });
+    h.finish({ take: ANALYZED, tab: TAB });
+    await settle();
+    expect(session.getSnapshot()).toMatchObject({
+      take: ANALYZED,
+      tab: TAB,
+      analysis: { kind: 'idle' },
+    });
+  });
+
+  it('a new session for a cancelled take analyses it again', async () => {
+    const h = harness(TAKE);
+    const first = await running(h);
+    first.cancel();
+    first.dispose();
+    await running(h);
+    expect(h.deps.analysis.ensureAnalysed).toHaveBeenCalledTimes(2);
+  });
+
+  it('cancel refused (the result is being committed): stays running, then the tab', async () => {
+    const h = harness(TAKE);
+    vi.mocked(h.deps.analysis.cancel).mockReturnValue(false);
+    const session = await running(h);
+    session.cancel();
+    expect(session.getSnapshot().analysis.kind).toBe('running');
+    h.finish({ take: ANALYZED, tab: TAB });
+    await settle();
+    expect(session.getSnapshot()).toMatchObject({ tab: TAB, analysis: { kind: 'idle' } });
+  });
+
+  it('a run cancelled elsewhere shows cancelled', async () => {
+    const h = harness(TAKE);
+    const session = await running(h);
+    h.fail(new AppError('analysis-cancelled', 'instance lost'));
+    await settle();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'cancelled' });
+  });
+
+  it('failed: the detail goes to devWarn; Retry analyses again and succeeds', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = harness(TAKE);
+    const session = await running(h);
+    const err = new AppError('analysis-failed', 'boom');
+    h.fail(err);
+    await settle();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'failed', code: 'analysis-failed' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('t1'), err);
+    session.analyse();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'running', progress: 0 });
+    h.finish({ take: ANALYZED, tab: TAB });
+    await settle();
+    expect(session.getSnapshot()).toMatchObject({ tab: TAB, analysis: { kind: 'idle' } });
+  });
+
+  it('the take could not be read: Retry reads it again and analyses it', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = harness(TAKE);
+    vi.mocked(h.deps.db.getTake).mockRejectedValueOnce(new AppError('storage-failed', 'read'));
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    expect(session.getSnapshot()).toMatchObject({
+      loading: false,
+      analysis: { kind: 'failed', code: 'storage-failed' },
+    });
+    session.analyse();
+    expect(session.getSnapshot().loading).toBe(true);
+    await settle();
+    expect(session.getSnapshot()).toMatchObject({
+      take: TAKE,
+      analysis: { kind: 'running', progress: 0 },
+    });
+  });
+
+  it('storage full: failed with the code; Retry commits the held result, with no new analysis', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = harness(TAKE);
+    const session = await running(h);
+    h.fail(new AppError('storage-full', 'quota'));
+    await settle();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'failed', code: 'storage-full' });
+    vi.mocked(h.deps.analysis.pendingCommit).mockReturnValue(true);
+    session.retryCommit();
+    expect(h.deps.analysis.retryCommit).toHaveBeenCalledWith('t1');
+    expect(h.deps.analysis.ensureAnalysed).toHaveBeenCalledTimes(1);
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'running', progress: 1, saving: true });
+    session.cancel(); // nothing to cancel while saving
+    expect(h.deps.analysis.cancel).not.toHaveBeenCalled();
+    h.finish({ take: ANALYZED, tab: TAB });
+    await settle();
+    expect(session.getSnapshot()).toMatchObject({ take: ANALYZED, analysis: { kind: 'idle' } });
+  });
+
+  it('storage full, Retry with nothing held (a reload lost it): analyses again', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = harness(TAKE);
+    const session = await running(h);
+    h.fail(new AppError('storage-full', 'quota'));
+    await settle();
+    session.retryCommit();
+    expect(h.deps.analysis.retryCommit).not.toHaveBeenCalled();
+    expect(h.deps.analysis.ensureAnalysed).toHaveBeenCalledTimes(2);
+  });
+
+  it('reopened while a result is held: the storage-full state, no analysis', async () => {
+    const h = harness(TAKE);
+    vi.mocked(h.deps.analysis.pendingCommit).mockReturnValue(true);
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'failed', code: 'storage-full' });
+    expect(h.deps.analysis.ensureAnalysed).not.toHaveBeenCalled();
+  });
+});
+
+describe('take session saving and Retry fallbacks (story 5.7 review)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('a run that starts committing is saving; Cancel then does nothing', async () => {
+    const h = harness(TAKE);
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    h.progress(1);
+    h.saving();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'running', progress: 1, saving: true });
+    session.cancel();
+    expect(h.deps.analysis.cancel).not.toHaveBeenCalled();
+    h.finish({ take: ANALYZED, tab: TAB });
+    await settle();
+    expect(session.getSnapshot()).toMatchObject({ tab: TAB, analysis: { kind: 'idle' } });
+  });
+
+  it('analyse when the take shown is not recorded: re-reads it, and analyses it if now recorded', async () => {
+    const h = harness({ ...TAKE, status: 'recording' });
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'idle' });
+    expect(h.deps.analysis.ensureAnalysed).not.toHaveBeenCalled();
+    vi.mocked(h.deps.db.getTake).mockResolvedValue(TAKE);
+    session.analyse();
+    expect(session.getSnapshot().loading).toBe(true);
+    await settle();
+    expect(session.getSnapshot()).toMatchObject({
+      take: TAKE,
+      loading: false,
+      analysis: { kind: 'running', progress: 0 },
+    });
+    expect(h.deps.analysis.ensureAnalysed).toHaveBeenCalledTimes(1);
+  });
+
+  it('analyse when the stored take is analysed: shows its tab, no analysis', async () => {
+    const h = harness({ ...TAKE, status: 'recording' });
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    vi.mocked(h.deps.db.getTake).mockResolvedValue(ANALYZED);
+    vi.mocked(h.deps.db.getTab).mockResolvedValue(TAB);
+    session.analyse();
+    await settle();
+    expect(session.getSnapshot()).toMatchObject({
+      take: ANALYZED,
+      tab: TAB,
+      analysis: { kind: 'idle' },
+    });
+    expect(h.deps.analysis.ensureAnalysed).not.toHaveBeenCalled();
+  });
+
+  it('storage-full Retry when the take could not be read: re-reads and analyses it', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = harness(TAKE);
+    vi.mocked(h.deps.db.getTake).mockRejectedValueOnce(new AppError('storage-full', 'quota'));
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    expect(session.getSnapshot().analysis).toEqual({ kind: 'failed', code: 'storage-full' });
+    session.retryCommit();
+    await settle();
+    expect(h.deps.analysis.retryCommit).not.toHaveBeenCalled();
+    expect(session.getSnapshot()).toMatchObject({
+      take: TAKE,
+      analysis: { kind: 'running', progress: 0 },
     });
   });
 });

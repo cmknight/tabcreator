@@ -1,7 +1,8 @@
 // Every app-initiated reload goes through here (spine AD-16, AD-19). A reload is refused while
 // the recording store is busy (`isBusy`: a take counting in, starting, recording or stopping, a
 // failed stop's re-offer, or a recovered take being rebuilt), so it never cuts a take or a save
-// short, and while any take is being analysed (story 5.6). The recording store's `beforeunload`
+// short, and while any take is being analysed (story 5.6); `isAppBusy()` is that one answer
+// (story 5.7). The recording store's `beforeunload`
 // guard asks only in the first case: an analysis cut short by a reload starts again when its Tab
 // opens. The caller tells the player why (story 5.2). A later story awaits flushAll() first.
 import { analysis, type Analysis } from './analysis';
@@ -28,7 +29,16 @@ export function appBusy(
   return { isBusy: () => recording.isBusy() || analyses.isAnalysing() };
 }
 
+/**
+ * The app's one busy answer (spine AD-16): the recording store is busy, or a take is being
+ * analysed. A result only held for Retry after a storage-full commit is not busy. Settings'
+ * Reload, the Tab screen's engine banner Reload and the update toast (a later story) read it.
+ */
+export function isAppBusy(): boolean {
+  return appBusy(recordingSession, analysis).isBusy();
+}
+
 /** Reloads the app unless recording or analysing; returns whether it reloaded. */
 export function reloadApp(): boolean {
-  return reloadUnlessBusy(appBusy(recordingSession, analysis), () => location.reload());
+  return reloadUnlessBusy({ isBusy: isAppBusy }, () => location.reload());
 }

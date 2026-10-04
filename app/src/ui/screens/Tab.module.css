@@ -1,9 +1,21 @@
-/* The Tab screen (story 5.6): progress while analysing, then the tab's systems as text. */
-.progress {
-  display: block;
-  inline-size: 100%;
-  max-inline-size: 480px;
-  margin-block-start: var(--space-2);
+/* The Tab screen (stories 5.6, 5.7): the analysis states, then the tab's systems as text. */
+
+/* The error banners (components/banner.module.css) sit above the title. */
+.banner {
+  flex-wrap: wrap;
+  margin-block-end: var(--space-4);
+}
+
+.link {
+  flex: none;
+  color: var(--color-primary);
+  font-weight: 500;
+  text-decoration: underline;
+}
+
+.link:focus-visible {
+  outline: var(--space-focus-ring) solid var(--color-primary);
+  outline-offset: 2px;
 }
 
 .status {
@@ -15,8 +27,45 @@
   font: var(--font-ui);
 }
 
+/* The bar, its percentage and Cancel on one line. */
+.progressRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  margin-block-start: var(--space-2);
+}
+
+.progress {
+  display: block;
+  flex: 1 1 240px;
+  min-inline-size: 0;
+  max-inline-size: 480px;
+}
+
+.percent {
+  min-inline-size: 4ch;
+  font: var(--font-numeric);
+  text-align: end;
+}
+
 .message {
   margin: var(--space-6) 0 0;
+  font: var(--font-ui);
+}
+
+.noNotes {
+  margin-block-start: var(--space-6);
+}
+
+.noNotesTitle {
+  margin: 0 0 var(--space-2);
+  font: var(--font-heading);
+}
+
+.tips {
+  margin: 0;
+  padding-inline-start: var(--space-6);
   font: var(--font-ui);
 }
 

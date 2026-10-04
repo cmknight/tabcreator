@@ -7,13 +7,19 @@
 // later session for the same take attaches to it. While it holds runs, the registry listens for
 // `take-deleted` itself (spine AD-16), so a run whose session has gone is still cancelled.
 // Rejects only with AppError.
+//
+// Story 5.7 (US-4.5): `cancel` stops a run at once (the engine worker restarts) and settles it
+// with `analysis-cancelled`. A commit that fails with `storage-full` keeps the built result in
+// memory as a pending commit (the raw file is kept too), so `retryCommit` can save it without a
+// new engine run. A pending commit is dropped when its take is deleted or a new analysis of the
+// take starts, and is lost on a reload, which costs one re-analysis.
 
 import { engineClient, type EngineClient } from '../engine/engine-client';
 import { AppError, isAppError } from '../model/errors';
 import { devWarn } from '../model/log';
 import type { EngineAnalyzeInput, Note, Tab, Take } from '../model/types';
 import { audioStore, type AudioStore } from '../storage/audio-store';
-import { db, type TakeDb } from '../storage/db';
+import { db, type TakeDb, type TakePatch } from '../storage/db';
 import { subscribe as subscribeStorage, type StorageListener } from '../storage/events';
 
 /** The share of the progress bar the engine's analyze call fills (spine AD-8). */
@@ -27,6 +33,8 @@ export const LOW_CONFIDENCE_MARGIN = 0.15;
 export const COUNT_IN_SKIP_MS = 100;
 
 export type ProgressListener = (fraction: number) => void;
+/** Called once when a run starts committing its result (story 5.7): it can no longer be cancelled. */
+export type SavingListener = () => void;
 
 export interface AnalysisOutcome {
   take: Take;
@@ -52,23 +60,58 @@ export interface Analysis {
    * Starts an analysis of `take` if it is `recorded` and none is in flight for it; otherwise
    * attaches `onProgress` to the run in flight. Resolves with the committed take and tab.
    */
-  ensureAnalysed(take: Take, onProgress?: ProgressListener): Promise<AnalysisOutcome>;
-  /** Stops delivering progress to `onProgress`; the run carries on. */
+  ensureAnalysed(
+    take: Take,
+    onProgress?: ProgressListener,
+    onSaving?: SavingListener,
+  ): Promise<AnalysisOutcome>;
+  /**
+   * Stops delivering progress to `onProgress` (and the saving signal registered with it); the
+   * run carries on.
+   */
   detach(takeId: string, onProgress: ProgressListener): void;
-  /** Whether any analysis is in flight (app-reload's busy check, spine AD-16). */
+  /**
+   * Cancels the run in flight for `takeId`: the engine's work for it is cancelled and the run
+   * settles at once with `analysis-cancelled`. Returns whether a run was cancelled; a run that is
+   * already committing its result is not, and settles as it would have.
+   */
+  cancel(takeId: string): boolean;
+  /**
+   * Saves the result held after a `storage-full` commit (the pending commit): the commit, then
+   * the raw file's delete, with no engine run. Rejects with `analysis-failed` when none is held;
+   * a new `storage-full` keeps it held.
+   */
+  retryCommit(takeId: string): Promise<AnalysisOutcome>;
+  /** Whether a result is held for `takeId` after a `storage-full` commit. */
+  pendingCommit(takeId: string): boolean;
+  /**
+   * Whether any analysis is in flight (app-reload's busy check, spine AD-16). A pending commit
+   * alone is not busy.
+   */
   isAnalysing(): boolean;
 }
 
 interface RunProgress {
-  listeners: Set<ProgressListener>;
+  /** Progress listeners, each with the saving listener registered with it. */
+  listeners: Map<ProgressListener, SavingListener | undefined>;
   progress: number;
-  /** Set when the take is deleted; the run stops at its next await. */
+  /** Set when the run is cancelled (or its take deleted); it stops at its next await. */
   cancelled: boolean;
+  /** Set once the result is being committed: too late to cancel. */
+  committing: boolean;
+  /** Settles the run's promise at once with `err` (a cancel). */
+  abort: (err: AppError) => void;
 }
 
 interface Run {
   promise: Promise<AnalysisOutcome>;
   state: RunProgress;
+}
+
+/** A built result, ready for `commitAnalysis`. */
+interface BuiltResult {
+  tab: Tab;
+  takePatch: TakePatch;
 }
 
 /** The engine input, built from its six fields explicitly (never by spreading settings). */
@@ -90,39 +133,128 @@ function toAppError(err: unknown): AppError {
 
 export function createAnalysis(deps: AnalysisDeps): Analysis {
   const runs = new Map<string, Run>();
+  /** Results whose commit failed with `storage-full`, kept for `retryCommit` (memory only). */
+  const pending = new Map<string, BuiltResult>();
+  /** Takes deleted while held: a commit settling after the deletion never holds their result. */
+  const deleted = new Set<string>();
   const now = deps.now ?? (() => new Date());
   const newId = deps.newId ?? (() => crypto.randomUUID());
 
   let unsubscribeStorage: (() => void) | null = null;
 
-  /** A deleted take's run is cancelled, whether or not a session still holds it (AD-16). */
+  /** Cancels `takeId`'s run unless it is committing; returns whether it did. */
+  function cancelRun(takeId: string, reason: string): boolean {
+    const run = runs.get(takeId);
+    if (!run || run.state.cancelled || run.state.committing) return false;
+    run.state.cancelled = true;
+    // Out of the registry now, so an ensureAnalysed in the same tick starts a new run.
+    runs.delete(takeId);
+    deps.engine.cancel(takeId);
+    run.state.abort(new AppError('analysis-cancelled', reason));
+    return true;
+  }
+
+  /**
+   * A deleted take's run is cancelled, whether or not a session still holds it (AD-16), and its
+   * pending commit is dropped.
+   */
   const onStorage: StorageListener = (event) => {
     if (event.type !== 'take-deleted') return;
-    const run = runs.get(event.takeId);
-    if (!run || run.state.cancelled) return;
-    run.state.cancelled = true;
-    deps.engine.cancel(event.takeId);
+    if (runs.has(event.takeId)) deleted.add(event.takeId);
+    pending.delete(event.takeId);
+    cancelRun(event.takeId, `take ${event.takeId} was deleted`);
+    releaseStorage();
   };
 
-  function settle(takeId: string) {
-    runs.delete(takeId);
-    if (runs.size === 0) {
-      unsubscribeStorage?.();
-      unsubscribeStorage = null;
+  /** Stops listening for deletions once nothing is held. */
+  function releaseStorage() {
+    if (runs.size > 0 || pending.size > 0) return;
+    unsubscribeStorage?.();
+    unsubscribeStorage = null;
+  }
+
+  /**
+   * Registers `work` as `takeId`'s run, synchronously (the run awaits before it settles), so a
+   * concurrent call attaches to it. A cancel settles the run's promise at once; `work` then
+   * stops at its next await.
+   */
+  function register(
+    takeId: string,
+    state: RunProgress,
+    work: (state: RunProgress) => Promise<AnalysisOutcome>,
+  ): Promise<AnalysisOutcome> {
+    unsubscribeStorage ??= deps.subscribeStorage(onStorage);
+    const aborted = new Promise<never>((_, reject) => {
+      state.abort = reject;
+    });
+    let run: Run | null = null;
+    /** Clears the registry entry, unless a newer run for the take already replaced it. */
+    const done = () => {
+      if (run && runs.get(takeId) === run) runs.delete(takeId);
+      releaseStorage();
+    };
+    const promise = Promise.race([work(state), aborted]).then(
+      (outcome) => {
+        done();
+        return outcome;
+      },
+      (err: unknown) => {
+        done();
+        throw toAppError(err);
+      },
+    );
+    run = { promise, state };
+    runs.set(takeId, run);
+    return promise;
+  }
+
+  function newRun(listener?: ProgressListener, onSaving?: SavingListener): RunProgress {
+    return {
+      listeners: new Map(listener ? [[listener, onSaving]] : []),
+      progress: 0,
+      cancelled: false,
+      committing: false,
+      abort: () => {},
+    };
+  }
+
+  /**
+   * Commits a built result, then deletes the raw file. A `storage-full` commit keeps the result
+   * as the take's pending commit, and the raw file with it.
+   */
+  async function commit(takeId: string, built: BuiltResult): Promise<AnalysisOutcome> {
+    let committed: AnalysisOutcome;
+    try {
+      committed = await deps.db.commitAnalysis(takeId, built.tab, built.takePatch);
+    } catch (err) {
+      // Never held for a take deleted meanwhile (its commit then usually fails take-not-found).
+      if (isAppError(err) && err.code === 'storage-full' && !deleted.has(takeId)) {
+        pending.set(takeId, built);
+      }
+      throw err;
     }
+    // The raw file goes only after the commit (spine AD-9); a failed delete leaves an orphan.
+    try {
+      await deps.audio.deleteRaw(takeId);
+    } catch (err) {
+      devWarn(`could not delete the raw file of take ${takeId}`, err);
+    }
+    return committed;
   }
 
   function report(run: RunProgress, fraction: number) {
     if (fraction <= run.progress) return; // monotone
     run.progress = fraction;
-    for (const l of [...run.listeners]) l(fraction);
+    for (const l of [...run.listeners.keys()]) l(fraction);
   }
 
   async function analyse(takeId: string, run: RunProgress): Promise<AnalysisOutcome> {
-    /** Resolves `step`, then stops with `analysis-cancelled` if the take was deleted meanwhile. */
+    /** Resolves `step`, then stops with `analysis-cancelled` if the run was cancelled meanwhile. */
     const checked = async <T>(step: Promise<T>): Promise<T> => {
       const value = await step;
-      if (run.cancelled) throw new AppError('analysis-cancelled', `take ${takeId} was deleted`);
+      if (run.cancelled) {
+        throw new AppError('analysis-cancelled', `analysis of take ${takeId} was cancelled`);
+      }
       return value;
     };
 
@@ -169,10 +301,11 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
     report(run, 1);
 
     const analysisVersion = await checked(deps.engine.version());
-    const committed = await deps.db.commitAnalysis(
-      takeId,
-      { takeId, notes, updatedAt: now().toISOString(), deletedStartMs: [] },
-      {
+    run.committing = true;
+    for (const onSaving of [...run.listeners.values()]) onSaving?.();
+    return commit(takeId, {
+      tab: { takeId, notes, updatedAt: now().toISOString(), deletedStartMs: [] },
+      takePatch: {
         status: 'analyzed',
         analysisVersion,
         warnings: {
@@ -180,24 +313,18 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
           belowRangeNotes: result.belowRangeNotes,
         },
       },
-    );
-    // The raw file goes only after the commit (spine AD-9); a failed delete leaves an orphan.
-    try {
-      await deps.audio.deleteRaw(takeId);
-    } catch (err) {
-      devWarn(`could not delete the raw file of take ${takeId}`, err);
-    }
-    return committed;
+    });
   }
 
   return {
-    ensureAnalysed(take, onProgress) {
+    ensureAnalysed(take, onProgress, onSaving) {
       const existing = runs.get(take.id);
       if (existing) {
         if (onProgress) {
-          existing.state.listeners.add(onProgress);
+          existing.state.listeners.set(onProgress, onSaving);
           if (existing.state.progress > 0) onProgress(existing.state.progress);
         }
+        if (existing.state.committing) onSaving?.();
         return existing.promise;
       }
       if (take.status !== 'recorded') {
@@ -206,30 +333,35 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
         );
       }
       if (deps.hold) return new Promise<AnalysisOutcome>(() => {});
-      const progress: RunProgress = {
-        listeners: new Set(onProgress ? [onProgress] : []),
-        progress: 0,
-        cancelled: false,
-      };
-      unsubscribeStorage ??= deps.subscribeStorage(onStorage);
-      // Registered synchronously (the run awaits before it settles), so a concurrent call attaches.
-      const promise = analyse(take.id, progress).then(
-        (outcome) => {
-          settle(take.id);
-          return outcome;
-        },
-        (err: unknown) => {
-          settle(take.id);
-          throw toAppError(err);
-        },
-      );
-      runs.set(take.id, { promise, state: progress });
-      return promise;
+      // A new analysis replaces any result still held from a storage-full commit.
+      pending.delete(take.id);
+      return register(take.id, newRun(onProgress, onSaving), (state) => analyse(take.id, state));
     },
 
     detach(takeId, onProgress) {
       runs.get(takeId)?.state.listeners.delete(onProgress);
     },
+
+    cancel: (takeId) => cancelRun(takeId, `analysis of take ${takeId} was cancelled`),
+
+    retryCommit(takeId) {
+      const existing = runs.get(takeId);
+      if (existing) return existing.promise;
+      const built = pending.get(takeId);
+      if (!built) {
+        return Promise.reject(
+          new AppError('analysis-failed', `No analysis result is held for take ${takeId}`),
+        );
+      }
+      // Out of `pending` while it is retried; a new storage-full puts it back.
+      pending.delete(takeId);
+      const state = newRun();
+      state.progress = 1;
+      state.committing = true;
+      return register(takeId, state, () => commit(takeId, built));
+    },
+
+    pendingCommit: (takeId) => pending.has(takeId),
 
     isAnalysing: () => runs.size > 0,
   };
@@ -241,10 +373,83 @@ function devHold(): boolean {
   return new URLSearchParams(location.search).has('holdAnalysis');
 }
 
-/** The app-wide analysis registry. */
+/**
+ * Dev builds only: `?slowAnalysis=<ms>` delays every engine analyze by that long, so e2e tests
+ * can cancel or reload mid-analysis (story 5.7). 0 when absent.
+ */
+function devSlowMs(): number {
+  if (!import.meta.env.DEV || typeof location === 'undefined') return 0;
+  const ms = Number(new URLSearchParams(location.search).get('slowAnalysis'));
+  return Number.isFinite(ms) && ms > 0 ? ms : 0;
+}
+
+/**
+ * The dev failure hooks (story 5.7), read at each call from `window`: while
+ * `__analysisFailHook` is true every engine analyze rejects with `analysis-failed`, and while
+ * `__commitStorageFullHook` is true every `commitAnalysis` rejects with `storage-full`.
+ */
+interface AnalysisDevHooks {
+  __analysisFailHook?: boolean;
+  __commitStorageFullHook?: boolean;
+}
+
+const devHooks = () => globalThis as AnalysisDevHooks;
+
+/**
+ * Dev builds only: the engine with `?slowAnalysis` and `__analysisFailHook` applied. A delayed
+ * analyze is cancelled by `cancel`, as a queued request is by the engine client.
+ */
+function devEngine(engine: EngineClient, slowMs: number): AnalysisDeps['engine'] {
+  const delays = new Map<string, () => void>();
+  return {
+    async analyze(takeId, pcm, sampleRate, input, onProgress) {
+      if (slowMs > 0) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            delays.delete(takeId);
+            resolve();
+          }, slowMs);
+          delays.set(takeId, () => {
+            clearTimeout(timer);
+            delays.delete(takeId);
+            reject(new AppError('analysis-cancelled', `cancelled take ${takeId} (dev delay)`));
+          });
+        });
+      }
+      if (devHooks().__analysisFailHook) {
+        throw new AppError('analysis-failed', 'analysis failed (dev hook)');
+      }
+      return engine.analyze(takeId, pcm, sampleRate, input, onProgress);
+    },
+    mapFrets: (...args) => engine.mapFrets(...args),
+    version: () => engine.version(),
+    cancel(takeId) {
+      delays.get(takeId)?.();
+      engine.cancel(takeId);
+    },
+  };
+}
+
+/** Dev builds only: the database with `__commitStorageFullHook` applied. */
+function devDb(store: TakeDb): AnalysisDeps['db'] {
+  return {
+    getTake: (id) => store.getTake(id),
+    getTab: (id) => store.getTab(id),
+    commitAnalysis(takeId, tab, takePatch) {
+      if (devHooks().__commitStorageFullHook) {
+        return Promise.reject(
+          new AppError('storage-full', 'Commit analysis: quota exceeded (dev hook)'),
+        );
+      }
+      return store.commitAnalysis(takeId, tab, takePatch);
+    },
+  };
+}
+
+/** The app-wide analysis registry. Production builds tree-shake the dev wrappers. */
 export const analysis: Analysis = createAnalysis({
-  engine: engineClient,
-  db,
+  engine: import.meta.env.DEV ? devEngine(engineClient, devSlowMs()) : engineClient,
+  db: import.meta.env.DEV ? devDb(db) : db,
   audio: audioStore,
   subscribeStorage,
   hold: import.meta.env.DEV ? devHold() : false,

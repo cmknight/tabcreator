@@ -1,11 +1,10 @@
 import { useSyncExternalStore } from 'react';
-import { reloadApp } from '../../session/app-reload';
 import { settingsSession, type EngineStatus } from '../../session/settings-session';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
 import { ErrorIcon } from '../components/icons';
+import { reloadOrExplain } from '../reload-or-explain';
 import { strings } from '../strings';
-import { showToast } from '../toast';
 import styles from './Screen.module.css';
 import settingsStyles from './Settings.module.css';
 
@@ -18,14 +17,6 @@ function engineLine(engine: EngineStatus): string {
     case 'loading':
       return '';
   }
-}
-
-/**
- * Reload: refused while a take is recorded, saved or analysed (story 5.6), or a recovered take
- * rebuilt; a toast then says why (story 5.2), so the press is never silently ignored.
- */
-export function reloadOrExplain(reload: () => boolean = reloadApp): void {
-  if (!reload()) showToast({ message: strings['settings.reloadBusy'] });
 }
 
 export function Settings() {

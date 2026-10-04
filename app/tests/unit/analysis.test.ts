@@ -73,9 +73,16 @@ function harness(
 ): Harness {
   const take = options.take ?? TAKE;
   const calls: string[] = [];
-  const analyzeDone = deferred<AnalysisResult>();
-  // Rejected by `cancel` even when analyze was never called: observed through analyze only.
-  analyzeDone.promise.catch(() => {});
+  // The current analyze call's result. Rejected by `cancel` even when analyze was never called
+  // (observed through analyze only); each analyze after the first, or after a cancel, gets a
+  // fresh one.
+  const fresh = () => {
+    const d = deferred<AnalysisResult>();
+    d.promise.catch(() => {});
+    return d;
+  };
+  let analyzeDone = fresh();
+  let used = false;
   let onProgress: ((p: number) => void) | undefined;
   let lastNotes: DetectedNote[] = [];
   let storageListener: StorageListener | null = null;
@@ -84,6 +91,8 @@ function harness(
       analyze: vi.fn((_id, _pcm, _rate, _input, progress) => {
         calls.push('analyze');
         onProgress = progress;
+        if (used) analyzeDone = fresh();
+        used = true;
         return analyzeDone.promise.then((r) => {
           lastNotes = r.notes;
           return r;
@@ -99,6 +108,7 @@ function harness(
       // As the engine client does: the take's in-flight analyze rejects.
       cancel: vi.fn((id: string) => {
         analyzeDone.reject(new AppError('analysis-cancelled', `cancelled take ${id}`));
+        used = true;
       }),
     },
     subscribeStorage: vi.fn((listener: StorageListener) => {
@@ -448,5 +458,266 @@ describe('ensureAnalysed', () => {
     await settle();
     expect(h.calls).toEqual([]);
     expect(analysis.isAnalysing()).toBe(false);
+  });
+});
+
+// Story 5.7 (US-4.5): cancel, and the pending commit kept after a storage-full commit.
+describe('cancel', () => {
+  it('mid-analysis: the engine is cancelled and the run settles analysis-cancelled; no commit, raw kept', async () => {
+    const h = harness();
+    const analysis = createAnalysis(h.deps);
+    const done = analysis.ensureAnalysed(TAKE);
+    await settle();
+    h.progress(0.3);
+    expect(analysis.cancel('t1')).toBe(true);
+    expect(h.deps.engine.cancel).toHaveBeenCalledWith('t1');
+    await expect(done).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    expect(analysis.isAnalysing()).toBe(false);
+    expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+    expect(h.deps.audio.deleteRaw).not.toHaveBeenCalled();
+    expect(h.hasStorageListener()).toBe(false);
+  });
+
+  it('while the raw file is read: settles at once, before the read ends; no engine run', async () => {
+    const raw = deferred<Float32Array>();
+    const h = harness({ readRaw: () => raw.promise });
+    const analysis = createAnalysis(h.deps);
+    const done = analysis.ensureAnalysed(TAKE);
+    await settle();
+    expect(analysis.cancel('t1')).toBe(true);
+    await expect(done).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    expect(analysis.isAnalysing()).toBe(false);
+    raw.resolve(new Float32Array(10));
+    await settle();
+    expect(h.deps.engine.analyze).not.toHaveBeenCalled();
+  });
+
+  it('then Analyse: a new run starts and completes', async () => {
+    const h = harness();
+    const analysis = createAnalysis(h.deps);
+    const first = analysis.ensureAnalysed(TAKE);
+    await settle();
+    analysis.cancel('t1');
+    await expect(first).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    const seen: number[] = [];
+    const second = analysis.ensureAnalysed(TAKE, (p) => seen.push(p));
+    await settle();
+    h.progress(0.5);
+    h.finishAnalyze();
+    const outcome = await second;
+    expect(outcome.take.status).toBe('analyzed');
+    expect(h.deps.engine.analyze).toHaveBeenCalledTimes(2);
+    expect(seen).toEqual([0.45, 1]);
+    expect(h.deps.db.commitAnalysis).toHaveBeenCalledTimes(1);
+  });
+
+  it('with no run in flight: false, nothing cancelled', () => {
+    const h = harness();
+    expect(createAnalysis(h.deps).cancel('t1')).toBe(false);
+    expect(h.deps.engine.cancel).not.toHaveBeenCalled();
+  });
+
+  it('while committing: false; the run settles with the commit', async () => {
+    const commit = deferred<{ take: Take; tab: Tab }>();
+    const h = harness({ commit: () => commit.promise });
+    const analysis = createAnalysis(h.deps);
+    const done = analysis.ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    await settle();
+    expect(h.calls).toContain('commitAnalysis');
+    expect(analysis.cancel('t1')).toBe(false);
+    expect(h.deps.engine.cancel).not.toHaveBeenCalled();
+    const tab: Tab = { takeId: 't1', notes: [], updatedAt: TAKE.updatedAt, deletedStartMs: [] };
+    commit.resolve({ take: { ...TAKE, status: 'analyzed' }, tab });
+    await expect(done).resolves.toMatchObject({ tab });
+  });
+});
+
+describe('pending commit (storage full)', () => {
+  /** A harness whose first `failures` commits reject with storage-full. */
+  function storageFull(failures = 1) {
+    let n = 0;
+    const h = harness({
+      commit: () =>
+        n++ < failures
+          ? Promise.reject(new AppError('storage-full', 'quota'))
+          : Promise.resolve({
+              take: { ...TAKE, status: 'analyzed' as const },
+              tab: { takeId: 't1', notes: [], updatedAt: TAKE.updatedAt, deletedStartMs: [] },
+            }),
+    });
+    return h;
+  }
+
+  async function failedRun(h: Harness) {
+    const analysis = createAnalysis(h.deps);
+    const done = analysis.ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    await expect(done).rejects.toMatchObject({ code: 'storage-full' });
+    return analysis;
+  }
+
+  it('keeps the result and the raw file; not busy', async () => {
+    const h = storageFull();
+    const analysis = await failedRun(h);
+    expect(analysis.pendingCommit('t1')).toBe(true);
+    expect(analysis.pendingCommit('other')).toBe(false);
+    expect(analysis.isAnalysing()).toBe(false);
+    expect(h.deps.audio.deleteRaw).not.toHaveBeenCalled();
+    // Still listening, so a deletion drops it.
+    expect(h.hasStorageListener()).toBe(true);
+  });
+
+  it('retryCommit: the same tab and patch committed again, then the raw deleted; no engine run', async () => {
+    const h = storageFull();
+    const analysis = await failedRun(h);
+    const [, tab, patch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]!;
+    const retry = analysis.retryCommit('t1');
+    expect(analysis.isAnalysing()).toBe(true);
+    const outcome = await retry;
+    expect(outcome.take.status).toBe('analyzed');
+    expect(h.deps.engine.analyze).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(h.deps.db.commitAnalysis).mock.calls[1]).toEqual(['t1', tab, patch]);
+    expect(h.calls.slice(-2)).toEqual(['commitAnalysis', 'deleteRaw']);
+    expect(analysis.pendingCommit('t1')).toBe(false);
+    expect(analysis.isAnalysing()).toBe(false);
+    expect(h.hasStorageListener()).toBe(false);
+  });
+
+  it('retryCommit full again: still held, raw kept', async () => {
+    const h = storageFull(2);
+    const analysis = await failedRun(h);
+    await expect(analysis.retryCommit('t1')).rejects.toMatchObject({ code: 'storage-full' });
+    expect(analysis.pendingCommit('t1')).toBe(true);
+    expect(h.deps.audio.deleteRaw).not.toHaveBeenCalled();
+    await expect(analysis.retryCommit('t1')).resolves.toMatchObject({
+      take: { status: 'analyzed' },
+    });
+  });
+
+  it('retryCommit with nothing held: analysis-failed, nothing written', async () => {
+    const h = harness();
+    await expect(createAnalysis(h.deps).retryCommit('t1')).rejects.toMatchObject({
+      code: 'analysis-failed',
+    });
+    expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+  });
+
+  it('a session attaching during the retry gets its result, with no engine run', async () => {
+    const h = storageFull();
+    const analysis = await failedRun(h);
+    const retry = analysis.retryCommit('t1');
+    const attached = analysis.ensureAnalysed(TAKE);
+    const [a, b] = await Promise.all([retry, attached]);
+    expect(a).toBe(b);
+    expect(h.deps.engine.analyze).toHaveBeenCalledTimes(1);
+  });
+
+  it('dropped when its take is deleted', async () => {
+    const h = storageFull();
+    const analysis = await failedRun(h);
+    h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    expect(analysis.pendingCommit('t1')).toBe(false);
+    expect(h.hasStorageListener()).toBe(false);
+    await expect(analysis.retryCommit('t1')).rejects.toMatchObject({ code: 'analysis-failed' });
+  });
+
+  it('dropped when a new analysis of the take starts', async () => {
+    const h = storageFull();
+    const analysis = await failedRun(h);
+    const again = analysis.ensureAnalysed(TAKE);
+    expect(analysis.pendingCommit('t1')).toBe(false);
+    await settle();
+    h.finishAnalyze();
+    await expect(again).resolves.toMatchObject({ take: { status: 'analyzed' } });
+    expect(h.deps.engine.analyze).toHaveBeenCalledTimes(2);
+  });
+
+  it('another commit failure keeps nothing', async () => {
+    const h = harness({ commit: () => Promise.reject(new AppError('storage-failed', 'disk')) });
+    const analysis = createAnalysis(h.deps);
+    const done = analysis.ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    await expect(done).rejects.toMatchObject({ code: 'storage-failed' });
+    expect(analysis.pendingCommit('t1')).toBe(false);
+    expect(h.hasStorageListener()).toBe(false);
+  });
+});
+
+// Story 5.7 review: deletions while committing, cancel then analyse in one tick, the saving signal.
+describe('review fixes', () => {
+  const storageFullError = () => new AppError('storage-full', 'quota');
+
+  it('take deleted while its run commits, and the commit is storage-full: nothing held, listener released', async () => {
+    const commit = deferred<{ take: Take; tab: Tab }>();
+    const h = harness({ commit: () => commit.promise });
+    const analysis = createAnalysis(h.deps);
+    const done = analysis.ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    await settle();
+    expect(h.calls).toContain('commitAnalysis');
+    h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    commit.reject(storageFullError());
+    await expect(done).rejects.toMatchObject({ code: 'storage-full' });
+    expect(analysis.pendingCommit('t1')).toBe(false);
+    expect(h.hasStorageListener()).toBe(false);
+  });
+
+  it('take deleted during retryCommit, and it is storage-full again: nothing held, listener released', async () => {
+    let n = 0;
+    const retry = deferred<{ take: Take; tab: Tab }>();
+    const h = harness({
+      commit: () => (n++ === 0 ? Promise.reject(storageFullError()) : retry.promise),
+    });
+    const analysis = createAnalysis(h.deps);
+    const done = analysis.ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    await expect(done).rejects.toMatchObject({ code: 'storage-full' });
+    const retried = analysis.retryCommit('t1');
+    await settle();
+    h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    retry.reject(storageFullError());
+    await expect(retried).rejects.toMatchObject({ code: 'storage-full' });
+    expect(analysis.pendingCommit('t1')).toBe(false);
+    expect(h.hasStorageListener()).toBe(false);
+  });
+
+  it('cancel then ensureAnalysed in the same tick: a new run, not the cancelled one', async () => {
+    const h = harness();
+    const analysis = createAnalysis(h.deps);
+    const first = analysis.ensureAnalysed(TAKE);
+    await settle();
+    analysis.cancel('t1');
+    const second = analysis.ensureAnalysed(TAKE);
+    expect(second).not.toBe(first);
+    await expect(first).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    await settle();
+    h.finishAnalyze();
+    await expect(second).resolves.toMatchObject({ take: { status: 'analyzed' } });
+    expect(h.deps.engine.analyze).toHaveBeenCalledTimes(2);
+  });
+
+  it('the saving signal: once the run commits, and at once for a session attaching then', async () => {
+    const commit = deferred<{ take: Take; tab: Tab }>();
+    const h = harness({ commit: () => commit.promise });
+    const analysis = createAnalysis(h.deps);
+    const saving = vi.fn();
+    const done = analysis.ensureAnalysed(TAKE, () => {}, saving);
+    await settle();
+    expect(saving).not.toHaveBeenCalled();
+    h.finishAnalyze();
+    await settle();
+    expect(saving).toHaveBeenCalledTimes(1);
+    const late = vi.fn();
+    void analysis.ensureAnalysed(TAKE, () => {}, late);
+    expect(late).toHaveBeenCalledTimes(1);
+    const tab: Tab = { takeId: 't1', notes: [], updatedAt: TAKE.updatedAt, deletedStartMs: [] };
+    commit.resolve({ take: { ...TAKE, status: 'analyzed' }, tab });
+    await done;
   });
 });

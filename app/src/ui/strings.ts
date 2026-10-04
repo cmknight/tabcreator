@@ -29,6 +29,12 @@ export const strings = {
   'global.navSettings': 'Settings',
   'global.engineFailed': 'The analysis engine failed to load',
   'global.reload': 'Reload',
+  /**
+   * The toast when a Reload (Settings' or the Tab screen's engine banner) is refused because a
+   * take is being recorded or saved, or a recovered take rebuilt (story 5.2), or a take analysed
+   * (story 5.6); new copy, not yet in EXPERIENCE.md.
+   */
+  'global.reloadBusy': "Can't reload while a recording is in progress, being saved or analysed",
   'global.microphone': 'Microphone',
   /** The option text for an input the browser gives no label. */
   'global.microphoneUnnamed': (n: number) => `Microphone ${n}`,
@@ -161,8 +167,35 @@ export const strings = {
   'tab.title': 'Tab',
   /** The progress bar's label while a take is analysed. */
   'tab.analysing': 'Analysing…',
-  /** Shown when the analysis failed (spine AD-10). */
+  /**
+   * The percentage beside the progress bar: `Math.floor(progress · 100)`, with a 1e-9 epsilon so
+   * float error (0.29 · 100 = 28.999…) does not show one percent low.
+   */
+  'tab.analysingPercent': (percent: number) => `${percent}%`,
+  /** Announced politely as the analysis crosses 25, 50, 75 and 100% (EXPERIENCE.md). */
+  'tab.analysingAnnounce': (percent: number) => `Analysing, ${percent}%`,
+  /** Beside the progress bar: stops the analysis (US-4.5). */
+  'tab.cancel': 'Cancel',
+  /** After a cancel: analyses the take again (US-4.5). */
+  'tab.analyse': 'Analyse',
+  /** The error banner when the analysis failed (EXPERIENCE.md Analysis failed, spine AD-10). */
   'tab.analysisFailed': 'Analysis failed — try again',
+  /** The Analysis failed and Storage full banners' button. */
+  'tab.retry': 'Retry',
+  /** The error banner when the analysis result could not be saved (EXPERIENCE.md Storage full). */
+  'tab.storageFull': 'Storage is full — delete takes or their audio, or back up and clear',
+  /** The storage-full banner's link to the Library. */
+  'tab.storageFullLibrary': 'Go to Library',
+  /** An analysed take with no notes (EXPERIENCE.md No notes found), then its three tips. */
+  'tab.noNotes': 'No notes found',
+  /** No notes found, tip 1: the input may have been too quiet. */
+  'tab.noNotesTipLevel': 'Check the input level',
+  /** No notes found, tip 2: chords and ringing strings detect poorly. */
+  'tab.noNotesTipSingle': 'Play single notes',
+  /** No notes found, tip 3: plain text until story 8.6 links it to the Analysis settings panel. */
+  'tab.noNotesTipSensitivity': 'Raise sensitivity in Analysis settings',
+  /** Shown in place of the progress bar while the result is being saved (no Cancel). */
+  'tab.saving': 'Saving…',
   /** Shown when the take does not exist. */
   'tab.notFound': 'Take not found',
   'library.title': 'Library',
@@ -192,11 +225,6 @@ export const strings = {
   'settings.about': 'About',
   'settings.engineVersion': (version: string) => `Engine v${version}`,
   'settings.engineVersionUnavailable': 'Engine version unavailable',
-  /**
-   * The toast when Reload is refused because a take is being recorded or saved, or a recovered
-   * take rebuilt (story 5.2), or a take analysed (story 5.6); new copy, not yet in EXPERIENCE.md.
-   */
-  'settings.reloadBusy': "Can't reload while a recording is in progress, being saved or analysed",
 } as const;
 
 export type StringKey = keyof typeof strings;
