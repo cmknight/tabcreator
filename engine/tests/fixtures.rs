@@ -274,34 +274,49 @@ fn run_all() -> Run {
     run
 }
 
-/// The threshold gate on this run's pooled `rows`, the self-check of the committed files (or
-/// their rewrite, with `update`) and the gate against `main`: every failure, empty when all
-/// pass.
-#[allow(clippy::too_many_arguments)]
-fn gate_failures(
-    rows: &[FixtureRow],
-    main_baseline: Option<&AccuracyBaseline>,
-    main_outputs: Option<&FixtureOutputs>,
-    current_baseline: &AccuracyBaseline,
-    current_outputs: &FixtureOutputs,
-    baseline_path: &Path,
-    outputs_path: &Path,
+/// `main`'s copies of the committed files, when given.
+#[derive(Clone, Copy, Default)]
+struct MainCopies<'a> {
+    baseline: Option<&'a AccuracyBaseline>,
+    outputs: Option<&'a FixtureOutputs>,
+}
+
+/// This build's baseline and outputs, the committed files they are checked against, and
+/// whether to rewrite those files instead.
+struct CurrentFiles<'a> {
+    baseline: &'a AccuracyBaseline,
+    outputs: &'a FixtureOutputs,
+    baseline_path: &'a Path,
+    outputs_path: &'a Path,
     update: bool,
-) -> Vec<String> {
+}
+
+/// The threshold gate on this run's pooled `rows`, the self-check of the committed files (or
+/// their rewrite, with `current.update`) and the gate against `main`: every failure, empty
+/// when all pass.
+fn gate_failures(rows: &[FixtureRow], main: MainCopies, current: CurrentFiles) -> Vec<String> {
     let mut failures = threshold_failures(rows);
     failures.extend(
         [
-            check_committed(baseline_path, &to_file_text(current_baseline), update),
-            check_committed(outputs_path, &to_file_text(current_outputs), update),
+            check_committed(
+                current.baseline_path,
+                &to_file_text(current.baseline),
+                current.update,
+            ),
+            check_committed(
+                current.outputs_path,
+                &to_file_text(current.outputs),
+                current.update,
+            ),
         ]
         .into_iter()
         .flatten(),
     );
     failures.extend(compare(
-        main_baseline,
-        main_outputs,
-        current_baseline,
-        current_outputs,
+        main.baseline,
+        main.outputs,
+        current.baseline,
+        current.outputs,
     ));
     failures
 }
@@ -326,6 +341,22 @@ fn fresh_files(
     std::fs::write(&b, to_file_text(baseline)).unwrap_or_else(|e| panic!("{}: {e}", b.display()));
     std::fs::write(&o, to_file_text(outputs)).unwrap_or_else(|e| panic!("{}: {e}", o.display()));
     (b, o)
+}
+
+/// `CurrentFiles` checked against the given paths, without rewriting them.
+fn fresh_current<'a>(
+    baseline: &'a AccuracyBaseline,
+    outputs: &'a FixtureOutputs,
+    baseline_path: &'a Path,
+    outputs_path: &'a Path,
+) -> CurrentFiles<'a> {
+    CurrentFiles {
+        baseline,
+        outputs,
+        baseline_path,
+        outputs_path,
+        update: false,
+    }
 }
 
 #[test]
@@ -367,13 +398,17 @@ fn accuracy_report() {
     let update = update_requested();
     let failures = gate_failures(
         rows,
-        main_baseline.as_ref(),
-        main_outputs.as_ref(),
-        &current_baseline,
-        &current_outputs,
-        &committed(BASELINE_FILE),
-        &committed(OUTPUTS_FILE),
-        update,
+        MainCopies {
+            baseline: main_baseline.as_ref(),
+            outputs: main_outputs.as_ref(),
+        },
+        CurrentFiles {
+            baseline: &current_baseline,
+            outputs: &current_outputs,
+            baseline_path: &committed(BASELINE_FILE),
+            outputs_path: &committed(OUTPUTS_FILE),
+            update,
+        },
     );
     assert!(
         failures.is_empty(),
@@ -441,13 +476,11 @@ fn gate_fails_on_clean_gate_f1_drop() {
         &run.rows,
         gate_failures(
             &run.rows,
-            Some(&main),
-            None,
-            &now_b,
-            &now_o,
-            &fresh_b,
-            &fresh_o,
-            false,
+            MainCopies {
+                baseline: Some(&main),
+                outputs: None,
+            },
+            fresh_current(&now_b, &now_o, &fresh_b, &fresh_o),
         ),
     );
     assert_eq!(failures.len(), 1, "{failures:?}");
@@ -469,13 +502,11 @@ fn gate_fails_naming_a_changed_hash_under_the_same_version() {
         &run.rows,
         gate_failures(
             &run.rows,
-            None,
-            Some(&main),
-            &now_b,
-            &now_o,
-            &fresh_b,
-            &fresh_o,
-            false,
+            MainCopies {
+                baseline: None,
+                outputs: Some(&main),
+            },
+            fresh_current(&now_b, &now_o, &fresh_b, &fresh_o),
         ),
     );
     assert_eq!(failures.len(), 1, "{failures:?}");
@@ -496,7 +527,9 @@ fn missing_committed_file_fails_without_update() {
     let failures = without_thresholds(
         &run.rows,
         gate_failures(
-            &run.rows, None, None, &now_b, &now_o, &missing, &fresh_o, false,
+            &run.rows,
+            MainCopies::default(),
+            fresh_current(&now_b, &now_o, &missing, &fresh_o),
         ),
     );
     assert_eq!(failures.len(), 1, "{failures:?}");
@@ -539,7 +572,11 @@ fn threshold_gate(test: &str, rows: Vec<FixtureRow>) -> Vec<String> {
     };
     let (b, o) = run.files();
     let (fresh_b, fresh_o) = fresh_files(test, &b, &o);
-    gate_failures(&run.rows, None, None, &b, &o, &fresh_b, &fresh_o, false)
+    gate_failures(
+        &run.rows,
+        MainCopies::default(),
+        fresh_current(&b, &o, &fresh_b, &fresh_o),
+    )
 }
 
 #[test]

@@ -87,29 +87,25 @@ fn note_fixtures() {
         (json, r)
     };
 
-    for name in ["silence_60s", "noise_room_-50dbfs"] {
+    // Below-range notes count whatever their confidence, so guard against false drop-tuning
+    // warnings on takes with nothing below E2. Silence and room noise must also have no notes.
+    for (name, expect_no_notes) in [
+        ("silence_60s", true),
+        ("noise_room_-50dbfs", true),
+        ("c_major_scale_pos1_noisy", false),
+        ("open_strings", false),
+        ("open_strings_noisy", false),
+        ("chromatic_40_88", false),
+        ("chromatic_40_88_noisy", false),
+    ] {
         let (_, r) = run(name, 0.0);
-        if !r.notes.is_empty() {
+        if expect_no_notes && !r.notes.is_empty() {
             failures.push(format!(
                 "{name}: {} notes, want 0: {:?}",
                 r.notes.len(),
                 r.notes
             ));
         }
-    }
-
-    // Below-range notes count whatever their confidence, so guard against false drop-tuning
-    // warnings on takes with nothing below E2.
-    for name in [
-        "silence_60s",
-        "noise_room_-50dbfs",
-        "c_major_scale_pos1_noisy",
-        "open_strings",
-        "open_strings_noisy",
-        "chromatic_40_88",
-        "chromatic_40_88_noisy",
-    ] {
-        let (_, r) = run(name, 0.0);
         if r.below_range_notes != 0 {
             failures.push(format!(
                 "{name}: belowRangeNotes {}, want 0",

@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn stub_output_scores_zero() {
+    fn no_detections_score_zero() {
         let truth = [g(300.0, 48, 5, 3), g(900.0, 50, 4, 0)];
         let c = score(&truth, &[], &[]);
         assert_eq!((c.tp, c.fp, c.fn_), (0, 0, 2));

@@ -40,15 +40,23 @@ impl Set {
         }
     }
 
-    /// The minimum F1 this set must reach, for the gate sets; for `real`, the reference F1
-    /// (US-8.4: reported, never gated).
-    pub fn f1_threshold(self) -> Option<f64> {
+    /// The F1 check of this set: a gate for the gate sets, a reference reported but never
+    /// gated for `real` (US-8.4), none for the others.
+    pub fn f1_check(self) -> Option<F1Check> {
         match self {
-            Set::CleanGate => Some(0.95),
-            Set::NoisyGate | Set::Real => Some(0.90),
+            Set::CleanGate => Some(F1Check::Gate(0.95)),
+            Set::NoisyGate => Some(F1Check::Gate(0.90)),
+            Set::Real => Some(F1Check::Reference(0.90)),
             _ => None,
         }
     }
+}
+
+/// A set's F1 threshold: gated, or a reference that is only reported.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum F1Check {
+    Gate(f64),
+    Reference(f64),
 }
 
 /// Maximum octave-error rate, and minimum fret agreement, for the gate sets (and `real` from
@@ -200,13 +208,14 @@ pub fn pool(set: Set, rows: &[FixtureRow]) -> PooledRow {
     let octave_rate = counts.octave_rate();
     let fret_agreement = counts.fret_agreement();
     let mut thresholds = Vec::new();
-    if let Some(min) = set.f1_threshold() {
-        // The gate sets are gated on all three; `real` on octave errors and fret agreement once
-        // it holds REAL_GATE_MIN_TAKES takes, and its F1 is a reference only (US-8.4).
-        let (f1_gated, others_gated) = match set {
-            Set::Real => (false, members.len() >= REAL_GATE_MIN_TAKES),
-            _ => (true, true),
+    // The gate sets are gated on all three; `real` on octave errors and fret agreement once it
+    // holds REAL_GATE_MIN_TAKES takes, and its F1 is a reference only (US-8.4).
+    if let Some(check) = set.f1_check() {
+        let (min, f1_gated) = match check {
+            F1Check::Gate(min) => (min, true),
+            F1Check::Reference(reference) => (reference, false),
         };
+        let others_gated = f1_gated || members.len() >= REAL_GATE_MIN_TAKES;
         thresholds.push(ThresholdCheck::new(
             ("F1", "F1"),
             f1,
@@ -487,6 +496,15 @@ pub fn render(info: &RunInfo, rows: &[FixtureRow]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f1_is_gated_on_the_gate_sets_and_a_reference_on_real() {
+        assert_eq!(Set::CleanGate.f1_check(), Some(F1Check::Gate(0.95)));
+        assert_eq!(Set::NoisyGate.f1_check(), Some(F1Check::Gate(0.90)));
+        assert_eq!(Set::Real.f1_check(), Some(F1Check::Reference(0.90)));
+        assert_eq!(Set::Reported.f1_check(), None);
+        assert_eq!(Set::PhantomOnly.f1_check(), None);
+    }
 
     #[test]
     fn sets_follow_tempo_notes_and_twins() {

@@ -315,6 +315,16 @@ mod tests {
         max_fret: 24,
     };
 
+    /// Asserts a confidence equals `expected` to within float rounding. 1e-9 is enough: a
+    /// confidence is a product and mean of f32-derived values, computed identically each run.
+    #[track_caller]
+    fn assert_confidence(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "confidence {actual}, want {expected}"
+        );
+    }
+
     /// Hz of MIDI `m` (fractional allowed).
     fn hz(m: f64) -> f32 {
         (440.0 * 2f64.powf((m - 69.0) / 12.0)) as f32
@@ -427,7 +437,7 @@ mod tests {
         let mut t = Take::new(200);
         t.voice(190..199, 60.0, 0.9).voice(199..200, 60.0, 0.1);
         let r = t.build(&[190]);
-        assert_eq!(r.notes[0].confidence, 0.82);
+        assert_confidence(r.notes[0].confidence, 0.82);
         assert_eq!(r.notes[0].end_ms, ms(199));
     }
 
@@ -466,7 +476,7 @@ mod tests {
         t.voice(19..20, 60.0, 0.8);
         let r = t.build(&[10, 20]);
         // Mean (9 × 0.8 + 0.4) / 10 = 0.76, voiced 9/10 → 0.684.
-        assert_eq!(r.notes[0].confidence, 0.684);
+        assert_confidence(r.notes[0].confidence, 0.684);
     }
 
     #[test]
@@ -614,13 +624,13 @@ mod tests {
         t.voice(40..100, 64.0, 0.95);
         // Without the glide span the median over the whole note is 64.
         assert_eq!(t.build(&[10]).notes[0].midi, 64);
-        assert_eq!(t.build(&[10]).notes[0].confidence, 0.95);
+        assert_confidence(t.build(&[10]).notes[0].confidence, 0.95);
         let r = t.build_with(&[(10, OnsetSource::Flux)], &[(28, 42)]);
         assert_eq!(r.notes.len(), 1);
         // The median over frames 12..28 (after the attack, before the glide) is 62.
         assert_eq!(r.notes[0].midi, 62);
         // Capped at c + 0.1 = 0.6, under the low-confidence flag at c + 0.15.
-        assert_eq!(r.notes[0].confidence, 0.6);
+        assert_confidence(r.notes[0].confidence, 0.6);
     }
 
     #[test]
@@ -633,8 +643,8 @@ mod tests {
             &[(10, OnsetSource::Flux), (100, OnsetSource::Flux)],
             &[(150, 170)],
         );
-        assert_eq!(r.notes[0].confidence, 0.55);
-        assert_eq!(r.notes[1].confidence, 0.6);
+        assert_confidence(r.notes[0].confidence, 0.55);
+        assert_confidence(r.notes[1].confidence, 0.6);
         assert_eq!(midis(&r.notes), vec![60, 67]);
     }
 
@@ -651,11 +661,11 @@ mod tests {
         t.voice(30..100, 62.0, 0.9);
         let r = t.build_with(&[(10, OnsetSource::Flux)], &[(11, 30)]);
         assert_eq!(r.notes[0].midi, 60);
-        assert_eq!(r.notes[0].confidence, 0.6);
+        assert_confidence(r.notes[0].confidence, 0.6);
         // The glide starts at the onset itself: the first voiced frame gives the pitch.
         let r = t.build_with(&[(10, OnsetSource::Flux)], &[(5, 30)]);
         assert_eq!(r.notes[0].midi, 60);
-        assert_eq!(r.notes[0].confidence, 0.6);
+        assert_confidence(r.notes[0].confidence, 0.6);
     }
 
     #[test]
@@ -666,8 +676,8 @@ mod tests {
         t.voice(10..100, 60.0, 0.9);
         let onsets = [(10, OnsetSource::Flux), (50, OnsetSource::Flux)];
         let r = t.build_with(&onsets, &[(20, 51)]);
-        assert_eq!(r.notes[0].confidence, 0.6);
-        assert_eq!(r.notes[1].confidence, 0.9);
+        assert_confidence(r.notes[0].confidence, 0.6);
+        assert_confidence(r.notes[1].confidence, 0.9);
         // A carried-over tail (45..51) does not shadow a real glide inside the second note
         // (70..80): that one gives the starting pitch and the cap.
         let mut t = Take::new(100);
@@ -678,7 +688,7 @@ mod tests {
         t.voice(80..100, 62.0, 0.9);
         let r = t.build_with(&onsets, &[(45, 51), (70, 80)]);
         assert_eq!(r.notes[1].midi, 60);
-        assert_eq!(r.notes[1].confidence, 0.6);
+        assert_confidence(r.notes[1].confidence, 0.6);
     }
 
     fn n(start_ms: i64, midi: i32, confidence: f64) -> DetectedNote {
@@ -706,7 +716,8 @@ mod tests {
         ];
         let fixed = octave_fix(notes, 0.65, 88);
         assert_eq!(midis(&fixed), vec![40, 41, 43, 43, 41]);
-        assert_eq!(fixed[2].confidence, 0.44, "confidence x 0.8");
+        // Confidence × 0.8.
+        assert_confidence(fixed[2].confidence, 0.44);
     }
 
     #[test]
@@ -745,7 +756,7 @@ mod tests {
         ];
         let fixed = octave_fix(notes, 0.65, 88);
         assert_eq!(midis(&fixed), vec![40, 40, 50, 40, 40]);
-        assert_eq!(fixed[2].confidence, 0.5);
+        assert_confidence(fixed[2].confidence, 0.5);
         // At the top: 77 against a median of 87 would move to 89, above fret 24 on high e.
         let notes = vec![n(0, 87, 0.9), n(250, 77, 0.5), n(500, 87, 0.9)];
         assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![87, 77, 87]);
