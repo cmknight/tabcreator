@@ -242,7 +242,7 @@ All of these are proposed; none is applied. Remediation goes through the normal 
 ## Open questions
 
 - **Q1 (answered: yes, as the R1 story).** Revisit the confirmed retune? The evidence: k = 4.0 holds synth F1 at 0.994 but falls to 0.766 at 15 dB SNR, where k ≈ 3.0–3.25 holds 0.96–0.99. At s = 0 the gates fail.
-- **Q2.** Should the noise gate be relative to the take's peak (as built) or absolute (US-4.1/4.6 say dBFS)? One loud click changes the gate for the whole take (SM9).
-- **Q3.** Ring-over (SM5): require that the earlier note could still be ringing, i.e. a different string or a short gap, or keep US-4.4's literal rule?
-- **Q4.** Glide notes and the octave fix (SM1): exempt them, or let a wide slide be octave-corrected?
-- **Q5.** Should the Tab epic open with R2 and R4 before it builds UI on engine output, alongside the epic 3 actions A3, A1 and A2 already scheduled?
+- **Q2 (answered, user, 2026-10-04): robust level.** The gate compares against a robust level, such as a high percentile of frame RMS, not the single peak (SM9). Carried by R1.
+- **Q3 (answered, user, 2026-10-04): require ringing evidence.** A short gap and/or a different string from the middle note, plus a trill fixture (SM5). Carried by R2.
+- **Q4 (answered, user, 2026-10-04): exempt glide notes from the octave fix** (SM1). Carried by R2.
+- **Q5 (answered, user, 2026-10-04): only R1 opens the Tab epic,** as entry 4 after A3, A1 and A2 (Tab epic Notes). R2–R7 stay tracked here and are not scheduled.
