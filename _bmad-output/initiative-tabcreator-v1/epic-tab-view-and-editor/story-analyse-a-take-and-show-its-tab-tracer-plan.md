@@ -3,7 +3,7 @@ title: 'Analyse a take and show its tab (tracer)'
 type: 'feature'
 ticket: '6'
 created: '2026-10-04'
-status: 'built'
+status: done
 baseline_revision: 'ce5135e49571e983fe0d086a214392bd4da46899'
 route: 'full'
 route_source: 'auto'
