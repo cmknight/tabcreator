@@ -3,7 +3,7 @@ title: 'Engine retune robustness and the robust noise gate'
 type: 'feature'
 ticket: '4'
 created: '2026-10-04'
-status: 'built'
+status: done
 baseline_revision: '808fbcc3d23c764ea76ec974634b410d9af797c0'
 route: 'full'
 route_source: 'auto'
