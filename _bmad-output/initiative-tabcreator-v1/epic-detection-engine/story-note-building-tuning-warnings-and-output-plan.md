@@ -3,7 +3,7 @@ title: 'Note building, tuning warnings and output'
 type: 'feature'
 ticket: '7'
 created: '2026-10-03'
-status: 'built'
+status: done
 baseline_revision: '9462da1e4309e52d5f815beb2f20c270cb8a5286'
 route: 'full'
 route_source: 'auto'
