@@ -3,7 +3,7 @@ title: 'Production worker on real detection'
 type: 'feature'
 ticket: '10'
 created: '2026-10-03'
-status: 'built'
+status: done
 baseline_revision: '931b61001c611debff7f572c8918548f557a3ed7'
 route: 'full'
 route_source: 'auto'
