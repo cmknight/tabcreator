@@ -3,7 +3,7 @@ title: 'Decode and opening unanalysed takes'
 type: 'feature'
 ticket: '12'
 created: '2026-10-04'
-status: 'built'
+status: done
 baseline_revision: '4259ec1361699f9c68276d28620b45adc80e94ff'
 route: 'full'
 route_source: 'auto'
