@@ -3,7 +3,7 @@ title: 'Tab layout and text'
 type: 'feature'
 ticket: '5'
 created: '2026-10-04'
-status: 'built'
+status: done
 baseline_revision: '604c241b4a846c48135558cde5ea947ea2c1f8b2'
 route: 'full'
 route_source: 'auto'
