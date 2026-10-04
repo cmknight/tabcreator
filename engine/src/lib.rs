@@ -8,6 +8,7 @@
 //! `analyze` does not detect notes yet; `map_frets` is the Viterbi fret mapping in [`fretmap`].
 
 pub mod fretmap;
+pub mod onset;
 pub mod preprocess;
 pub mod pyin;
 
@@ -128,6 +129,8 @@ pub fn map_frets(notes_json: &str, locks_json: &str, max_fret: u32) -> Result<St
 const PROGRESS_PREPROCESSED: f64 = 0.111;
 /// Progress reported once pitch tracking is done (AD-8 stage weights).
 const PROGRESS_PITCH_TRACKED: f64 = 0.778;
+/// Progress reported once onset detection is done (AD-8 stage weights).
+const PROGRESS_ONSETS: f64 = 0.944;
 
 /// Pure core of [`analyze`]; `progress` receives monotone fractions in 0..=1.
 pub fn analyze_core(
@@ -142,7 +145,7 @@ pub fn analyze_core(
         return Err(format!("invalid sample rate: {sample_rate}"));
     }
     progress(0.0);
-    let _params = Params::from_settings(&input);
+    let params = Params::from_settings(&input);
     let signal = preprocess::preprocess(
         pcm,
         sample_rate,
@@ -155,13 +158,26 @@ pub fn analyze_core(
     // Pitch tracking runs from 0.111 to 0.778 (AD-8 weights).
     debug_assert_eq!(signal.sample_rate, preprocess::TARGET_RATE);
     debug_assert_eq!(f64::from(preprocess::TARGET_RATE), pyin::SAMPLE_RATE);
-    let _pitch = pyin::pyin(&signal.samples, |fraction| {
+    let pitch = pyin::pyin(&signal.samples, |fraction| {
         progress(
             PROGRESS_PREPROCESSED + (PROGRESS_PITCH_TRACKED - PROGRESS_PREPROCESSED) * fraction,
         );
     });
     progress(PROGRESS_PITCH_TRACKED);
-    // No onset or note detection yet.
+    // Onset detection runs from 0.778 to 0.944 (AD-8 weights).
+    let _onsets = onset::detect(
+        &signal.samples,
+        &signal.rms_db,
+        &pitch,
+        &params,
+        |fraction| {
+            progress(
+                PROGRESS_PITCH_TRACKED + (PROGRESS_ONSETS - PROGRESS_PITCH_TRACKED) * fraction,
+            );
+        },
+    );
+    progress(PROGRESS_ONSETS);
+    // No note building yet.
     progress(1.0);
     Ok(
         serde_json::json!({ "notes": [], "tuningOffsetCents": 0, "belowRangeNotes": 0 })
@@ -227,19 +243,31 @@ mod tests {
     }
 
     #[test]
-    fn analyze_reports_preprocessing_and_pitch_tracking_progress() {
+    fn analyze_reports_preprocessing_pitch_tracking_and_onset_progress() {
         let mut seen = Vec::new();
         analyze_core(&[0.0; 4800], 48_000.0, INPUT, |f| seen.push(f)).unwrap();
-        // 0, then pre-processing done, then pitch tracking up to 0.778, then done.
+        // 0, then pre-processing done, then pitch tracking up to 0.778, then onsets up to
+        // 0.944, then done.
         assert_eq!(&seen[..2], &[0.0, PROGRESS_PREPROCESSED]);
-        assert_eq!(seen[seen.len() - 2..], [PROGRESS_PITCH_TRACKED, 1.0]);
-        let pitch = &seen[1..seen.len() - 1];
+        assert_eq!(seen[seen.len() - 2..], [PROGRESS_ONSETS, 1.0]);
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]));
+        let tracked = seen
+            .iter()
+            .position(|&f| f == PROGRESS_PITCH_TRACKED)
+            .expect("pitch tracking done is reported");
+        let pitch = &seen[1..=tracked];
         assert!(pitch.len() > 2);
-        assert!(pitch.windows(2).all(|w| w[0] <= w[1]));
         assert!(
             pitch
                 .iter()
                 .all(|&f| (PROGRESS_PREPROCESSED..=PROGRESS_PITCH_TRACKED).contains(&f))
+        );
+        let onsets = &seen[tracked..seen.len() - 1];
+        assert!(onsets.len() > 2);
+        assert!(
+            onsets
+                .iter()
+                .all(|&f| (PROGRESS_PITCH_TRACKED..=PROGRESS_ONSETS).contains(&f))
         );
     }
 
