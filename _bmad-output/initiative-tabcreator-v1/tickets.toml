@@ -30,20 +30,27 @@ after = [{ epic = 1, needs = "engine crate, worker bridge, fixtures" }]
 [[epic]]
 id = 5
 slug = "epic-tab-view-and-editor"
-title = "Tab view and editor"
-covers = ["CAP-8", "CAP-10", "CAP-11", "CAP-12", "CAP-13", "CAP-14", "CAP-15", "CAP-16", "CAP-24", "CAP-25"]
+title = "Analysis and tab view"
+covers = ["CAP-5", "CAP-6", "CAP-9", "CAP-10", "CAP-12", "CAP-13", "CAP-16", "CAP-21", "CAP-23", "CAP-24", "CAP-25", "CAP-27", "CAP-29"]
 after = [{ epic = 3, needs = "recorded takes and raw audio" }, { epic = 4, needs = "analyze and map_frets with locks" }]
+
+[[epic]]
+id = 8
+slug = "epic-tab-editing"
+title = "Tab editing"
+covers = ["CAP-8", "CAP-10", "CAP-11", "CAP-13", "CAP-14", "CAP-15"]
+after = [{ epic = 5, needs = "take-session, the Tab screen with its toolbar, selection, layout and settings-session prefs" }]
 
 [[epic]]
 id = 6
 slug = "epic-library-and-export"
 title = "Library and export"
 covers = ["CAP-17", "CAP-18", "CAP-19", "CAP-25"]
-after = [{ epic = 5, needs = "tab layout and toText, the Tab screen" }]
+after = [{ epic = 5, needs = "tab layout and toText, the Tab screen" }, { epic = 8, needs = "overlays.ts, the Confirm dialog and the Tab toolbar" }]
 
 [[epic]]
 id = 7
 slug = "epic-offline-accessibility-budgets"
 title = "Offline, accessibility and budgets"
 covers = ["CAP-20", "CAP-21", "CAP-22", "CAP-23", "CAP-25"]
-after = [{ epic = 6, needs = "every screen in place" }]
+after = [{ epic = 6, needs = "every screen in place" }, { epic = 8, needs = "editing on the Tab screen and the 500-note latency measurement (8.5)" }]

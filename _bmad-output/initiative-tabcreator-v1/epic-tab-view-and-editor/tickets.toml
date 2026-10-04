@@ -1,0 +1,153 @@
+# tickets.toml — a container's agreed children. tickets.py reads it.
+# The order of the tables is the build order: move a table to reorder. `id` names a child for good and is never reused.
+# Status never lives here: an entry's plan beside it carries `status`.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Extract the take lifecycle"
+description = "Extracts the take lifecycle (ActiveTake, count-in start, finishTake, the length limits and the failure stops) from app/src/session/recording-session.ts into its own module with an explicit state machine, shares the save pipeline, the 500 ms minimum and clip counting with recording-recovery.ts, and makes audio/encode.ts throw AppError, with no behaviour change (Recording retro A3)."
+verify = "Full CI is green with every existing recording, recovery and record e2e test passing unchanged, recording-session.ts no longer contains finishTake or the limit and failure-stop logic, one 500 ms constant and one clip counter serve recording and recovery, and encode.ts throws only AppError."
+covers = []
+after = ["3.12"]
+hitl = false
+risk = "medium"
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-recording/epic-recording-retrospective.md, action A3 and findings GC1, DM1, PD1, DS13"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Take-save robustness"
+description = "Lands Recording retro A1 in the new lifecycle module: non-quota append failures are counted or kept so a take is never deleted as short while its compressed audio is whole, durationMs and clipped match the saved audio after storage-full, a failed save shows true copy, keeps the mic live and re-offers the take in the session, Discard and the recovery scan re-check the take's status and the active take, a Stop pressed while starting is queued, a requested stop reason wins over a queued ended and nothing navigates after a handover, and one isBusy serves the unload guard and app-reload with feedback when Settings Reload is refused."
+verify = "Unit tests reproduce DS1–DS7 (an append failure mid-take, storage-full then stop, a failed save, Discard of an already-saved take, Space-Space while starting, a queued stop racing ended, Reload refused while busy) and each now ends correctly, and the record dev e2e suite passes."
+covers = ["CAP-5", "CAP-6", "CAP-25"]
+after = [1]
+hitl = false
+risk = "high"
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-recording/epic-recording-retrospective.md, action A1 and findings DS1–DS7"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Handover and recovery coordination"
+description = "Lands Recording retro A2: the releasing tab broadcasts released and the recovery scan waits for it (with a long fallback) instead of a fixed 3.5 s, writeCompressed re-checks the fence before removing other formats, a handover cancels a recovery rebuild in progress, the shell (or a Stop) stays mounted when blocked fires during a take, the first tab shows that its take was saved, and an e2e test covers the steal path."
+verify = "A two-page e2e steals the instance mid-take and mid-rebuild: the take is saved once with stopReason instance-lost, the first tab shows the saved notice, the second tab's scan waits for released, no format file is removed after the fence, and a blocked open during a take leaves Stop reachable."
+covers = ["CAP-6", "CAP-29"]
+after = [2]
+hitl = false
+risk = "high"
+unknown = "How long the fallback wait should be when the releasing tab never broadcasts released (crashed or frozen tab)."
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-recording/epic-recording-retrospective.md, action A2 and findings DS8, DS9, behaviour check 4", "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-6, AD-15, AD-16"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Engine retune robustness and the robust noise gate"
+description = "Lands Detection retro R1 in engine/ (plus the AnalysisResult type in app/src/model/types.ts): re-derives the onset factor k and its slope (about 3.0–3.25 at s = 0.5) so every sensitivity from 0 to 1 passes the gates and 15 dB SNR keeps F1 ≥ 0.95, moves the noise gate to a robust level (a high percentile of frame RMS) instead of the peak-normalised reference, makes AnalysisResult report the confidence threshold c it used so the app never re-derives it, adds the sensitivity sweep (s = 0, 0.5, 1) and held-out rows (20 and 15 dB pink noise, 44.1 kHz) to the accuracy report as reported rows, bumps engine_version() and regenerates the committed files."
+verify = "The release harness passes every gate at s = 0.5, the report's sweep rows show clean F1 ≥ 0.95 and fret agreement ≥ 80% at s = 0 and s = 1 and F1 ≥ 0.95 on the 15 dB row, every AnalysisResult carries the threshold, and CI is green."
+covers = ["CAP-9", "CAP-10", "CAP-23"]
+after = ["4.11"]
+hitl = false
+risk = "high"
+unknown = "Whether one k slope keeps both s = 0 (fast picking) and s = 1 (damping phantoms) inside the measured window; if not, the slider's range or the gate is a question for the user."
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-detection-engine/epic-detection-engine-retrospective.md, action R1 and findings RB1, RB2, SM9", "decision — _bmad-output/initiative-tabcreator-v1/epic-detection-engine/epic-detection-engine.md, Notes (robust-level noise gate, 2026-10-04)", "deferred — _bmad-output/implementation-artifacts/deferred-work.md, the lowConfidence threshold item"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Tab layout and text"
+description = "Adds app/src/model/tab-render.ts: the pure layoutTab(notes, widthChars, countInBpm?) returning systems of six lines (e B G D A E) with per-note cells {noteId, col, width, string} and bar columns, the US-6.1 spacing (clamp(round(ioi/125), 1, 8) dashes), two-digit fret alignment, 4/4 bar lines from the count-in tempo with take time 0 as bar 1, wrapping that never splits a note and prefers bar lines, and toText with its header, used later by the screen and by export (epic Library and export)."
+verify = "Vitest golden tests: the tab-format.md sample renders exactly at 34 characters, two-digit frets align, no line exceeds the width, no note is split, a 120 BPM count-in fixture gets a bar line every 2.0 s between the right notes, a take without count-in gets none, and toText wraps at 80."
+covers = ["CAP-12", "CAP-24"]
+after = []
+hitl = false
+risk = "low"
+references = ["spec — _bmad-output/specs/spec-tabcreator/tab-format.md", "stories — TabCreator-User-Stories.md, US-6.1"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Analyse a take and show its tab (tracer)"
+description = "Adds app/src/session/take-session.ts (route-scoped store via useSyncExternalStore, AD-3) and session/analysis.ts: ensureAnalysed starts analysis only for a recorded take with none in flight, reads raw PCM, builds EngineAnalyzeInput explicitly from its six fields (not by spreading AnalysisSettings), sets skipStartMs 100 after a count-in, maps progress to 0–0.9 and mapFrets completion to 1.0 (AD-8), builds Notes with new ids and lowConfidence = confidence < c + 0.15 (US-4.4) using the c the engine reports (entry 4), saves warnings {tuningOffsetCents, belowRangeNotes} on the take for entry 9's banners, commits Tab and Take in one commitAnalysis and then deletes the raw file (AD-9, AD-15); the Tab screen shows the title and the tab as pre systems from layoutTab at a fixed width, with a progress bar while analysing."
+verify = "On the deployed (production) build in the prod-mic lane, recording c_major_scale_pos1 with Chrome's fake device and stopping shows its tab within 2 s, the take is analyzed with analysisVersion set and its raw file is gone, and a unit test with a mocked engine checks the explicit input, the progress mapping and the single commit."
+covers = ["CAP-9", "CAP-12", "CAP-6"]
+after = [3, 4, 5]
+hitl = false
+risk = "high"
+unknown = "Whether a 60 s take meets the 2 s budget in the browser with pYIN at about 1 s; the epic's Done when uses the scale fixture, and the 60 s budget is gated in epic Offline, accessibility and budgets."
+references = ["stories — TabCreator-User-Stories.md, US-4.4 lowConfidence, US-4.5", "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-3, AD-8, AD-9, AD-14, AD-15, AD-16", "deferred — _bmad-output/implementation-artifacts/deferred-work.md, the lowConfidence threshold item"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Analysis states"
+description = "Completes the analysing path: an announced progress bar (every 25%), Cancel that returns within 200 ms and leaves the take recorded with an Analyse button, analysis-failed with Retry (details to logs only), the engine-unavailable banner with Reload, storage-full that keeps the result in memory for Retry, No notes found with its three tips (the third, Raise sensitivity, is text here; epic Tab editing makes it a link to its settings panel), resume after a reload mid-analysis (CAP-6), and analysis counted as busy in the single isBusy entry 2 adds (so the update toast and Settings Reload wait)."
+verify = "Dev e2e cover each state: Cancel within 200 ms then Analyse succeeds, a forced engine error shows Retry, a missing wasm shows the engine banner, a storage-full hook keeps the result and Retry saves it, silence_60s shows No notes found with its tips, and a reload mid-analysis resumes and completes."
+covers = ["CAP-6", "CAP-25"]
+after = [6]
+hitl = false
+risk = "medium"
+references = ["stories — TabCreator-User-Stories.md, US-4.5", "experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Tab states"]
+
+[[entry]]
+id = 12
+type = "story"
+title = "Decode and opening unanalysed takes"
+description = "Adds app/src/audio/decode.ts as the analysis PCM source when the raw file is gone (decoded compressed audio mixed to mono at its own sample rate, including the WAV fallback format in a real browser, Recording retro A5), and analyses takes that never reached the Tab screen (stopReason mic-lost, storage-full, instance-lost or recovered) when they are opened, like any recorded take (AD-15)."
+verify = "Dev e2e: a take whose raw file was deleted analyses from its compressed webm and from a WAV-fallback take, giving the same notes as the raw path within one frame, and a take saved by a mic-lost stop analyses when its #/tab/<id> is opened."
+covers = ["CAP-6", "CAP-9"]
+after = [7]
+hitl = false
+risk = "medium"
+unknown = "Whether decodeAudioData's resampling to the AudioContext rate changes notes enough to matter; decode at the file's own rate with an OfflineAudioContext where possible."
+references = ["architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-15", "decision — the epic's Notes (takes analysed on open, 2026-10-04)", "retrospective — _bmad-output/initiative-tabcreator-v1/epic-recording/epic-recording-retrospective.md, action A5 (WAV fallback in a real browser)"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Tab screen, reflow and selection"
+description = "Builds the Tab screen around the tab: inline title (Enter saves, take-session owns it), date and duration, systems in 16 px monospace laid out at the measured character width and re-laid out on resize (debounced 100 ms), one labelled button per note from the layout cells (\"Note 12: B string, fret 3, D4, at 4.25 seconds\"), a single selection held in take-session (click, Tab into the area, ←/→ through the shortcut registry, Esc clears) that survives reflow, the role=application area with instructions, the Skip to tab link, the Note list view, and the empty role=toolbar container that entry 9 (Bar lines), epic Tab editing (edit, undo, trim, settings) and epic Library and export (Copy, Download) add their buttons to."
+verify = "Dev e2e: resizing the window reflows the systems with no line over the width and keeps the selected note selected, ←/→ and Esc move and clear the selection without firing in the title field, each note button has its label, the note list view lists the same notes, and axe reports no serious or critical violations."
+covers = ["CAP-12", "CAP-21"]
+after = [12]
+hitl = false
+risk = "medium"
+unknown = "Key precedence when a toolbar button has focus (Space and Enter) versus the tab area's shortcuts; settle it in the shortcuts registry with the text-field guard."
+references = ["stories — TabCreator-User-Stories.md, US-6.2", "experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Tab row, Accessibility Floor", "design — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/mockups/tab.html"]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Flags, warnings and bar lines on screen"
+description = "Adds the status line (\"42 notes · 3 to check\"), low-confidence styling (check fill plus dotted underline, never colour alone) with \", check this note\" in flagged notes' labels, Next to check and N cycling flagged notes in time order, the tuning-off (|cents| ≥ 40) and drop-tuning warning banners with Open tuner and session dismissal (they return on reopen until re-analysis), reading the warnings entry 6 saves, the clipping banner and the Maximum length reached toast from the persisted take fields (the toast only when the Tab screen opens straight after that take's stop, not on later opens, user decision), the all-uncertain banner, and the Bar lines toggle (default on, shown only when the take has a count-in and notes), reading and writing prefs.barLines through settings-session (which gains its prefs handling here; epic Tab editing reuses it for analysis defaults; recording-session keeps its direct updatePrefs calls, which merge safely)."
+verify = "Dev e2e: detuned_-45c shows the tuning banner and drop_d the drop-tuning banner, c_major_scale_pos1 shows neither, N cycles the flagged notes in order, a clipped take shows its banner, a max-length take shows the toast after its stop and not when reopened, a fixture with every note low-confidence shows the all-uncertain banner, a dismissed tuning banner returns on reopen, and a 120 BPM count-in take shows bar lines that the toggle hides and restores across reload."
+covers = ["CAP-13", "CAP-24", "CAP-25", "CAP-27"]
+after = [8]
+hitl = false
+risk = "low"
+unknown = "How the e2e records a take with a 120 BPM count-in from the fake mic (the fixtures carry no count-in timing; a dev-seeded take with countInBpm set is the likely path)."
+references = ["experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Tab states and banners", "design — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/DESIGN.md, tab grid and flag tokens"]
+
+[[entry]]
+id = 10
+type = "story"
+title = "Playback with a following cursor"
+description = "Adds the playback group: an audio element on an object URL from readCompressed honouring the take's trim fields (epic Tab editing's trim only sets them), Play/Pause on Space through the registry, speed 0.5/0.75/1× with preservesPitch, a requestAnimationFrame cursor that outlines the last note starting at or before the playhead (binary search) and scrolls it into view at most every 500 ms (no smooth scroll under reduced motion), seek to 100 ms before a note on click while playing or P, and Play disabled with \"Audio deleted\" when the take has no audio."
+verify = "Dev e2e at 1× and at 0.75× on c_major_scale_pos1 records the highlighted note's change time against each onset and every change lands within 50 ms; clicking a note while playing and P both seek to 100 ms before the selected note; a take with audioMime null shows Play disabled with its tooltip."
+covers = ["CAP-16"]
+after = [9]
+hitl = false
+risk = "medium"
+unknown = "How the e2e test reads highlight times precisely enough for a 50 ms bound (a dev-only hook exposing the cursor's change times on the media clock is the likely path)."
+references = ["stories — TabCreator-User-Stories.md, US-6.5", "experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, playback group"]
+
+[[entry]]
+id = 11
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what the build records and deferred review findings of stories 1 to 10 and 12 name, plus the Recording retro's A8 sweep list, after grepping every plan's triage log for sweep routings; scope is set when it starts and takes cleanup only."
+verify = "CI stays green and every item in the sweep's agreed scope is closed or explicitly deferred."
+covers = []
+after = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12]
+hitl = false
+risk = "low"

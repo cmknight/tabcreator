@@ -1,0 +1,102 @@
+# tickets.toml — a container's agreed children. tickets.py reads it.
+# The order of the tables is the build order: move a table to reorder. `id` names a child for good and is never reused.
+# Status never lives here: an entry's plan beside it carries `status`.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Change a fret and undo it (tracer)"
+description = "Adds the edit core end to end: model/edit-history.ts (AD-4 two-phase commands plan(state) → engine requests, reduce(state, results) → state, labels, a 200-step stack, undo snapshots that cover notes and deletedStartMs), model/phrase.ts (phrases split at gaps over 1000 ms), takeSession.apply serialising commands with a Tab revision so a stale engine result is dropped and re-planned, the phrase re-fit through engineClient.mapFrets with every locked note in the phrase (locked notes and other phrases unchanged), putTab debounced 300 ms with flush on route exit and pagehide (AD-16), and the first edit, digits setting the selected note's fret (two digits within 400 ms, capped at maxFret, pitch follows), with Ctrl/⌘+Z and Ctrl/⌘+Shift+Z / Ctrl+Y, all registered in ui/a11y/shortcuts.ts; any edit locks the note, clears its flag and updates the status count (CAP-13), mapFrets null positions keep the note's current position, and a storage-full putTab shows the storage banner and keeps the pending edits for retry."
+verify = "Dev e2e: typing 5 on a selected note of c_major_scale_pos1 sets fret 5, locks it, clears its flag and updates the count, survives reload, and Ctrl+Z then Ctrl+Shift+Z restore the tab exactly; Vitest covers phrase splitting, a re-fit on a multi-phrase tab leaving the other phrases byte-identical, stale-revision re-planning and the debounced save."
+covers = ["CAP-11", "CAP-13", "CAP-14", "CAP-15"]
+after = ["5.11"]
+hitl = false
+risk = "high"
+unknown = "Whether a mapFrets round trip can wait behind an in-flight analyze of another take (analyses outlive their session, AD-16, and mapFrets only jumps the queue, AD-8), up to about 2 s; and what two digits above maxFret do."
+references = ["architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-3, AD-4, AD-8, AD-16", "stories — TabCreator-User-Stories.md, US-5.2, US-6.3, US-6.4"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "String moves, delete, insert and confirm"
+description = "Adds the rest of the edit set as commands: ↑/↓ move to the thinner or thicker string at the same pitch (skipping unplayable strings, nothing at the edge), Delete/Backspace deletes and records startMs in deletedStartMs (undo removes it) and selects the next note, I inserts after the selection (midpoint to the next note, or +250 ms at the end, 100 ms, same string, fret 0, confidence 1) with the fret ready to type, Enter confirms a note (locked, unflagged), Insert and Delete buttons go into the Tab toolbar (epic Analysis and tab view, entry 8), double-click opens an edit popover through a new ui/a11y/overlays.ts (one level, focus trapped and restored, AD-18) offering the fret, the other playable string positions for the same pitch and a Confirm button (user decision: the mouse path for string moves and confirm), and each edit works by mouse and keyboard."
+verify = "Dev e2e on c_major_scale_pos1: each operation keyboard-only and mouse-only gives the expected note, lock and flag state and survives reload, a string move keeps the sounding pitch (by ↑/↓ and by the popover's position choices), Confirm works from the popover, a deleted note's startMs is in deletedStartMs, and the popover traps and restores focus with axe clean."
+covers = ["CAP-13", "CAP-14"]
+after = [1]
+hitl = false
+risk = "medium"
+unknown = "What the selection does after deleting the last note; insert with no selection goes at the start (US-6.3)."
+references = ["stories — TabCreator-User-Stories.md, US-6.3", "experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Tab shortcuts and Component Patterns"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Re-fit feedback"
+description = "Shows what a re-fit changed: each note whose string or fret the re-fit moved gets the dashed re-fit outline for 1.5 s (no fade under reduced motion, distinct from selection), the announcer says \"<n> nearby notes re-fingered\", the edit itself is announced (\"Moved to G string, fret 7\"), and after undo or redo the selection follows the affected note."
+verify = "Dev e2e: locking the c_major_scale_pos1 note on A fret 3 to low E fret 8 announces the re-fingered count and outlines exactly the notes whose position changed for about 1.5 s; undo restores them and selects the edited note."
+covers = ["CAP-11", "CAP-14", "CAP-15"]
+after = [3]
+hitl = false
+risk = "low"
+references = ["design — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/DESIGN.md, re-fit and selection outline tokens", "experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Accessibility Floor (live region)"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Undo and redo controls"
+description = "Adds Undo and Redo buttons to the Tab toolbar with tooltips naming the action (\"Undo move to string 3\"), disabled states with reasons, a new edit clearing redo, undo and redo saving, and a property test: 50 random edits (frets, moves, deletes, inserts, confirms) undone fully restore the original tab and redone fully restore the final tab, with each edit and its re-fit one step."
+verify = "Vitest property test with a seeded generator passes for 50 edits over several seeds against a mocked engine, and dev e2e shows the toolbar tooltips naming the last action, Meta+Z on macOS key mapping, disabled states after undoing everything, and the No notes found state disabling Undo, Redo, Insert and Delete with reasons."
+covers = ["CAP-15"]
+after = [3]
+hitl = false
+risk = "medium"
+references = ["stories — TabCreator-User-Stories.md, US-6.4"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Analysis settings and re-analysis"
+description = "Adds the inline Analysis settings panel (Sensitivity 0–1 step 0.05 \"Fewer notes\" ↔ \"More notes\", Minimum note length 20–100 ms, Highest fret 12–24, Re-analyse as the screen's one primary button, disabled with a reason and rejecting audio-missing when neither compressed audio nor raw exists, AD-15) saving to the take, linked from 5.7's No notes found tip, the same defaults on the Settings screen stored in prefs.analysisDefaults through settings-session (whose prefs handling 5.9 adds), and the re-analyse command: locked notes replace new notes within 50 ms, new notes within 50 ms of a deletedStartMs entry are dropped, fret mapping runs with locks, a reusable Confirm dialog through overlays.ts (Cancel first and focused, destructive never the default; epic Library and export reuses it) when any note is locked, lowConfidence from the c the engine reports (5.4), and one undo step via a full snapshot restored through commitAnalysis (AD-4)."
+verify = "Dev e2e on c_major_scale_pos1_noisy: sensitivity 0.2 gives fewer notes than 0.8; after editing a note, deleting another and re-analysing, the edited note is unchanged in string, fret and time and the deleted note does not return; settings persist on reopen; undo restores the previous tab and settings exactly."
+covers = ["CAP-10", "CAP-11"]
+after = [4]
+hitl = false
+risk = "high"
+unknown = "Whether settings save on change (patchTake) or only inside the re-analyse command, which decides what the AD-4 snapshot restores; and whether Cancel during re-analysis leaves the tab and history untouched (reusing 5.7's progress and Cancel)."
+references = ["stories — TabCreator-User-Stories.md, US-4.6", "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-4, AD-14"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Trim"
+description = "Adds Trim: a 64 px waveform strip (min/max per pixel computed in an audio/ worker, not the engine worker, AD-8) with two keyboard-operable handles (←/→ 10 ms, Shift 100 ms, announced times), Save setting trimStartMs/trimEndMs and re-analysing the range as one AD-4 command (locked notes inside the range kept, times unchanged, snapshot undo; locked notes and deletedStartMs entries outside the range stay stored but hidden, user decision), Reset trim bringing them back, disabled with a reason when neither compressed audio nor raw exists, and a check that 5.10's playback follows the saved trim."
+verify = "Dev e2e: trimming the first 2 s of c_major_scale_pos1 removes the notes before 2 s and leaves every later note's time unchanged, handles move by keyboard with announced times, Reset restores the full take with a locked note from outside the range back in place, undo restores the untrimmed tab, and the compressed audio file is byte-identical before and after."
+covers = ["CAP-8"]
+after = [6]
+hitl = false
+risk = "medium"
+references = ["stories — TabCreator-User-Stories.md, US-3.4", "architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-4, AD-15"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "500-note edit latency"
+description = "Measures edit-to-paint on a generated 500-note tab (a dev-only page, #/__test/tab500, seeding the take and tab) for each edit kind and asserts p95 ≤ 100 ms in a dev e2e test, and fixes what the measurement finds (layout memoisation per system in model/tab-render.ts, which epic Analysis and tab view built, and overlay reuse); it runs last so it measures the final editing code; the CI budget gate itself stays with epic Offline, accessibility and budgets (AD-17)."
+verify = "The dev e2e reports per-edit-kind p95 edit-to-paint on 500 notes and fails above 100 ms; it passes."
+covers = ["CAP-14"]
+after = [7]
+hitl = false
+risk = "medium"
+unknown = "Whether the phrase re-fit's engine round trip fits the budget on long phrases; a 500-note take with no gaps over 1000 ms is one phrase."
+references = ["architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-17"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what the build records and deferred review findings of stories 1 to 7 name, after grepping every plan's triage log for sweep routings; scope is set when it starts and takes cleanup only."
+verify = "CI stays green and every item in the sweep's agreed scope is closed or explicitly deferred."
+covers = []
+after = [1, 2, 3, 4, 5, 6, 7]
+hitl = false
+risk = "low"

@@ -40,3 +40,8 @@ PWA config and service worker, `ui/a11y/`, dark mode, the capability check, CI b
 ## Notes
 
 - Waits on epic 6 because: needs every screen in place.
+- Touch points from the Tab epic split (2026-10-04):
+  - `ui/a11y/overlays.ts` is built by epic Tab editing (entry 3), inside this epic's `ui/a11y/` scope;
+  - epic Tab editing's 500-note edit-to-paint measurement (entry 5) feeds this epic's AD-17 CI gate;
+  - Recording retro A4 (failure-stop and storage-full notices on any screen, Esc from a text field) and A5's remaining test gaps join this epic's final CAP-25 sweep (user, 2026-10-04).
+

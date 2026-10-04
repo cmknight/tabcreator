@@ -62,3 +62,5 @@ Detection quality is proven by numbers in CI before any screen depends on it.
 - Decision: the noise gate compares against a robust level (e.g. a high percentile of frame RMS), not the take's single peak, so one transient cannot move it; carried by retro action R1 (user, 2026-10-04).
 - Decision: ring-over drops a pitch-change note only with ringing evidence — the earlier note could still be sounding (a short gap since it ended and/or a different string from the middle note) — with a trill fixture whose pull-off makes no flux peak; carried by retro action R2 (user, 2026-10-04).
 - Decision: glide notes are exempt from the octave fix; the glide cap marks low confidence for display only; carried by retro action R2 (user, 2026-10-04).
+- Touch point after the Tab epic split (2026-10-04): the app-side re-fit after locks, and recording human ground truth with the editor, now belong to epic Tab editing (8), not "epic Tab view and editor". Retro action R1 changes `engine/` under epic Analysis and tab view (entry 5.4).
+
