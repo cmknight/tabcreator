@@ -3,7 +3,7 @@ title: 'Confidence-gated octave correction'
 type: 'feature'
 ticket: '8'
 created: '2026-10-03'
-status: 'built'
+status: done
 baseline_revision: '8e498b45b9896db85382939d37c04676b484cfbc'
 route: 'oneshot'
 route_source: 'auto'
