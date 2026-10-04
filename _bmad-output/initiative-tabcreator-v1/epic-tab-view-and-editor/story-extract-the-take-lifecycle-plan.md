@@ -3,7 +3,7 @@ title: 'Extract the take lifecycle'
 type: 'refactor'
 ticket: '1'
 created: '2026-10-04'
-status: 'built'
+status: done
 baseline_revision: 'd018bb415d287302c0891b987b848d85dabff6ae'
 route: 'full'
 route_source: 'auto'
