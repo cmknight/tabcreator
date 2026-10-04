@@ -10,6 +10,7 @@
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-platform-baseline/story-refactor-sweep-plan.md`
   summary: Two pull-offs in the legato_slurs fixture have a 2nd harmonic about as loud as the fundamental — owner US-8.4 (accuracy benchmark decides fixture fitness).
   evidence: Measured by the story 1.4 implementer; may affect Epic 4 octave-error targets.
+  status: settled 2026-10-03 (story 4.8) — legato_slurs scores 17/17 with 0 octave errors at engine 0.4.0; no fixture change needed.
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-platform-baseline/story-refactor-sweep-plan.md`
   summary: A failing GitHub API call in the deploy job's head-of-main check fails the deploy instead of skipping it — owner US-8.1.
   evidence: .github/workflows/ci.yml deploy job runs gh api repos/{repo}/commits/main without a fallback.

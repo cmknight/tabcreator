@@ -210,3 +210,69 @@ fn note_fixtures() {
     println!("{table}");
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TruthNote {
+    start_ms: f64,
+    midi: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct Answer {
+    notes: Vec<TruthNote>,
+}
+
+/// US-4.4 octave rows: `octave_traps` keeps octave errors at 2% of detected notes or less, and
+/// every genuine leap in `octave_leaps` survives (each ground-truth note is detected at its exact
+/// MIDI within 50 ms). Clean and noisy twins.
+#[test]
+fn octave_rows() {
+    let mut failures = Vec::new();
+    for name in [
+        "octave_traps",
+        "octave_traps_noisy",
+        "octave_leaps",
+        "octave_leaps_noisy",
+    ] {
+        let path = testdata().join(format!("{name}.json"));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e}"));
+        let answer: Answer = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}"));
+        let (_, r) = analyze(name, 0.0);
+        let near = |t: &TruthNote, n: &Note| (n.start_ms as f64 - t.start_ms).abs() <= 50.0;
+        let exact = answer
+            .notes
+            .iter()
+            .filter(|t| r.notes.iter().any(|n| near(t, n) && n.midi == t.midi))
+            .count();
+        let octave_errors = r
+            .notes
+            .iter()
+            .filter(|n| {
+                answer
+                    .notes
+                    .iter()
+                    .any(|t| near(t, n) && (n.midi - t.midi).abs() == 12)
+            })
+            .count();
+        println!(
+            "{name}: {exact}/{} exact, {octave_errors} octave errors in {} detected",
+            answer.notes.len(),
+            r.notes.len()
+        );
+        if name.starts_with("octave_traps") {
+            if r.notes.is_empty() || octave_errors as f64 > 0.02 * r.notes.len() as f64 {
+                failures.push(format!(
+                    "{name}: {octave_errors} octave errors in {} detected notes (max 2%)",
+                    r.notes.len()
+                ));
+            }
+        } else if exact != answer.notes.len() {
+            failures.push(format!(
+                "{name}: only {exact}/{} leaps survive at their exact MIDI",
+                answer.notes.len()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

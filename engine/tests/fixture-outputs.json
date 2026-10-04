@@ -1,5 +1,5 @@
 {
-  "engine_version": "0.3.0",
+  "engine_version": "0.4.0",
   "fixtures": {
     "bend_up": "c8d16470d73e98bb",
     "bend_up_noisy": "2f8ab7f0c67093cb",

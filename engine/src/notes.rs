@@ -1,8 +1,8 @@
 //! Note building (US-4.4): turns onsets and the pitch track into timed, pitched notes with a
 //! confidence, and measures the tuning offset and below-range notes behind the CAP-27 warnings.
 //!
-//! Octave correction (entry 8), ring-over removal and glide confidence capping (entry 9) are not
-//! done here yet.
+//! Octave correction (US-4.4) is applied to low-confidence notes only. Ring-over removal and glide
+//! confidence capping (entry 9) are not done here yet.
 
 use crate::Params;
 use crate::onset::Onsets;
@@ -18,6 +18,17 @@ const ATTACK_FRAMES: usize = 2;
 const LOWEST_MIDI: i32 = 40;
 /// MIDI of the open high e string; the highest playable note is this plus `max_fret`.
 const HIGHEST_OPEN_MIDI: i32 = 64;
+/// Octave fix (US-4.4): only notes with confidence below `c` plus this margin are corrected, so
+/// confident octave leaps are kept.
+const OCTAVE_FIX_CONFIDENCE_MARGIN: f64 = 0.15;
+/// Kept neighbours considered on each side of a note.
+const OCTAVE_FIX_NEIGHBOURS: usize = 2;
+/// A note this many semitones or more from its neighbours' median is a candidate slip...
+const OCTAVE_FIX_MIN_DISTANCE: i32 = 10;
+/// ...and is shifted by 12 when that lands within this many semitones of the median.
+const OCTAVE_FIX_MAX_RESIDUAL: i32 = 5;
+/// Confidence multiplier for a corrected note.
+const OCTAVE_FIX_CONFIDENCE_FACTOR: f64 = 0.8;
 
 /// One detected note (`DetectedNote` in `app/src/model/types.ts`). Times are ms from the
 /// untrimmed take start (AD-7).
@@ -177,6 +188,11 @@ pub fn build_notes(
         });
     }
     notes.sort_by_key(|note| note.start_ms);
+    let notes = octave_fix(
+        notes,
+        params.confidence_c + OCTAVE_FIX_CONFIDENCE_MARGIN,
+        highest,
+    );
 
     let mut cents: Vec<f64> = (0..n)
         .filter(|&i| is_voiced(pitch, i))
@@ -192,6 +208,53 @@ pub fn build_notes(
         tuning_offset_cents,
         below_range_notes,
     }
+}
+
+/// The US-4.4 octave fix over notes sorted by start. A note with confidence below `threshold`
+/// whose MIDI is at least `OCTAVE_FIX_MIN_DISTANCE` from the median MIDI `m` of up to
+/// `OCTAVE_FIX_NEIGHBOURS` kept neighbours on each side (their values before any correction),
+/// and that lands within `OCTAVE_FIX_MAX_RESIDUAL` of `m` when moved by 12, is moved by 12
+/// toward `m` with its confidence multiplied by `OCTAVE_FIX_CONFIDENCE_FACTOR`, unless the move
+/// would leave 40..=`highest` (then the note is kept as it is). Confident notes, and
+/// notes with no neighbours, are never moved, so genuine octave leaps survive.
+fn octave_fix(notes: Vec<DetectedNote>, threshold: f64, highest: i32) -> Vec<DetectedNote> {
+    let original: Vec<i32> = notes.iter().map(|note| note.midi).collect();
+    notes
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut note)| {
+            if note.confidence >= threshold {
+                return note;
+            }
+            let mut neighbours: Vec<f64> = original[i.saturating_sub(OCTAVE_FIX_NEIGHBOURS)..i]
+                .iter()
+                .chain(original.iter().skip(i + 1).take(OCTAVE_FIX_NEIGHBOURS))
+                .map(|&m| f64::from(m))
+                .collect();
+            let Some(m) = median(&mut neighbours) else {
+                return note;
+            };
+            let off = |midi: i32| (f64::from(midi) - m).abs();
+            if off(note.midi) < f64::from(OCTAVE_FIX_MIN_DISTANCE) {
+                return note;
+            }
+            let shifted = if f64::from(note.midi) > m {
+                note.midi - 12
+            } else {
+                note.midi + 12
+            };
+            if off(shifted) > f64::from(OCTAVE_FIX_MAX_RESIDUAL) {
+                return note;
+            }
+            // An unplayable result means the slip explanation is impossible: keep the note.
+            if !(LOWEST_MIDI..=highest).contains(&shifted) {
+                return note;
+            }
+            note.midi = shifted;
+            note.confidence = round4(note.confidence * OCTAVE_FIX_CONFIDENCE_FACTOR);
+            note
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -432,5 +495,89 @@ mod tests {
             serde_json::to_string(&r).unwrap(),
             r#"{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0}"#
         );
+    }
+
+    fn n(start_ms: i64, midi: i32, confidence: f64) -> DetectedNote {
+        DetectedNote {
+            start_ms,
+            end_ms: start_ms + 200,
+            midi,
+            confidence,
+        }
+    }
+
+    fn midis(notes: &[DetectedNote]) -> Vec<i32> {
+        notes.iter().map(|note| note.midi).collect()
+    }
+
+    #[test]
+    fn octave_fix_corrects_a_low_confidence_slip() {
+        // A low-E run with one note read an octave up at low confidence.
+        let notes = vec![
+            n(0, 40, 0.9),
+            n(250, 41, 0.9),
+            n(500, 55, 0.55),
+            n(750, 43, 0.9),
+            n(1000, 41, 0.9),
+        ];
+        let fixed = octave_fix(notes, 0.65, 88);
+        assert_eq!(midis(&fixed), vec![40, 41, 43, 43, 41]);
+        assert_eq!(fixed[2].confidence, 0.44, "confidence x 0.8");
+    }
+
+    #[test]
+    fn octave_fix_corrects_a_slip_downward_too() {
+        let notes = vec![n(0, 64, 0.9), n(250, 52, 0.6), n(500, 66, 0.9)];
+        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![64, 64, 66]);
+    }
+
+    #[test]
+    fn confident_octave_leaps_survive() {
+        let notes = vec![n(0, 45, 0.9), n(250, 57, 0.9), n(500, 45, 0.9)];
+        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![45, 57, 45]);
+    }
+
+    #[test]
+    fn octave_fix_leaves_small_jumps_lonely_notes_and_bad_residuals_alone() {
+        // 9 semitones from the median: not a candidate.
+        let notes = vec![n(0, 50, 0.9), n(250, 59, 0.5), n(500, 50, 0.9)];
+        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![50, 59, 50]);
+        // No neighbours.
+        assert_eq!(midis(&octave_fix(vec![n(0, 70, 0.5)], 0.65, 88)), vec![70]);
+        // 20 semitones away: moving by 12 still leaves 8, over the residual limit.
+        let notes = vec![n(0, 45, 0.9), n(250, 65, 0.5), n(500, 45, 0.9)];
+        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![45, 65, 45]);
+    }
+
+    #[test]
+    fn a_move_out_of_the_playable_range_keeps_the_note() {
+        // 50 among low Es is a candidate (median 40), but 38 is unplayable: keep 50 as it is.
+        let notes = vec![
+            n(0, 40, 0.9),
+            n(250, 40, 0.9),
+            n(500, 50, 0.5),
+            n(750, 40, 0.9),
+            n(1000, 40, 0.9),
+        ];
+        let fixed = octave_fix(notes, 0.65, 88);
+        assert_eq!(midis(&fixed), vec![40, 40, 50, 40, 40]);
+        assert_eq!(fixed[2].confidence, 0.5);
+        // At the top: 77 against a median of 87 would move to 89, above fret 24 on high e.
+        let notes = vec![n(0, 87, 0.9), n(250, 77, 0.5), n(500, 87, 0.9)];
+        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![87, 77, 87]);
+    }
+
+    #[test]
+    fn octave_fix_uses_neighbours_before_correction() {
+        // The 58 is judged against the 52's original value: neighbours 40, 52 -> median 46, so
+        // 58 moves to 46. Had the 52 already been corrected to 40, the median would be 40 and 58
+        // (18 away, 6 after moving) would stay.
+        let notes = vec![
+            n(0, 40, 0.9),
+            n(250, 40, 0.9),
+            n(500, 52, 0.5),
+            n(750, 58, 0.5),
+        ];
+        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![40, 40, 40, 46]);
     }
 }

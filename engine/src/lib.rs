@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn version_is_package_version() {
-        assert_eq!(engine_version(), "0.3.0");
+        assert_eq!(engine_version(), "0.4.0");
     }
 
     #[test]
