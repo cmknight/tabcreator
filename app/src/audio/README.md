@@ -1,1 +1,3 @@
 # audio/ — sole owner of getUserMedia, enumerateDevices, AudioContext, AudioWorklet, MediaRecorder and decodeAudioData (spine AD-2); imports model/ only (AD-1).
+
+decode.ts decodes a take's compressed audio (any `model/audio-format.ts` format, the WAV fallback included) to mono PCM for analysis when the raw file is gone (ticket 12, AD-15): it decodes at the take's recorded rate (`take.sampleRate`), not the file's native rate: an `OfflineAudioContext` at that rate, so `decodeAudioData` resamples the file to it (and not to the device rate); channels averaged; the decoded buffer's rate returned (the take's rate); an undecodable file rejects `audio-missing` with its cause.

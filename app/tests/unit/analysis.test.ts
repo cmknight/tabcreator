@@ -67,6 +67,8 @@ function harness(
     take?: Take;
     positions?: (n: DetectedNote[]) => (FretPosition | null)[];
     readRaw?: () => Promise<Float32Array>;
+    readCompressed?: () => Promise<Blob | null>;
+    decode?: (blob: Blob, rate: number) => Promise<{ pcm: Float32Array; sampleRate: number }>;
     commit?: () => Promise<{ take: Take; tab: Tab }>;
     deleteRaw?: () => Promise<void>;
   } = {},
@@ -131,11 +133,21 @@ function harness(
         calls.push('readRaw');
         return options.readRaw ? options.readRaw() : new Float32Array(48_000);
       }),
+      readCompressed: vi.fn(async () => {
+        calls.push('readCompressed');
+        return options.readCompressed ? options.readCompressed() : null;
+      }),
       deleteRaw: vi.fn(async () => {
         calls.push('deleteRaw');
         if (options.deleteRaw) return options.deleteRaw();
       }),
     },
+    decode: vi.fn(async (blob: Blob, rate: number) => {
+      calls.push('decode');
+      return options.decode
+        ? options.decode(blob, rate)
+        : { pcm: new Float32Array(rate), sampleRate: rate };
+    }),
     now: () => new Date('2026-10-04T10:01:00.000Z'),
     newId: (() => {
       let n = 0;
@@ -336,14 +348,109 @@ describe('ensureAnalysed', () => {
     expect(analysis.isAnalysing()).toBe(false);
   });
 
-  it('no raw: audio-missing, no engine call', async () => {
+  it('no raw and no compressed audio: audio-missing, no engine call', async () => {
     const h = harness({
       readRaw: () => Promise.reject(new AppError('audio-missing', 'no raw')),
     });
     await expect(createAnalysis(h.deps).ensureAnalysed(TAKE)).rejects.toMatchObject({
       code: 'audio-missing',
     });
+    expect(h.deps.audio.readCompressed).toHaveBeenCalledWith(TAKE.id);
+    expect(h.deps.decode).not.toHaveBeenCalled();
     expect(h.deps.engine.analyze).not.toHaveBeenCalled();
+  });
+
+  it('no raw and audioMime null: audio-missing without reading the compressed audio', async () => {
+    const take: Take = { ...TAKE, audioMime: null };
+    const h = harness({
+      take,
+      readRaw: () => Promise.reject(new AppError('audio-missing', 'no raw')),
+      readCompressed: async () => new Blob(['x'], { type: 'audio/wav' }),
+    });
+    await expect(createAnalysis(h.deps).ensureAnalysed(take)).rejects.toMatchObject({
+      code: 'audio-missing',
+    });
+    expect(h.deps.audio.readCompressed).not.toHaveBeenCalled();
+    expect(h.deps.engine.analyze).not.toHaveBeenCalled();
+  });
+
+  it('raw present: the raw path, decode never called', async () => {
+    const h = harness();
+    const done = createAnalysis(h.deps).ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    await done;
+    expect(h.deps.audio.readCompressed).not.toHaveBeenCalled();
+    expect(h.deps.decode).not.toHaveBeenCalled();
+    expect(vi.mocked(h.deps.engine.analyze).mock.calls[0]?.[2]).toBe(TAKE.sampleRate);
+  });
+
+  it('no raw: decodes the compressed audio at the take rate, analyses it at the decoded rate, and skips deleteRaw', async () => {
+    const blob = new Blob(['webm'], { type: 'audio/webm;codecs=opus' });
+    const pcm = new Float32Array(10);
+    const h = harness({
+      readRaw: () => Promise.reject(new AppError('audio-missing', 'no raw')),
+      readCompressed: async () => blob,
+      // The decoded buffer reports its own rate, which the engine must be given.
+      decode: async () => ({ pcm, sampleRate: 44_100 }),
+    });
+    const done = createAnalysis(h.deps).ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    const outcome = await done;
+    expect(outcome.take.status).toBe('analyzed');
+    expect(h.deps.decode).toHaveBeenCalledWith(blob, TAKE.sampleRate);
+    const call = vi.mocked(h.deps.engine.analyze).mock.calls[0];
+    expect(call?.[1]).toBe(pcm);
+    expect(call?.[2]).toBe(44_100);
+    expect(h.calls).toEqual([
+      'readRaw',
+      'readCompressed',
+      'decode',
+      'analyze',
+      'mapFrets',
+      'commitAnalysis',
+    ]);
+    // There is no raw file to delete after a decode-sourced commit.
+    expect(h.deps.audio.deleteRaw).not.toHaveBeenCalled();
+  });
+
+  it('no raw, the compressed read fails storage-failed: the run rejects with it, no decode or engine call', async () => {
+    const h = harness({
+      readRaw: () => Promise.reject(new AppError('audio-missing', 'no raw')),
+      readCompressed: () => Promise.reject(new AppError('storage-failed', 'io')),
+    });
+    await expect(createAnalysis(h.deps).ensureAnalysed(TAKE)).rejects.toMatchObject({
+      code: 'storage-failed',
+    });
+    expect(h.deps.decode).not.toHaveBeenCalled();
+    expect(h.deps.engine.analyze).not.toHaveBeenCalled();
+  });
+
+  it('no raw, undecodable audio: the decode error (audio-missing, cause kept) rejects the run', async () => {
+    const cause = new Error('EncodingError');
+    const h = harness({
+      readRaw: () => Promise.reject(new AppError('audio-missing', 'no raw')),
+      readCompressed: async () => new Blob(['junk'], { type: 'audio/wav' }),
+      decode: () => Promise.reject(new AppError('audio-missing', 'undecodable', { cause })),
+    });
+    const err: unknown = await createAnalysis(h.deps)
+      .ensureAnalysed(TAKE)
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'audio-missing' });
+    expect((err as Error).cause).toBe(cause);
+    expect(h.deps.engine.analyze).not.toHaveBeenCalled();
+  });
+
+  it('a raw read failure other than audio-missing does not fall back to decoding', async () => {
+    const h = harness({
+      readRaw: () => Promise.reject(new AppError('storage-failed', 'io')),
+      readCompressed: async () => new Blob(['x'], { type: 'audio/wav' }),
+    });
+    await expect(createAnalysis(h.deps).ensureAnalysed(TAKE)).rejects.toMatchObject({
+      code: 'storage-failed',
+    });
+    expect(h.deps.audio.readCompressed).not.toHaveBeenCalled();
   });
 
   it('commit fails: rejects, raw kept', async () => {

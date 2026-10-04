@@ -13,7 +13,12 @@
 // memory as a pending commit (the raw file is kept too), so `retryCommit` can save it without a
 // new engine run. A pending commit is dropped when its take is deleted or a new analysis of the
 // take starts, and is lost on a reload, which costs one re-analysis.
+//
+// Ticket 12 (AD-15): the PCM source is the raw file, else the compressed audio decoded at the
+// take's recorded rate (`audio/decode.ts`); with neither, the run rejects with `audio-missing`.
+// The decoded audio is never written back, and the raw file is never recreated.
 
+import { decodeTakeAudio, type DecodedAudio } from '../audio/decode';
 import { engineClient, type EngineClient } from '../engine/engine-client';
 import { AppError, isAppError } from '../model/errors';
 import { devWarn } from '../model/log';
@@ -44,7 +49,9 @@ export interface AnalysisOutcome {
 export interface AnalysisDeps {
   engine: Pick<EngineClient, 'analyze' | 'mapFrets' | 'version' | 'cancel'>;
   db: Pick<TakeDb, 'getTake' | 'getTab' | 'commitAnalysis'>;
-  audio: Pick<AudioStore, 'readRaw' | 'deleteRaw'>;
+  audio: Pick<AudioStore, 'readRaw' | 'readCompressed' | 'deleteRaw'>;
+  /** Decodes compressed audio to mono PCM at the given rate (`audio/decode.ts`). */
+  decode(blob: Blob, sampleRate: number): Promise<DecodedAudio>;
   subscribeStorage(listener: StorageListener): () => void;
   now?: () => Date;
   newId?: () => string;
@@ -112,6 +119,14 @@ interface Run {
 interface BuiltResult {
   tab: Tab;
   takePatch: TakePatch;
+  /** Whether the PCM came from the raw file, which the commit then deletes. */
+  fromRaw: boolean;
+}
+
+/** A take's PCM, its rate, and where it came from. */
+interface PcmSource extends DecodedAudio {
+  /** True for the raw file, false for decoded compressed audio. */
+  fromRaw: boolean;
 }
 
 /** The engine input, built from its six fields explicitly (never by spreading settings). */
@@ -234,6 +249,8 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
       throw err;
     }
     // The raw file goes only after the commit (spine AD-9); a failed delete leaves an orphan.
+    // A take analysed from decoded audio has no raw file to delete.
+    if (!built.fromRaw) return committed;
     try {
       await deps.audio.deleteRaw(takeId);
     } catch (err) {
@@ -246,6 +263,22 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
     if (fraction <= run.progress) return; // monotone
     run.progress = fraction;
     for (const l of [...run.listeners.keys()]) l(fraction);
+  }
+
+  /**
+   * The take's PCM and its rate (AD-15): the raw file, else the compressed audio decoded at the
+   * take's recorded rate. Rejects with `audio-missing` when there is neither.
+   */
+  async function readPcm(take: Take): Promise<PcmSource> {
+    try {
+      const pcm = await deps.audio.readRaw(take.id);
+      return { pcm, sampleRate: take.sampleRate, fromRaw: true };
+    } catch (err) {
+      if (!isAppError(err) || err.code !== 'audio-missing') throw err;
+    }
+    const blob = take.audioMime === null ? null : await deps.audio.readCompressed(take.id);
+    if (!blob) throw new AppError('audio-missing', `No audio for take ${take.id}`);
+    return { ...(await deps.decode(blob, take.sampleRate)), fromRaw: false };
   }
 
   async function analyse(takeId: string, run: RunProgress): Promise<AnalysisOutcome> {
@@ -270,9 +303,9 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
       throw new AppError('analysis-failed', `Take ${takeId} is ${take.status}, not recorded`);
     }
 
-    const pcm = await checked(deps.audio.readRaw(takeId));
+    const { pcm, sampleRate, fromRaw } = await checked(readPcm(take));
     const result = await checked(
-      deps.engine.analyze(takeId, pcm, take.sampleRate, engineInput(take), (p) =>
+      deps.engine.analyze(takeId, pcm, sampleRate, engineInput(take), (p) =>
         report(run, ANALYZE_SHARE * Math.min(1, Math.max(0, p))),
       ),
     );
@@ -313,6 +346,7 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
           belowRangeNotes: result.belowRangeNotes,
         },
       },
+      fromRaw,
     });
   }
 
@@ -451,6 +485,7 @@ export const analysis: Analysis = createAnalysis({
   engine: import.meta.env.DEV ? devEngine(engineClient, devSlowMs()) : engineClient,
   db: import.meta.env.DEV ? devDb(db) : db,
   audio: audioStore,
+  decode: decodeTakeAudio,
   subscribeStorage,
   hold: import.meta.env.DEV ? devHold() : false,
 });
