@@ -3,7 +3,7 @@ title: 'Unnotated techniques and the accuracy gates'
 type: 'feature'
 ticket: '9'
 created: '2026-10-03'
-status: 'built'
+status: done
 baseline_revision: 'f568c0db0098a4e327f384139a56fc8793f69640'
 route: 'full'
 route_source: 'auto'
