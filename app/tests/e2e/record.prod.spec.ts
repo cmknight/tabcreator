@@ -104,30 +104,50 @@ test('a take runs to the 5:00 cap, stops itself, and its compressed copy is at m
   await expect(page).toHaveURL(/#\/tab\/[^/]+$/, { timeout: 60_000 });
   const id = decodeURIComponent(new URL(page.url()).hash.slice('#/tab/'.length));
 
-  const saved = await page.evaluate(async (takeId) => {
-    const take = await new Promise<{
-      status: string;
-      stopReason?: string;
-      durationMs: number;
-    } | null>((resolve, reject) => {
-      const open = indexedDB.open('tabcreator');
-      open.onerror = () => reject(open.error);
-      open.onsuccess = () => {
-        const db = open.result;
-        const get = db.transaction('takes').objectStore('takes').get(takeId);
-        get.onsuccess = () => {
-          resolve(get.result ?? null);
-          db.close();
+  const readSaved = () =>
+    page.evaluate(async (takeId) => {
+      const take = await new Promise<{
+        status: string;
+        stopReason?: string;
+        durationMs: number;
+      } | null>((resolve, reject) => {
+        const open = indexedDB.open('tabcreator');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const get = db.transaction('takes').objectStore('takes').get(takeId);
+          get.onsuccess = () => {
+            resolve(get.result ?? null);
+            db.close();
+          };
+          get.onerror = () => reject(get.error);
         };
-        get.onerror = () => reject(get.error);
-      };
-    });
-    const root = await navigator.storage.getDirectory();
-    const file = await (await root.getDirectoryHandle('audio')).getFileHandle(`${takeId}.webm`);
-    return { take, compressedBytes: (await file.getFile()).size };
-  }, id);
+      });
+      const root = await navigator.storage.getDirectory();
+      const file = await (await root.getDirectoryHandle('audio')).getFileHandle(`${takeId}.webm`);
+      let rawExists: boolean;
+      try {
+        await (await root.getDirectoryHandle('raw')).getFileHandle(`${takeId}.f32`);
+        rawExists = true;
+      } catch {
+        rawExists = false;
+      }
+      return { take, compressedBytes: (await file.getFile()).size, rawExists };
+    }, id);
 
-  expect(saved.take).toMatchObject({ status: 'recorded', stopReason: 'max-length' });
+  // Story 5.6: the Tab screen analyses the take; wait for it to be analysed and its raw file gone.
+  await expect
+    .poll(
+      async () => {
+        const { take, rawExists } = await readSaved();
+        return { status: take?.status, rawExists };
+      },
+      { timeout: 60_000 },
+    )
+    .toEqual({ status: 'analyzed', rawExists: false });
+  const saved = await readSaved();
+
+  expect(saved.take).toMatchObject({ status: 'analyzed', stopReason: 'max-length' });
   expect(Math.abs(saved.take!.durationMs - 300_000)).toBeLessThanOrEqual(50);
   test.info().annotations.push({
     type: 'compressed-bytes',
@@ -135,5 +155,73 @@ test('a take runs to the 5:00 cap, stops itself, and its compressed copy is at m
   });
   expect(saved.compressedBytes).toBeGreaterThan(0);
   expect(saved.compressedBytes).toBeLessThanOrEqual(5 * 1024 * 1024);
+  hygiene.expectClean();
+});
+
+// Story 5.6 (the tracer, US-4.4, US-4.5): a stopped take is analysed and its tab shown, from
+// storage. Within 2 s of the Stop click the Tab screen shows a system whose first line is the
+// high e string; the take is analysed (engine version and warnings), its tab has notes, and its
+// raw file is gone.
+test('Record 3 s, Stop: the tab shows within 2 s; the take is analysed and its raw file deleted', async ({
+  page,
+  baseURL,
+}) => {
+  const hygiene = await watchHygiene(page, baseURL!);
+  await goLive(page, null);
+  await expect(recordButton(page)).toBeVisible();
+  await recordButton(page).click();
+  await expect(page.getByRole('timer')).toHaveText('0:03', { timeout: 8_000 });
+
+  // Timed from before the click, so the click itself counts against the 2 s.
+  const stoppedAt = Date.now();
+  await stopButton(page).click();
+  const firstPre = page.locator('[data-take-id] pre').first();
+  await expect(firstPre).toBeVisible({ timeout: 2_000 });
+  const elapsedMs = Date.now() - stoppedAt;
+  test.info().annotations.push({ type: 'stop-to-tab-ms', description: String(elapsedMs) });
+  expect(elapsedMs).toBeLessThanOrEqual(2_000);
+  expect((await firstPre.textContent())!.split('\n')[0]).toMatch(/^e\|/);
+
+  const id = decodeURIComponent(new URL(page.url()).hash.slice('#/tab/'.length));
+  const stored = await page.evaluate(async (takeId) => {
+    const read = <T>(store: 'takes' | 'tabs') =>
+      new Promise<T | null>((resolve, reject) => {
+        const open = indexedDB.open('tabcreator');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const get = db.transaction(store).objectStore(store).get(takeId);
+          get.onsuccess = () => {
+            resolve((get.result as T | undefined) ?? null);
+            db.close();
+          };
+          get.onerror = () => reject(get.error);
+        };
+      });
+    const take = await read<{
+      status: string;
+      analysisVersion: string | null;
+      warnings?: { tuningOffsetCents: number; belowRangeNotes: number };
+    }>('takes');
+    const tab = await read<{ notes: unknown[] }>('tabs');
+    let rawExists: boolean;
+    try {
+      const root = await navigator.storage.getDirectory();
+      await (await root.getDirectoryHandle('raw')).getFileHandle(`${takeId}.f32`);
+      rawExists = true;
+    } catch {
+      rawExists = false;
+    }
+    return { take, tab, rawExists };
+  }, id);
+
+  expect(stored.take?.status).toBe('analyzed');
+  expect(stored.take?.analysisVersion).not.toBeNull();
+  expect(stored.take?.warnings).toEqual({
+    tuningOffsetCents: expect.any(Number),
+    belowRangeNotes: expect.any(Number),
+  });
+  expect(stored.tab?.notes.length).toBeGreaterThan(0);
+  expect(stored.rawExists).toBe(false);
   hygiene.expectClean();
 });

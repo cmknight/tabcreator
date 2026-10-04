@@ -4,6 +4,10 @@ recording-session.ts composes its input derivations through input-derivation.ts:
 
 recording-recovery.ts is a module of recording-session.ts (story 3.11): the start-up recovery scan, Open and Discard of unfinished takes; the store composes it and publishes its list as `recovered`.
 
-take-lifecycle.ts is a module of recording-session.ts: the take in progress and the recording state machine (start, count-in, chunks, length limits, failure stops, the save). take-save.ts holds what recording and recovery share: `MIN_TAKE_MS` and its one test `isTooShort`, the clip counter and the save step. The store's `isBusy()` is the one busy answer for its `beforeunload` guard and app-reload.ts.
+take-lifecycle.ts is a module of recording-session.ts: the take in progress and the recording state machine (start, count-in, chunks, length limits, failure stops, the save). take-save.ts holds what recording and recovery share: `MIN_TAKE_MS` and its one test `isTooShort`, the clip counter and the save step. The store's `isBusy()` is the one busy answer for its `beforeunload` guard; app-reload.ts also refuses while `analysis.isAnalysing()`. `beforeunload` does not ask while analysing: an analysis interrupted by a reload starts again when its Tab opens.
 
 instance-lock.ts gates the app on the Web Lock and hands it over (story 3.10); after a steal the new holder's recovery scan waits for the old holder's `released` message (story 5.3), with a 30 s fallback.
+
+analysis.ts runs a take's analysis (story 5.6): raw PCM → engine analyze → mapFrets → one `commitAnalysis`, then the raw file is deleted. Runs live in a module-level registry keyed by take id, so a run outlives the session that started it; `isAnalysing()` feeds app-reload.ts's busy check. Its only caller is take-session.ts. Dev builds hold every analysis with `?holdAnalysis` (e2e tests that read a stopped take's raw file or `recorded` status).
+
+take-session.ts is the Tab screen's store, one per open take (story 5.6): it loads the take and tab, calls `ensureAnalysed` for a `recorded` take and publishes progress, then the committed take and tab; it handles storage events per AD-5. `dispose()` detaches without cancelling the analysis. The UI reads it through `ui/use-take-session.ts`.

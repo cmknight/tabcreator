@@ -5,6 +5,13 @@ import { collectErrors } from './helpers';
 /** The fake mic fixture the recording specs play by default (7.95 s at 48 kHz). */
 export const FIXTURE = 'c_major_scale_pos1';
 
+/**
+ * `fixtures` with the dev-only `holdAnalysis` switch, for `goLive` (story 5.6): the Tab screen
+ * analyses every stopped take, deleting its raw file and moving it to `analyzed` moments later,
+ * so tests that read a stopped take's raw file or `recorded` status hold analysis.
+ */
+export const held = (fixtures: string = FIXTURE) => `${fixtures}&holdAnalysis`;
+
 /** The live input level meter. */
 export const meter = (page: Page) => page.getByRole('meter', { name: 'Input level' });
 

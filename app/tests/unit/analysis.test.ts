@@ -1,0 +1,452 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AppError } from '../../src/model/errors';
+import type { AnalysisResult, DetectedNote, Tab, Take } from '../../src/model/types';
+import { createAnalysis, type AnalysisDeps } from '../../src/session/analysis';
+import type { FretPosition } from '../../src/engine/engine-client';
+import type { StorageEvent, StorageListener } from '../../src/storage/events';
+
+// Story 5.6 (US-4.4, US-4.5; spine AD-8, AD-9, AD-15): ensureAnalysed against a mocked engine,
+// database and audio store (plan I/O matrix, the analysis side).
+
+const TAKE: Take = {
+  id: 't1',
+  title: 'Take 1',
+  createdAt: '2026-10-04T10:00:00.000Z',
+  status: 'recorded',
+  durationMs: 4_000,
+  sampleRate: 48_000,
+  tuning: 'EADGBE',
+  micLabel: 'Mic',
+  audioMime: 'audio/webm;codecs=opus',
+  trimStartMs: 120,
+  trimEndMs: 3_800,
+  countInBpm: 120,
+  settings: { sensitivity: 0.6, minNoteMs: 50, maxFret: 15 },
+  analysisVersion: null,
+  updatedAt: '2026-10-04T10:00:04.000Z',
+};
+
+const note = (startMs: number, midi: number, confidence = 0.9): DetectedNote => ({
+  startMs,
+  endMs: startMs + 200,
+  midi,
+  confidence,
+});
+
+const RESULT: AnalysisResult = {
+  notes: [note(100, 60), note(400, 62)],
+  tuningOffsetCents: -3.5,
+  belowRangeNotes: 1,
+  confidenceThreshold: 0.35,
+};
+
+/** A deferred promise. */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+interface Harness {
+  deps: AnalysisDeps;
+  calls: string[];
+  progress: (p: number) => void;
+  finishAnalyze: (result?: AnalysisResult) => void;
+  failAnalyze: (err: unknown) => void;
+  /** Delivers a storage event to the registry's listener, if it has one. */
+  emit: (event: StorageEvent) => void;
+  hasStorageListener: () => boolean;
+}
+
+function harness(
+  options: {
+    take?: Take;
+    positions?: (n: DetectedNote[]) => (FretPosition | null)[];
+    readRaw?: () => Promise<Float32Array>;
+    commit?: () => Promise<{ take: Take; tab: Tab }>;
+    deleteRaw?: () => Promise<void>;
+  } = {},
+): Harness {
+  const take = options.take ?? TAKE;
+  const calls: string[] = [];
+  const analyzeDone = deferred<AnalysisResult>();
+  // Rejected by `cancel` even when analyze was never called: observed through analyze only.
+  analyzeDone.promise.catch(() => {});
+  let onProgress: ((p: number) => void) | undefined;
+  let lastNotes: DetectedNote[] = [];
+  let storageListener: StorageListener | null = null;
+  const deps: AnalysisDeps = {
+    engine: {
+      analyze: vi.fn((_id, _pcm, _rate, _input, progress) => {
+        calls.push('analyze');
+        onProgress = progress;
+        return analyzeDone.promise.then((r) => {
+          lastNotes = r.notes;
+          return r;
+        });
+      }),
+      mapFrets: vi.fn(async (_id, notes) => {
+        calls.push('mapFrets');
+        return options.positions
+          ? options.positions(lastNotes)
+          : notes.map(() => ({ string: 2 as const, fret: 1 }));
+      }),
+      version: vi.fn(async () => '0.4.0'),
+      // As the engine client does: the take's in-flight analyze rejects.
+      cancel: vi.fn((id: string) => {
+        analyzeDone.reject(new AppError('analysis-cancelled', `cancelled take ${id}`));
+      }),
+    },
+    subscribeStorage: vi.fn((listener: StorageListener) => {
+      storageListener = listener;
+      return () => {
+        storageListener = null;
+      };
+    }),
+    db: {
+      getTake: vi.fn(async () => take),
+      getTab: vi.fn(async () => null),
+      commitAnalysis: vi.fn(async (takeId, tab, patch) => {
+        calls.push('commitAnalysis');
+        if (options.commit) return options.commit();
+        return { take: { ...take, ...patch, id: takeId }, tab };
+      }),
+    },
+    audio: {
+      readRaw: vi.fn(async () => {
+        calls.push('readRaw');
+        return options.readRaw ? options.readRaw() : new Float32Array(48_000);
+      }),
+      deleteRaw: vi.fn(async () => {
+        calls.push('deleteRaw');
+        if (options.deleteRaw) return options.deleteRaw();
+      }),
+    },
+    now: () => new Date('2026-10-04T10:01:00.000Z'),
+    newId: (() => {
+      let n = 0;
+      return () => `n${++n}`;
+    })(),
+  };
+  return {
+    deps,
+    calls,
+    progress: (p) => onProgress?.(p),
+    finishAnalyze: (result = RESULT) => analyzeDone.resolve(result),
+    failAnalyze: (err) => analyzeDone.reject(err),
+    emit: (event) => storageListener?.(event),
+    hasStorageListener: () => storageListener !== null,
+  };
+}
+
+/** Lets pending promise callbacks run. */
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+afterEach(() => vi.restoreAllMocks());
+
+describe('ensureAnalysed', () => {
+  it('fresh take: progress 0.9·p then 1.0; one commit, then deleteRaw; resolves with the commit', async () => {
+    const h = harness();
+    const analysis = createAnalysis(h.deps);
+    const seen: number[] = [];
+    const done = analysis.ensureAnalysed(TAKE, (p) => seen.push(p));
+    await settle();
+    expect(analysis.isAnalysing()).toBe(true);
+    h.progress(0.1);
+    h.progress(0.5);
+    h.progress(0.4); // not monotone from the engine: ignored
+    h.progress(1);
+    h.finishAnalyze();
+    const outcome = await done;
+
+    expect(seen).toEqual([0.9 * 0.1, 0.9 * 0.5, 0.9, 1]);
+    expect(h.calls).toEqual(['readRaw', 'analyze', 'mapFrets', 'commitAnalysis', 'deleteRaw']);
+    expect(h.deps.db.commitAnalysis).toHaveBeenCalledTimes(1);
+    const [takeId, tab, patch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]!;
+    expect(takeId).toBe('t1');
+    expect(tab).toEqual({
+      takeId: 't1',
+      updatedAt: '2026-10-04T10:01:00.000Z',
+      deletedStartMs: [],
+      notes: [
+        { ...note(100, 60), id: 'n1', string: 2, fret: 1, locked: false, lowConfidence: false },
+        { ...note(400, 62), id: 'n2', string: 2, fret: 1, locked: false, lowConfidence: false },
+      ],
+    });
+    expect(patch).toEqual({
+      status: 'analyzed',
+      analysisVersion: '0.4.0',
+      warnings: { tuningOffsetCents: -3.5, belowRangeNotes: 1 },
+    });
+    expect(outcome.take.status).toBe('analyzed');
+    expect(outcome.tab).toBe(tab);
+    expect(analysis.isAnalysing()).toBe(false);
+  });
+
+  it('explicit input: exactly the six fields; skipStartMs 100 with a count-in; the take sample rate', async () => {
+    const take = { ...TAKE, settings: { ...TAKE.settings, extra: 1 } as Take['settings'] };
+    const h = harness({ take });
+    const done = createAnalysis(h.deps).ensureAnalysed(take);
+    await settle();
+    h.finishAnalyze();
+    await done;
+    const [, , rate, input] = vi.mocked(h.deps.engine.analyze).mock.calls[0]!;
+    expect(rate).toBe(48_000);
+    expect(input).toStrictEqual({
+      sensitivity: 0.6,
+      minNoteMs: 50,
+      maxFret: 15,
+      trimStartMs: 120,
+      trimEndMs: 3_800,
+      skipStartMs: 100,
+    });
+    expect(vi.mocked(h.deps.engine.mapFrets).mock.calls[0]).toEqual([
+      't1',
+      [
+        { midi: 60, startMs: 100, endMs: 300 },
+        { midi: 62, startMs: 400, endMs: 600 },
+      ],
+      [],
+      15,
+    ]);
+  });
+
+  it('no count-in: skipStartMs 0', async () => {
+    const take: Take = { ...TAKE, countInBpm: undefined };
+    const h = harness({ take });
+    const done = createAnalysis(h.deps).ensureAnalysed(take);
+    await settle();
+    h.finishAnalyze();
+    await done;
+    expect(vi.mocked(h.deps.engine.analyze).mock.calls[0]![3].skipStartMs).toBe(0);
+  });
+
+  it('already analysed: no engine call', async () => {
+    const h = harness();
+    const analysis = createAnalysis(h.deps);
+    await expect(analysis.ensureAnalysed({ ...TAKE, status: 'analyzed' })).rejects.toBeInstanceOf(
+      AppError,
+    );
+    expect(h.deps.engine.analyze).not.toHaveBeenCalled();
+    expect(h.deps.audio.readRaw).not.toHaveBeenCalled();
+  });
+
+  it('analysed since the caller read it: the stored take and tab, no engine call', async () => {
+    const stored: Take = { ...TAKE, status: 'analyzed', analysisVersion: '0.4.0' };
+    const tab: Tab = { takeId: 't1', notes: [], updatedAt: stored.updatedAt, deletedStartMs: [] };
+    const h = harness({ take: stored });
+    vi.mocked(h.deps.db.getTab).mockResolvedValue(tab);
+    const outcome = await createAnalysis(h.deps).ensureAnalysed(TAKE);
+    expect(outcome).toEqual({ take: stored, tab });
+    expect(h.deps.engine.analyze).not.toHaveBeenCalled();
+  });
+
+  it('concurrent ensure and attach mid-run: one analyze; the late listener gets the progress so far and the same result', async () => {
+    const h = harness();
+    const analysis = createAnalysis(h.deps);
+    const first: number[] = [];
+    const second: number[] = [];
+    const a = analysis.ensureAnalysed(TAKE, (p) => first.push(p));
+    await settle();
+    h.progress(0.5);
+    const b = analysis.ensureAnalysed(TAKE, (p) => second.push(p));
+    h.progress(1);
+    h.finishAnalyze();
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(h.deps.engine.analyze).toHaveBeenCalledTimes(1);
+    expect(ra).toBe(rb);
+    expect(second).toEqual([0.45, 0.9, 1]);
+    expect(first).toEqual([0.45, 0.9, 1]);
+  });
+
+  it('two calls in the same tick: one analyze', async () => {
+    const h = harness();
+    const analysis = createAnalysis(h.deps);
+    const a = analysis.ensureAnalysed(TAKE);
+    const b = analysis.ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    await Promise.all([a, b]);
+    expect(h.deps.engine.analyze).toHaveBeenCalledTimes(1);
+  });
+
+  it('a detached listener gets no more progress; the run carries on', async () => {
+    const h = harness();
+    const analysis = createAnalysis(h.deps);
+    const seen: number[] = [];
+    const listener = (p: number) => seen.push(p);
+    const done = analysis.ensureAnalysed(TAKE, listener);
+    await settle();
+    h.progress(0.5);
+    analysis.detach('t1', listener);
+    h.progress(1);
+    h.finishAnalyze();
+    await done;
+    expect(seen).toEqual([0.45]);
+    expect(h.deps.db.commitAnalysis).toHaveBeenCalledTimes(1);
+  });
+
+  it('lowConfidence: c 0.35 flags 0.49, not 0.51', async () => {
+    const h = harness();
+    const done = createAnalysis(h.deps).ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze({ ...RESULT, notes: [note(100, 60, 0.49), note(400, 62, 0.51)] });
+    const { tab } = await done;
+    expect(tab.notes.map((n) => n.lowConfidence)).toEqual([true, false]);
+  });
+
+  it('a null position drops that note', async () => {
+    const h = harness({
+      positions: (notes) =>
+        notes.map((n, i) => (i === 1 ? null : { string: 3, fret: n.midi - 55 })),
+    });
+    const done = createAnalysis(h.deps).ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze({ ...RESULT, notes: [note(100, 57), note(400, 99), note(700, 59)] });
+    const { tab } = await done;
+    expect(tab.notes.map((n) => [n.startMs, n.string, n.fret])).toEqual([
+      [100, 3, 2],
+      [700, 3, 4],
+    ]);
+  });
+
+  it('engine error: rejects with it; no commit, raw kept; the registry is cleared', async () => {
+    const h = harness();
+    const analysis = createAnalysis(h.deps);
+    const done = analysis.ensureAnalysed(TAKE);
+    await settle();
+    h.failAnalyze(new AppError('analysis-failed', 'boom'));
+    await expect(done).rejects.toMatchObject({ code: 'analysis-failed' });
+    expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+    expect(h.deps.audio.deleteRaw).not.toHaveBeenCalled();
+    expect(analysis.isAnalysing()).toBe(false);
+  });
+
+  it('no raw: audio-missing, no engine call', async () => {
+    const h = harness({
+      readRaw: () => Promise.reject(new AppError('audio-missing', 'no raw')),
+    });
+    await expect(createAnalysis(h.deps).ensureAnalysed(TAKE)).rejects.toMatchObject({
+      code: 'audio-missing',
+    });
+    expect(h.deps.engine.analyze).not.toHaveBeenCalled();
+  });
+
+  it('commit fails: rejects, raw kept', async () => {
+    const h = harness({
+      commit: () => Promise.reject(new AppError('storage-failed', 'disk')),
+    });
+    const done = createAnalysis(h.deps).ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    await expect(done).rejects.toMatchObject({ code: 'storage-failed' });
+    expect(h.deps.audio.deleteRaw).not.toHaveBeenCalled();
+  });
+
+  it('raw delete fails: the commit stands and it is logged', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const h = harness({ deleteRaw: () => Promise.reject(new Error('locked')) });
+    const done = createAnalysis(h.deps).ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    const outcome = await done;
+    expect(outcome.take.status).toBe('analyzed');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancelled mid-run (take deleted): rejects analysis-cancelled, no commit', async () => {
+    const h = harness();
+    const done = createAnalysis(h.deps).ensureAnalysed(TAKE);
+    await settle();
+    h.failAnalyze(new AppError('analysis-cancelled', 'cancelled take t1'));
+    await expect(done).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+  });
+
+  it('a non-AppError failure rejects as analysis-failed', async () => {
+    const h = harness();
+    const done = createAnalysis(h.deps).ensureAnalysed(TAKE);
+    await settle();
+    h.failAnalyze(new Error('oops'));
+    await expect(done).rejects.toMatchObject({ code: 'analysis-failed' });
+  });
+
+  it("uses the stored take, not the caller's stale copy", async () => {
+    const stored: Take = {
+      ...TAKE,
+      sampleRate: 44_100,
+      trimStartMs: 500,
+      settings: { sensitivity: 0.2, minNoteMs: 60, maxFret: 12 },
+    };
+    const h = harness({ take: stored });
+    const done = createAnalysis(h.deps).ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    await done;
+    const [id, , rate, input] = vi.mocked(h.deps.engine.analyze).mock.calls[0]!;
+    expect(id).toBe('t1');
+    expect(rate).toBe(44_100);
+    expect(input).toMatchObject({ sensitivity: 0.2, minNoteMs: 60, maxFret: 12, trimStartMs: 500 });
+    expect(vi.mocked(h.deps.engine.mapFrets).mock.calls[0]![3]).toBe(12);
+  });
+
+  it('a stored take that is not recorded: analysis-failed, nothing read', async () => {
+    const h = harness({ take: { ...TAKE, status: 'recording' } });
+    await expect(createAnalysis(h.deps).ensureAnalysed(TAKE)).rejects.toMatchObject({
+      code: 'analysis-failed',
+    });
+    expect(h.calls).toEqual([]);
+  });
+
+  it('a stored take analysed but without a tab: analysis-failed, nothing read', async () => {
+    const h = harness({ take: { ...TAKE, status: 'analyzed' } });
+    await expect(createAnalysis(h.deps).ensureAnalysed(TAKE)).rejects.toMatchObject({
+      code: 'analysis-failed',
+    });
+    expect(h.calls).toEqual([]);
+  });
+
+  it('take deleted while no session is attached: the engine is cancelled, the run stops', async () => {
+    const h = harness();
+    const analysis = createAnalysis(h.deps);
+    const listener = () => {};
+    const done = analysis.ensureAnalysed(TAKE, listener);
+    await settle();
+    analysis.detach('t1', listener);
+    h.emit({ type: 'take-deleted', takeId: 'other', writer: 'library-session' });
+    expect(h.deps.engine.cancel).not.toHaveBeenCalled();
+    h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    expect(h.deps.engine.cancel).toHaveBeenCalledWith('t1');
+    await expect(done).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+    expect(analysis.isAnalysing()).toBe(false);
+    expect(h.hasStorageListener()).toBe(false);
+  });
+
+  it('take deleted before analyze is enqueued: analysis-cancelled, no engine call', async () => {
+    const raw = deferred<Float32Array>();
+    const h = harness({ readRaw: () => raw.promise });
+    const analysis = createAnalysis(h.deps);
+    const done = analysis.ensureAnalysed(TAKE);
+    await settle();
+    expect(h.calls).toEqual(['readRaw']);
+    h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    raw.resolve(new Float32Array(10));
+    await expect(done).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    expect(h.deps.engine.analyze).not.toHaveBeenCalled();
+    expect(analysis.isAnalysing()).toBe(false);
+  });
+
+  it('hold (dev ?holdAnalysis): nothing starts and nothing is in flight', async () => {
+    const h = harness();
+    const analysis = createAnalysis({ ...h.deps, hold: true });
+    void analysis.ensureAnalysed(TAKE);
+    await settle();
+    expect(h.calls).toEqual([]);
+    expect(analysis.isAnalysing()).toBe(false);
+  });
+});

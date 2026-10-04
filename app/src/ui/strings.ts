@@ -159,6 +159,12 @@ export const strings = {
   /** The Esc shortcut's description in the keyboard shortcuts dialog (EXPERIENCE.md). */
   'global.shortcutCancelCountIn': 'Cancel count-in',
   'tab.title': 'Tab',
+  /** The progress bar's label while a take is analysed. */
+  'tab.analysing': 'Analysing…',
+  /** Shown when the analysis failed (spine AD-10). */
+  'tab.analysisFailed': 'Analysis failed — try again',
+  /** Shown when the take does not exist. */
+  'tab.notFound': 'Take not found',
   'library.title': 'Library',
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */
@@ -188,9 +194,9 @@ export const strings = {
   'settings.engineVersionUnavailable': 'Engine version unavailable',
   /**
    * The toast when Reload is refused because a take is being recorded or saved, or a recovered
-   * take rebuilt (story 5.2; new copy, not yet in EXPERIENCE.md).
+   * take rebuilt (story 5.2), or a take analysed (story 5.6); new copy, not yet in EXPERIENCE.md.
    */
-  'settings.reloadBusy': "Can't reload while a recording is in progress or being saved",
+  'settings.reloadBusy': "Can't reload while a recording is in progress, being saved or analysed",
 } as const;
 
 export type StringKey = keyof typeof strings;

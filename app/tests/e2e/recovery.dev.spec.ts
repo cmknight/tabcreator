@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { MIME, decodedSeconds } from './helpers';
-import { expectNoSeriousAxe, FIXTURE, goLive } from './mic-helpers';
+import { expectNoSeriousAxe, FIXTURE, goLive, held } from './mic-helpers';
 
 // Runs in the `dev` project only (story 3.11, US-3.2): a take whose page reloads mid-recording
 // is offered back on Record ("An unfinished take from <time> was recovered (m:ss)") once the
@@ -90,7 +90,7 @@ test('reload mid-take: the leave dialog, then the banner; Open rebuilds the take
 }) => {
   test.setTimeout(90_000);
   // The Allow click is also the user gesture `beforeunload` needs to ask.
-  await goLive(page);
+  await goLive(page, held());
   const dialogs = await reloadMidTake(page, '0:10');
   expect(dialogs).toEqual(['beforeunload']);
 

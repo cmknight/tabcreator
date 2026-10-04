@@ -21,8 +21,8 @@ function engineLine(engine: EngineStatus): string {
 }
 
 /**
- * Reload: refused while a take is recorded or saved, or a recovered take rebuilt; a toast then
- * says why (story 5.2), so the press is never silently ignored.
+ * Reload: refused while a take is recorded, saved or analysed (story 5.6), or a recovered take
+ * rebuilt; a toast then says why (story 5.2), so the press is never silently ignored.
  */
 export function reloadOrExplain(reload: () => boolean = reloadApp): void {
   if (!reload()) showToast({ message: strings['settings.reloadBusy'] });

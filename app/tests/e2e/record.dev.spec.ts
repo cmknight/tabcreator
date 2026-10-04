@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { MIME, collectErrors } from './helpers';
-import { expectNoSeriousAxe, FIXTURE, goLive, meter } from './mic-helpers';
+import { expectNoSeriousAxe, FIXTURE, goLive, held, meter } from './mic-helpers';
 
 // Runs in the `dev` project only: the fake mic (US-0.4) plays c_major_scale_pos1 (7.95 s at
 // 48 kHz) as the microphone. Story 3.4: Record then Stop saves a take and opens its Tab.
@@ -140,7 +140,7 @@ async function tabTakeId(page: Page): Promise<string> {
 }
 
 test('Record then Stop saves the take and opens its Tab', async ({ page }) => {
-  const errors = await goLive(page);
+  const errors = await goLive(page, held());
   await expect(timer(page)).toHaveText('0:00');
   await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
 
@@ -182,7 +182,7 @@ test('Record then Stop saves the take and opens its Tab', async ({ page }) => {
 test('leaving Record keeps recording; returning shows Stop and the running timer', async ({
   page,
 }) => {
-  const errors = await goLive(page);
+  const errors = await goLive(page, held());
   await recordButton(page).click();
   const startedAt = Date.now();
   await expect(stopButton(page)).toBeVisible();
@@ -255,7 +255,7 @@ test('with a live mic Record is enabled, with no description', async ({ page }) 
 
 // Story 3.5: Space on Record (ui/a11y/shortcuts.ts).
 test('Space with focus on the page starts the take, and Space again stops it', async ({ page }) => {
-  const errors = await goLive(page);
+  const errors = await goLive(page, held());
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
   await page.keyboard.press('Space');
@@ -271,7 +271,7 @@ test('Space with focus on the page starts the take, and Space again stops it', a
 });
 
 test('Space on the focused Record button toggles once (its own click)', async ({ page }) => {
-  const errors = await goLive(page);
+  const errors = await goLive(page, held());
   await recordButton(page).focus();
 
   await page.keyboard.press('Space');
@@ -415,7 +415,7 @@ async function countInOn(page: Page, bpm: number): Promise<void> {
 test('count-in at 120 BPM: capture opens 2.0 s after the click; the take has countInBpm and no click', async ({
   page,
 }) => {
-  const errors = await goLive(page, 'silence_60s');
+  const errors = await goLive(page, held('silence_60s'));
   await countInOn(page, 120);
 
   await recordButton(page).click();
@@ -444,7 +444,7 @@ test('count-in at 120 BPM: capture opens 2.0 s after the click; the take has cou
 test('count-in: the beats 4-3-2-1 show and are announced; controls disabled; Cancel', async ({
   page,
 }) => {
-  const errors = await goLive(page);
+  const errors = await goLive(page, held());
   await countInOn(page, 60);
   await recordButton(page).click();
 
@@ -476,7 +476,7 @@ test('count-in: the beats 4-3-2-1 show and are announced; controls disabled; Can
 
   // The pref is remembered across a reload.
   // The mic was granted, so it goes live again without a click.
-  await page.goto(`./?fakeMic=${FIXTURE}#/record`);
+  await page.goto(`./?fakeMic=${held()}#/record`);
   await expect(meter(page)).toBeVisible();
   await expect(countInToggle(page)).toHaveAttribute('aria-pressed', 'true');
   await expect(tempoField(page)).toHaveValue('60');
@@ -571,7 +571,7 @@ test('near the cap: "30 seconds left" shows and is announced once; at the cap it
   page,
 }) => {
   // The dev take-limit overrides ride in the query after the fixture.
-  const errors = await goLive(page, `${FIXTURE}&${LIMITS}`);
+  const errors = await goLive(page, held(`${FIXTURE}&${LIMITS}`));
   await watchAnnouncements(page);
 
   await recordButton(page).click();
@@ -638,7 +638,7 @@ for (const [fixture, clipped] of [
   ['open_strings', false],
 ] as const) {
   test(`a take recorded from ${fixture} is saved with clipped: ${clipped}`, async ({ page }) => {
-    const errors = await goLive(page, fixture);
+    const errors = await goLive(page, held(fixture));
     await recordButton(page).click();
     await expect(timer(page)).toHaveText('0:02', { timeout: 5_000 });
     await stopButton(page).click();
@@ -761,7 +761,7 @@ async function savedTake(page: Page): Promise<SavedTake> {
 test('unplug mid-take: the take is saved as mic-lost, a toast, the mic live on the other input', async ({
   page,
 }) => {
-  const errors = await goLive(page, 'open_strings,silence_60s');
+  const errors = await goLive(page, held('open_strings,silence_60s'));
   await recordButton(page).click();
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
   await atElapsed(page, 3_000, 'unplug');
@@ -790,7 +790,7 @@ test('unplug mid-take: the take is saved as mic-lost, a toast, the mic live on t
 });
 
 test('revoke mid-take: the take is saved as mic-lost, then the lost card', async ({ page }) => {
-  const errors = await goLive(page, 'open_strings,silence_60s');
+  const errors = await goLive(page, held('open_strings,silence_60s'));
   await recordButton(page).click();
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
   await atElapsed(page, 3_000, 'revoke');
@@ -807,7 +807,7 @@ test('revoke mid-take: the take is saved as mic-lost, then the lost card', async
 test('storage full mid-take: saved as storage-full, the error banner with a Library link, mic live; the next take clears it', async ({
   page,
 }) => {
-  const errors = await goLive(page);
+  const errors = await goLive(page, held());
   await recordButton(page).click();
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
   await atElapsed(page, 2_000, 'storageFull');

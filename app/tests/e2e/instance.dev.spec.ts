@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { MIME, collectErrors, decodedSeconds } from './helpers';
-import { expectNoSeriousAxe, FIXTURE, goLive } from './mic-helpers';
+import { expectNoSeriousAxe, FIXTURE, goLive, held } from './mic-helpers';
 
 // Runs in the `dev` project only (story 3.10, US-8.5): two pages of one browser context share
 // Web Locks and BroadcastChannel, like two tabs. The fake mic (US-0.4) plays
@@ -322,7 +322,7 @@ test('upgrade blocked during a take: the shell stays with the banner; Stop saves
   page,
 }) => {
   test.setTimeout(30_000);
-  const errors = await goLive(page);
+  const errors = await goLive(page, held());
   await recordButton(page).click();
   await expect(timer(page)).toHaveText('0:02', { timeout: 6_000 });
   const id = await activeTakeId(page);
