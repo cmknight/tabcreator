@@ -37,22 +37,39 @@ pub struct EngineAnalyzeInput {
 /// Every detection tunable, derived from the user's settings in one place (US-4.6). The
 /// pre-processing constants live in [`preprocess`].
 ///
-/// `k` and `c` keep US-4.6's slopes but were tuned in entry 9 (AD-7) from US-4.6's starting
-/// intercepts (`k = 2.0 − 1.0·s`, `c = 0.7 − 0.4·s`) to reach the US-8.4 gates. At 0.5:
-/// - `k` 1.5 → 4.0: the flux peak a damped string makes about 70 ms before the next pick was
-///   an onset (and a phantom note) at 1.5; on the synth fixtures `k` must exceed ~3.65 to
-///   suppress those peaks and stay under ~7.16 to keep every gate-set pick.
-/// - `c` 0.5 → 0.35: repeated 16th notes on the open A string (and the first note after a
-///   pitch change) have pYIN voicing probabilities around 0.2 near each re-pick, so their
-///   confidence is 0.40–0.47.
+/// `k`, `c` and `g` were re-derived in the R1 retune (Detection retro RB1, RB2, SM9), which
+/// supersedes entry 9's `k = 4.5 − 1.0·s`, `c = 0.55 − 0.4·s` (themselves tuned from US-4.6's
+/// `k = 2.0 − 1.0·s`, `c = 0.7 − 0.4·s`). Measured on the release harness over the clean-gate
+/// fixtures at s = 0, 0.5 and 1, and with seeded pink noise at 15 dB SNR at s = 0.5 (the
+/// accuracy report's sweep and held-out rows); while each grid point was measured, `k` was held
+/// fixed at that value at every sensitivity:
+/// - `k`: below ~2.8 a damping peak (the flux a damped string makes about 70 ms before the next
+///   pick, on the clipped `level_too_hot`) gets through: clean false positives are 3 at 2.75,
+///   2 from 2.9 to 3.25, 1 at 3.5 and 0 from 3.75. Above ~3.25 the 15 dB row falls off a cliff:
+///   pooled F1 0.988 at 2.9, 0.976 at 3.1, 0.960 at 3.25, 0.875 at 3.5, 0.753 at 4.0 (entry 9's
+///   value). Clean F1 is 0.985–0.994 throughout. `k = 3.25 − 0.25·s` keeps the whole slider
+///   inside 3.0–3.25: 3.125 at 0.5 (15 dB F1 0.973), and 3.0 at 1, whose 2 clean false
+///   positives are no more than at 0.5.
+/// - `c`: repeated 16th notes on the open A string (and the first note after a pitch change)
+///   have pYIN voicing probabilities around 0.2 near each re-pick, so their confidence is
+///   0.40–0.47; at `c` 0.55 (entry 9's s = 0) 19 of them were lost (clean F1 0.941, fret
+///   agreement 79.5%). With `k` 3.0, clean F1 is 0.991 at `c` 0.25, 0.988 at 0.35, 0.985 at 0.40
+///   and 0.951 at 0.45; the 15 dB row is 0.985 at 0.35 but 0.944 at 0.40. `c = 0.40 − 0.1·s`
+///   keeps entry 9's 0.35 at 0.5 and puts s = 0 at the edge that still keeps them.
+/// - `g` is relative to the take's reference level (the 95th percentile of frame RMS, but never
+///   more than 10 dB under the 99.5th, [`preprocess::Preprocessed::ref_db`]), not the −1 dBFS
+///   peak, so one click cannot move it and a sparse take's noise floor does not become it.
+///   The fixtures' reference sits near −9.5 dBFS (−4.7 on the clipped `level_too_hot`), so
+///   `g = −30 − 20·s` keeps the old `−40 − 20·s` dBFS gate's place on them; no row changed.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Params {
-    /// Onset threshold factor `k = 4.5 − 1.0·s`.
+    /// Onset threshold factor `k = 3.25 − 0.25·s`.
     pub onset_k: f64,
-    /// Note confidence threshold `c = 0.55 − 0.4·s`.
+    /// Note confidence threshold `c = 0.40 − 0.1·s`; reported as `confidenceThreshold`.
     pub confidence_c: f64,
-    /// Noise gate `g = −40 − 20·s` dBFS.
-    pub gate_dbfs: f64,
+    /// Noise gate `g = −30 − 20·s` dB, relative to the take's reference level
+    /// ([`preprocess::Preprocessed::ref_db`]): a frame passes when `rms_db − ref_db > g`.
+    pub gate_db: f64,
     /// Shortest note kept, ms.
     pub min_note_ms: f64,
     /// Highest fret the mapping may use.
@@ -68,9 +85,9 @@ impl Params {
             input.sensitivity.clamp(0.0, 1.0)
         };
         Self {
-            onset_k: 4.5 - 1.0 * s,
-            confidence_c: 0.55 - 0.4 * s,
-            gate_dbfs: -40.0 - 20.0 * s,
+            onset_k: 3.25 - 0.25 * s,
+            confidence_c: 0.40 - 0.1 * s,
+            gate_db: -30.0 - 20.0 * s,
             min_note_ms: input.min_note_ms,
             max_fret: input.max_fret,
         }
@@ -210,6 +227,7 @@ pub fn analyze_core(
     let onsets = onset::detect(
         &signal.samples,
         &signal.rms_db,
+        signal.ref_db,
         &pitch,
         &params,
         |fraction| {
@@ -254,7 +272,7 @@ mod tests {
 
     #[test]
     fn version_is_package_version() {
-        assert_eq!(engine_version(), "0.5.0");
+        assert_eq!(engine_version(), "0.6.0");
     }
 
     #[test]
@@ -262,12 +280,12 @@ mod tests {
         let out = analyze_core(&[0.0; 4800], 48_000.0, INPUT, |_| {}).unwrap();
         assert_eq!(
             out,
-            r#"{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0}"#
+            r#"{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0,"confidenceThreshold":0.35}"#
         );
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             v,
-            json!({"notes": [], "tuningOffsetCents": 0, "belowRangeNotes": 0})
+            json!({"notes": [], "tuningOffsetCents": 0, "belowRangeNotes": 0, "confidenceThreshold": 0.35})
         );
     }
 
@@ -276,7 +294,7 @@ mod tests {
         let out = analyze_core(&[], 48_000.0, INPUT, |_| {}).unwrap();
         assert_eq!(
             out,
-            r#"{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0}"#
+            r#"{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0,"confidenceThreshold":0.35}"#
         );
     }
 
@@ -334,9 +352,9 @@ mod tests {
     #[test]
     fn params_map_sensitivity() {
         for (s, k, c, g) in [
-            (0.0, 4.5, 0.55, -40.0),
-            (0.5, 4.0, 0.35, -50.0),
-            (1.0, 3.5, 0.15, -60.0),
+            (0.0, 3.25, 0.40, -30.0),
+            (0.5, 3.125, 0.35, -40.0),
+            (1.0, 3.0, 0.30, -50.0),
         ] {
             let p = Params::from_settings(&input_with_sensitivity(s));
             assert!((p.onset_k - k).abs() < 1e-12, "s={s}: k={}", p.onset_k);
@@ -345,8 +363,133 @@ mod tests {
                 "s={s}: c={}",
                 p.confidence_c
             );
-            assert!((p.gate_dbfs - g).abs() < 1e-12, "s={s}: g={}", p.gate_dbfs);
+            assert!((p.gate_db - g).abs() < 1e-12, "s={s}: g={}", p.gate_db);
             assert_eq!((p.min_note_ms, p.max_fret), (40.0, 22));
+        }
+    }
+
+    #[test]
+    fn analyze_reports_the_confidence_threshold_it_used() {
+        for s in [0.0, 0.25, 0.5, 1.0, 3.0] {
+            let input = format!(
+                r#"{{"sensitivity":{s},"minNoteMs":40,"maxFret":24,"trimStartMs":0,"trimEndMs":null,"skipStartMs":0}}"#
+            );
+            let out = analyze_core(&[0.0; 4800], 48_000.0, &input, |_| {}).unwrap();
+            let v: Value = serde_json::from_str(&out).unwrap();
+            let c = Params::from_settings(&input_with_sensitivity(s)).confidence_c;
+            let reported = v["confidenceThreshold"].as_f64().unwrap();
+            assert!((reported - c).abs() < 1e-9, "s={s}: {reported} vs {c}");
+        }
+    }
+
+    #[test]
+    fn near_silent_take_has_no_notes_at_any_sensitivity() {
+        // A 220 Hz tone at −70 dBFS: below the −60 dBFS silence level, so left unscaled and
+        // gated against full scale, as before the robust reference level.
+        let amplitude = 10f32.powf(-70.0 / 20.0);
+        let pcm: Vec<f32> = (0..48_000)
+            .map(|i| amplitude * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 48_000.0).sin())
+            .collect();
+        for s in [0.0, 0.5, 1.0] {
+            let input = format!(
+                r#"{{"sensitivity":{s},"minNoteMs":40,"maxFret":24,"trimStartMs":0,"trimEndMs":null,"skipStartMs":0}}"#
+            );
+            let v: Value =
+                serde_json::from_str(&analyze_core(&pcm, 48_000.0, &input, |_| {}).unwrap())
+                    .unwrap();
+            assert_eq!(v["notes"], json!([]), "s={s}");
+        }
+    }
+
+    /// Adds a plucked note to `pcm` (48 kHz): a decaying harmonic tone at `freq` Hz with peak
+    /// amplitude about `amp`, from `start` s, damped (a 10 ms fade) at `end` s.
+    fn pluck(pcm: &mut [f32], freq: f64, start: f64, end: f64, amp: f64) {
+        let rate = 48_000.0;
+        let (lo, hi) = ((start * rate) as usize, ((end + 0.01) * rate) as usize);
+        for (i, x) in pcm.iter_mut().enumerate().take(hi).skip(lo) {
+            let t = (i - lo) as f64 / rate;
+            let damp = ((end - start + 0.01 - t) / 0.01).clamp(0.0, 1.0);
+            let w = 2.0 * std::f64::consts::PI * freq * t;
+            let tone = (w.sin() + 0.5 * (2.0 * w).sin() + 0.25 * (3.0 * w).sin()) / 1.4;
+            *x += (amp * (-2.0 * t).exp() * damp * tone) as f32;
+        }
+    }
+
+    /// `n` samples of seeded unit-RMS pink noise (Paul Kellet's economy filter on white noise).
+    fn pink(n: usize) -> Vec<f32> {
+        let mut seed = 12_345u32;
+        let (mut b0, mut b1, mut b2) = (0.0f64, 0.0f64, 0.0f64);
+        let out: Vec<f64> = (0..n)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let w = f64::from(seed >> 8) / f64::from(1u32 << 24) * 2.0 - 1.0;
+                b0 = 0.99765 * b0 + w * 0.099_046;
+                b1 = 0.963 * b1 + w * 0.296_516_4;
+                b2 = 0.57 * b2 + w * 1.052_691_3;
+                b0 + b1 + b2 + w * 0.1848
+            })
+            .collect();
+        let rms = (out.iter().map(|x| x * x).sum::<f64>() / n as f64).sqrt();
+        out.iter().map(|x| (x / rms) as f32).collect()
+    }
+
+    fn notes_of(pcm: &[f32], s: f64) -> Vec<Value> {
+        let input = format!(
+            r#"{{"sensitivity":{s},"minNoteMs":40,"maxFret":24,"trimStartMs":0,"trimEndMs":null,"skipStartMs":0}}"#
+        );
+        let v: Value =
+            serde_json::from_str(&analyze_core(pcm, 48_000.0, &input, |_| {}).unwrap()).unwrap();
+        v["notes"].as_array().unwrap().clone()
+    }
+
+    #[test]
+    fn sparse_take_gates_its_noise_floor() {
+        // One plucked A2 (MIDI 45) from 0.3 s, damped at 1.0 s, in a 31 s take whose pink noise
+        // floor sits 60 dB under the note's peak: the playing is ~2% of the frames.
+        let peak = 0.5;
+        let mut pcm: Vec<f32> = pink(31 * 48_000)
+            .into_iter()
+            .map(|x| x * (peak * 1e-3) as f32)
+            .collect();
+        pluck(&mut pcm, 110.0, 0.3, 1.0, peak);
+        let notes = notes_of(&pcm, 0.5);
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0]["midi"], 45);
+        let start = notes[0]["startMs"].as_f64().unwrap();
+        let end = notes[0]["endMs"].as_f64().unwrap();
+        assert!((start - 300.0).abs() <= 50.0, "startMs {start}");
+        assert!((end - 1000.0).abs() <= 150.0, "endMs {end}");
+        // Every noise-only frame (from 1.2 s on) fails the gate at s = 0.5.
+        let signal = preprocess::preprocess(&pcm, 48_000.0, 0.0, None, 0.0).unwrap();
+        let gate = signal.gate_level(Params::from_settings(&input_with_sensitivity(0.5)).gate_db);
+        let first = (1.2 * f64::from(preprocess::TARGET_RATE)) as usize / preprocess::RMS_HOP;
+        let passing = signal.rms_db[first..]
+            .iter()
+            .filter(|&&db| f64::from(db) > gate)
+            .count();
+        assert_eq!(passing, 0, "ref {} dBFS, gate {gate} dBFS", signal.ref_db);
+    }
+
+    #[test]
+    fn take_just_above_the_silence_level_keeps_its_notes() {
+        // Three plucked notes (MIDI 45, 52, 57) with a faint noise floor, the whole take scaled
+        // to peak −55 dBFS: above the −60 dBFS silence level, so normalised and gated against
+        // its own reference.
+        let mut pcm: Vec<f32> = pink(4 * 48_000).into_iter().map(|x| x * 5e-4).collect();
+        pluck(&mut pcm, 110.0, 0.3, 1.1, 0.5);
+        pluck(&mut pcm, 164.81, 1.3, 2.1, 0.5);
+        pluck(&mut pcm, 220.0, 2.3, 3.1, 0.5);
+        let peak = pcm.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        let scale = 10f32.powf(-55.0 / 20.0) / peak;
+        pcm.iter_mut().for_each(|x| *x *= scale);
+        for s in [0.0, 0.5, 1.0] {
+            let notes = notes_of(&pcm, s);
+            let midi: Vec<i64> = notes.iter().map(|n| n["midi"].as_i64().unwrap()).collect();
+            assert_eq!(midi, [45, 52, 57], "s={s}: {notes:?}");
+            for (n, want) in notes.iter().zip([300.0, 1300.0, 2300.0]) {
+                let start = n["startMs"].as_f64().unwrap();
+                assert!((start - want).abs() <= 50.0, "s={s}: startMs {start}");
+            }
         }
     }
 

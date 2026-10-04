@@ -17,6 +17,7 @@ use accuracy::baseline::{
     first_difference, output_hash, to_file_text,
 };
 use accuracy::metrics::{DetectedNote, Pos, TruthNote, score};
+use accuracy::perturb::{add_pink_noise, resample, seed_for};
 use accuracy::report::{FixtureRow, RunInfo, Set, classify_synth, render, threshold_failures};
 use accuracy::skip::skip_start_ms;
 use accuracy::wav::read_wav;
@@ -88,11 +89,19 @@ fn read_answer(path: &Path) -> Answer {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
+/// The sensitivity every fixture runs with, except the sweep sets.
+const SENSITIVITY: f64 = 0.5;
+
 /// The analysis settings every fixture runs with.
 fn settings_for(name: &str) -> String {
+    settings_at(name, SENSITIVITY)
+}
+
+/// The analysis settings for fixture `name` at sensitivity `s`.
+fn settings_at(name: &str, s: f64) -> String {
     let skip_start_ms = skip_start_ms(name);
     format!(
-        r#"{{"sensitivity":0.5,"minNoteMs":40,"maxFret":{MAX_FRET},"trimStartMs":0,"trimEndMs":null,"skipStartMs":{skip_start_ms}}}"#
+        r#"{{"sensitivity":{s},"minNoteMs":40,"maxFret":{MAX_FRET},"trimStartMs":0,"trimEndMs":null,"skipStartMs":{skip_start_ms}}}"#
     )
 }
 
@@ -100,10 +109,67 @@ fn settings_for(name: &str) -> String {
 /// its output (`analyze` JSON + "\n" + `map_frets` JSON).
 fn run_fixture(name: &str, wav: &Path, answer: &Answer, set: Set) -> (FixtureRow, String) {
     let audio = read_wav(wav).unwrap_or_else(|e| panic!("{e}"));
-    let settings = settings_for(name);
+    run_audio(
+        name,
+        wav,
+        &audio.pcm,
+        audio.sample_rate,
+        &settings_for(name),
+        answer,
+        set,
+    )
+}
 
+/// The sweep or held-out variant `set` (R1) of clean-gate fixture `name`: its row (named
+/// `{name}@{suffix}`) and output hash. The audio is perturbed here, deterministically.
+fn run_variant(name: &str, wav: &Path, answer: &Answer, set: Set) -> (FixtureRow, String) {
+    let audio = read_wav(wav).unwrap_or_else(|e| panic!("{e}"));
+    let (suffix, pcm, rate, s) = match set {
+        Set::SweepS0 => ("s0", audio.pcm, audio.sample_rate, 0.0),
+        Set::SweepS1 => ("s1", audio.pcm, audio.sample_rate, 1.0),
+        Set::Pink20 => (
+            "pink20",
+            add_pink_noise(&audio.pcm, 20.0, seed_for(name, 20)),
+            audio.sample_rate,
+            SENSITIVITY,
+        ),
+        Set::Pink15 => (
+            "pink15",
+            add_pink_noise(&audio.pcm, 15.0, seed_for(name, 15)),
+            audio.sample_rate,
+            SENSITIVITY,
+        ),
+        Set::Rate44k1 => (
+            "44k1",
+            resample(&audio.pcm, audio.sample_rate, 44_100),
+            44_100,
+            SENSITIVITY,
+        ),
+        _ => panic!("{set:?} is not a variant set"),
+    };
+    run_audio(
+        &format!("{name}@{suffix}"),
+        wav,
+        &pcm,
+        rate,
+        &settings_at(name, s),
+        answer,
+        set,
+    )
+}
+
+/// Runs the engine on `pcm` (from `wav`) with `settings` and scores it as row `name` of `set`.
+fn run_audio(
+    name: &str,
+    wav: &Path,
+    pcm: &[f32],
+    sample_rate: u32,
+    settings: &str,
+    answer: &Answer,
+    set: Set,
+) -> (FixtureRow, String) {
     let started = Instant::now();
-    let json = engine::analyze_core(&audio.pcm, audio.sample_rate as f32, &settings, |_| {})
+    let json = engine::analyze_core(pcm, sample_rate as f32, settings, |_| {})
         .unwrap_or_else(|e| panic!("{}: analyze failed: {e}", wav.display()));
     let analyze_ms = started.elapsed().as_secs_f64() * 1000.0;
     let detected = serde_json::from_str::<AnalysisOutput>(&json)
@@ -261,6 +327,21 @@ fn run_all() -> Run {
             in_set(name, Set::PhantomOnly),
             "{name}: fixture has no notes but is not phantom-only"
         );
+    }
+
+    // The sensitivity sweep and held-out perturbations (R1) of every clean-gate fixture.
+    let clean: Vec<&(String, PathBuf, PathBuf)> = synth
+        .iter()
+        .filter(|(name, _, _)| in_set(name, Set::CleanGate))
+        .collect();
+    let mut variants = Vec::new();
+    for set in Set::VARIANTS {
+        for (name, wav, json) in &clean {
+            variants.push(run_variant(name, wav, &read_answer(json), set));
+        }
+    }
+    for v in variants {
+        run.push(v);
     }
 
     let real_dir = testdata().join("real");

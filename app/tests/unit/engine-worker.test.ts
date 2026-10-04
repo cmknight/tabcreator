@@ -7,7 +7,7 @@ import {
   type LoadedEngine,
 } from '../../src/engine/engine-worker';
 
-const EMPTY = '{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0}';
+const EMPTY = '{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0,"confidenceThreshold":0.35}';
 
 function fakeEngine(overrides: Partial<LoadedEngine> = {}): LoadedEngine {
   return {

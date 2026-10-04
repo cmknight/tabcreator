@@ -17,7 +17,19 @@ pub const MAX_DROP: f64 = 0.01;
 const TOLERANCE: f64 = 1e-9;
 
 /// The pooled sets the gate compares; per-fixture rows and phantom counts are reported only.
-pub const GATED_SETS: [Set; 4] = [Set::CleanGate, Set::NoisyGate, Set::Reported, Set::Real];
+/// The sweep and held-out sets (R1) are compared too, so a retune cannot quietly trade them
+/// away; a set absent on `main` is new, not a regression.
+pub const GATED_SETS: [Set; 9] = [
+    Set::CleanGate,
+    Set::NoisyGate,
+    Set::Reported,
+    Set::Real,
+    Set::SweepS0,
+    Set::SweepS1,
+    Set::Pink20,
+    Set::Pink15,
+    Set::Rate44k1,
+];
 
 /// `Counts` as stored in the baseline (the metrics type is serialise-only).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +116,11 @@ pub fn set_key(set: Set) -> &'static str {
         Set::Reported => "reported",
         Set::PhantomOnly => "phantom-only",
         Set::Real => "real",
+        Set::SweepS0 => "sweep-s0",
+        Set::SweepS1 => "sweep-s1",
+        Set::Pink20 => "pink-20db",
+        Set::Pink15 => "pink-15db",
+        Set::Rate44k1 => "rate-44k1",
     }
 }
 

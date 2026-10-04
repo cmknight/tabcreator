@@ -67,17 +67,24 @@ fn detect(name: &str) -> Detected {
         trim_end_ms: None,
         skip_start_ms: skip,
     });
-    let Onsets { onsets, glides } =
-        onset::detect(&signal.samples, &signal.rms_db, &pitch, &params, |_| {});
+    let Onsets { onsets, glides } = onset::detect(
+        &signal.samples,
+        &signal.rms_db,
+        signal.ref_db,
+        &pitch,
+        &params,
+        |_| {},
+    );
     let flux = onset::spectral_flux(&signal.samples, |_| {});
     let flux_frames = onset::pick_peaks(
         &flux,
         &signal.rms_db,
         signal.samples.len(),
         params.onset_k,
-        params.gate_dbfs,
+        signal.gate_level(params.gate_db),
     );
-    let (candidate_frames, _) = onset::pitch_changes(&pitch, &signal.rms_db, params.gate_dbfs);
+    let (candidate_frames, _) =
+        onset::pitch_changes(&pitch, &signal.rms_db, signal.gate_level(params.gate_db));
     assert_eq!(
         onset::merge(&flux_frames, &candidate_frames),
         onsets,

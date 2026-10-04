@@ -235,7 +235,12 @@ describe('engine client', () => {
     current().emit({ type: 'progress', reqId, fraction: 0.25 });
     current().emit({ type: 'progress', reqId: reqId + 100, fraction: 0.9 });
     current().emit({ type: 'progress', reqId, fraction: 1 });
-    current().reply({ notes: [], tuningOffsetCents: 0, belowRangeNotes: 0 });
+    current().reply({
+      notes: [],
+      tuningOffsetCents: 0,
+      belowRangeNotes: 0,
+      confidenceThreshold: 0.35,
+    });
     await a;
     expect(seen).toEqual([0.25, 1]);
   });

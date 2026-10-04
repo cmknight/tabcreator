@@ -2,7 +2,8 @@
 //! detectors read, plus a per-frame level for the noise gate.
 //!
 //! Steps, in order: trim → zero the count-in skip → resample to 22 050 Hz → zero-phase 60 Hz
-//! high-pass → peak-normalise to −1 dBFS (unless near-silent) → per-frame RMS in dBFS.
+//! high-pass → peak-normalise to −1 dBFS (unless near-silent) → per-frame RMS in dBFS → the noise
+//! gate's reference level (a high percentile of those frame levels).
 //! All input times are ms from untrimmed 0 (AD-7); later stages add [`Preprocessed::offset_ms`]
 //! to frame times to get untrimmed times back.
 
@@ -32,6 +33,21 @@ pub const RMS_FRAME: usize = 2048;
 pub const RMS_HOP: usize = 256;
 /// RMS level reported for zero energy, dBFS.
 pub const RMS_FLOOR_DBFS: f32 = -120.0;
+/// The noise gate's reference level is this percentile of the frame RMS levels above
+/// [`RMS_FLOOR_DBFS`] (retro SM9): a robust "playing level" that one transient cannot move, unlike
+/// the single peak sample the signal is normalised to.
+pub const GATE_REFERENCE_PERCENTILE: f64 = 95.0;
+/// The gate reference is never more than this many dB below the [`LOUD_PERCENTILE`]th
+/// percentile of the frame levels, so a sparse take (playing in under ~5% of its frames, the rest
+/// a noise floor) keeps its reference near the playing level instead of on the noise.
+pub const REFERENCE_MAX_BELOW_LOUD_DB: f32 = 10.0;
+/// The "loud end" percentile behind [`REFERENCE_MAX_BELOW_LOUD_DB`]: high enough to sit in the
+/// playing of a sparse take, but it takes more than 0.5% of the frames to move it, so one click
+/// (about 8 frames of a few seconds' take, and far quieter than the playing) does not.
+pub const LOUD_PERCENTILE: f64 = 99.5;
+/// The reference level of a silent take (or one with no frame above the floor), dBFS: full
+/// scale, so the gate stays where an absolute dBFS gate was and a silent take has no notes.
+pub const SILENT_REFERENCE_DBFS: f32 = 0.0;
 
 /// The standard signal and its per-frame level.
 #[derive(Debug, Clone)]
@@ -46,6 +62,23 @@ pub struct Preprocessed {
     pub silent: bool,
     /// RMS per frame in dBFS (frame 2048, hop 256, centred, zero-padded), floored at −120.
     pub rms_db: Vec<f32>,
+    /// The noise gate's reference level, dBFS (see [`reference_level`]): a frame passes the gate
+    /// `g` when `rms_db[i] − ref_db > g`.
+    pub ref_db: f32,
+}
+
+impl Preprocessed {
+    /// The absolute level, dBFS, a frame's `rms_db` must exceed to pass the gate `gate_db`
+    /// (relative to [`Preprocessed::ref_db`]).
+    pub fn gate_level(&self, gate_db: f64) -> f64 {
+        gate_level(self.ref_db, gate_db)
+    }
+}
+
+/// The absolute level, dBFS, a frame's RMS must exceed to pass the gate `gate_db` relative to
+/// the reference level `ref_db`: the one definition of the gate's level.
+pub fn gate_level(ref_db: f32, gate_db: f64) -> f64 {
+    f64::from(ref_db) + gate_db
 }
 
 /// Runs every pre-processing step on `pcm` (mono, `sample_rate` Hz, finite and > 0).
@@ -65,13 +98,44 @@ pub fn preprocess(
     high_pass(&mut signal, f64::from(TARGET_RATE));
     let silent = normalise(&mut signal);
     let rms_db = rms_dbfs(&signal);
+    let ref_db = if silent {
+        SILENT_REFERENCE_DBFS
+    } else {
+        reference_level(&rms_db)
+    };
     Ok(Preprocessed {
         samples: signal.iter().map(|&x| x as f32).collect(),
         sample_rate: TARGET_RATE,
         offset_ms,
         silent,
         rms_db,
+        ref_db,
     })
+}
+
+/// The gate's reference level: the [`GATE_REFERENCE_PERCENTILE`]th percentile (linear
+/// interpolation, numpy's default) of the frame levels above [`RMS_FLOOR_DBFS`], raised to at
+/// least the [`LOUD_PERCENTILE`]th percentile minus [`REFERENCE_MAX_BELOW_LOUD_DB`]; or
+/// [`SILENT_REFERENCE_DBFS`] when there are none.
+pub fn reference_level(rms_db: &[f32]) -> f32 {
+    let mut levels: Vec<f32> = rms_db
+        .iter()
+        .copied()
+        .filter(|&db| db > RMS_FLOOR_DBFS)
+        .collect();
+    if levels.is_empty() {
+        return SILENT_REFERENCE_DBFS;
+    }
+    levels.sort_by(f32::total_cmp);
+    let percentile = |q: f64| {
+        let pos = q / 100.0 * (levels.len() - 1) as f64;
+        let below = pos.floor() as usize;
+        let above = (below + 1).min(levels.len() - 1);
+        let (lo, hi) = (f64::from(levels[below]), f64::from(levels[above]));
+        (lo + (hi - lo) * (pos - below as f64)) as f32
+    };
+    percentile(GATE_REFERENCE_PERCENTILE)
+        .max(percentile(LOUD_PERCENTILE) - REFERENCE_MAX_BELOW_LOUD_DB)
 }
 
 /// Input sample index for a time in ms, clamped to `0..=len`.
@@ -487,6 +551,119 @@ mod tests {
         // A sine peaking at −1 dBFS has RMS −1 − 3.01 dBFS. The filters' ringing at the abrupt
         // start sets the peak about 0.9 dB above the steady sine, so it reads near −4.9 dBFS.
         assert!((loud + 4.0).abs() < 1.0, "{loud} dBFS");
+    }
+
+    /// A fixture-like take at 48 kHz: eight plucked notes (decaying harmonic tones from
+    /// amplitude 0.2, each 0.5 s, 0.1 s apart) over a faint noise floor.
+    fn plucked_take() -> Vec<f32> {
+        let rate = 48_000.0;
+        let mut seed = 1u32;
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            f64::from(seed >> 8) / f64::from(1u32 << 24) - 0.5
+        };
+        let mut pcm = Vec::new();
+        for (k, freq) in [110.0, 147.0, 196.0, 247.0, 330.0, 220.0, 165.0, 131.0]
+            .into_iter()
+            .enumerate()
+        {
+            let decay = 8.0 + 2.0 * k as f64;
+            for i in 0..(0.6 * rate) as usize {
+                let t = i as f64 / rate;
+                let tone = if t < 0.5 {
+                    let env = 0.2 * (-decay * t).exp();
+                    env * ((2.0 * PI * freq * t).sin() + 0.5 * (4.0 * PI * freq * t).sin()) / 1.5
+                } else {
+                    0.0
+                };
+                pcm.push((tone + 2e-4 * noise()) as f32);
+            }
+        }
+        pcm
+    }
+
+    /// Per frame: does it pass the gate `g` relative to the take's reference level?
+    fn gate_decisions(out: &Preprocessed, g: f64) -> Vec<bool> {
+        out.rms_db
+            .iter()
+            .map(|&db| f64::from(db) > out.gate_level(g))
+            .collect()
+    }
+
+    #[test]
+    fn one_click_does_not_move_the_gate() {
+        let take = plucked_take();
+        let mut clicked = take.clone();
+        // One full-scale transient, 1.2 s in, in a note's decay.
+        let at = 57_600;
+        clicked[at] = 1.0;
+        let plain = preprocess(&take, 48_000.0, 0.0, None, 0.0).unwrap();
+        let click = preprocess(&clicked, 48_000.0, 0.0, None, 0.0).unwrap();
+        assert_eq!(plain.rms_db.len(), click.rms_db.len());
+        // The click is the peak, so peak normalisation turns everything else down by ~7 dB...
+        let shift = plain.rms_db[200] - click.rms_db[200];
+        assert!(shift > 5.0, "level shift {shift} dB");
+        // ...and the reference level moves with it.
+        assert!(
+            ((plain.ref_db - click.ref_db) - shift).abs() < 0.05,
+            "reference {} vs {} dBFS",
+            plain.ref_db,
+            click.ref_db
+        );
+        // Frames whose 2048-sample window holds the click are left out.
+        let click_frame = at as f64 * f64::from(TARGET_RATE) / 48_000.0 / RMS_HOP as f64;
+        let near = |i: usize| (i as f64 - click_frame).abs() <= (RMS_FRAME / RMS_HOP) as f64;
+        for g in [-30.0, -40.0, -50.0] {
+            let (a, b) = (gate_decisions(&plain, g), gate_decisions(&click, g));
+            let passing = a.iter().filter(|&&x| x).count();
+            assert!(passing > 30 && passing + 30 < a.len(), "g {g}: {passing}");
+            for i in (0..a.len()).filter(|&i| !near(i)) {
+                assert_eq!(a[i], b[i], "g {g}: frame {i} changed");
+            }
+        }
+        // A gate against the peak (the old absolute −50 dBFS gate) would have moved.
+        let old = |out: &Preprocessed| -> Vec<bool> {
+            out.rms_db.iter().map(|&db| f64::from(db) > -50.0).collect()
+        };
+        let (a, b) = (old(&plain), old(&click));
+        assert!((0..a.len()).filter(|&i| !near(i)).any(|i| a[i] != b[i]));
+    }
+
+    #[test]
+    fn silent_and_near_silent_takes_gate_every_frame() {
+        let quiet = 10f64.powf(-70.0 / 20.0);
+        for pcm in [
+            vec![0.0f32; 48_000],
+            sine(440.0, 48_000.0, 1.0, quiet),
+            plucked_take()
+                .into_iter()
+                .map(|x| x * quiet as f32 / 0.2)
+                .collect(),
+        ] {
+            let out = preprocess(&pcm, 48_000.0, 0.0, None, 0.0).unwrap();
+            assert!(out.silent);
+            assert_eq!(out.ref_db, SILENT_REFERENCE_DBFS);
+            // Even the most sensitive gate (−50 dB at s = 1) passes no frame, as the old
+            // absolute dBFS gate did.
+            assert!(gate_decisions(&out, -50.0).iter().all(|&x| !x));
+        }
+        assert_eq!(reference_level(&[]), SILENT_REFERENCE_DBFS);
+        assert_eq!(reference_level(&[RMS_FLOOR_DBFS; 4]), SILENT_REFERENCE_DBFS);
+    }
+
+    #[test]
+    fn reference_is_the_95th_percentile_above_the_floor() {
+        // Floor frames are ignored; 0..=100 dB below 0: the 95th percentile is −5.
+        let mut levels: Vec<f32> = (0..=100).map(|x| -(x as f32)).collect();
+        levels.extend([RMS_FLOOR_DBFS; 50]);
+        assert!((reference_level(&levels) + 5.0).abs() < 1e-4);
+        // Interpolated between neighbours: 95% of the way from −20 to −10.
+        assert!((reference_level(&[-20.0, -10.0]) + 10.5).abs() < 1e-4);
+        // A sparse take: 2% of frames at −5, the rest a −60 floor. The 95th percentile is −60,
+        // but the reference stays 10 dB under the loud end (the 99.5th percentile, −5).
+        let mut sparse = vec![-60.0f32; 980];
+        sparse.extend([-5.0; 20]);
+        assert!((reference_level(&sparse) + 15.0).abs() < 1e-4);
     }
 
     #[test]

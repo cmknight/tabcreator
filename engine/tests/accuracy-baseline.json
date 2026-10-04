@@ -1,19 +1,19 @@
 {
-  "engine_version": "0.5.0",
+  "engine_version": "0.6.0",
   "sets": {
     "clean-gate": {
       "fixtures": 14,
       "counts": {
         "truth": 170,
-        "detected": 168,
+        "detected": 170,
         "tp": 168,
-        "fp": 0,
+        "fp": 2,
         "fn": 2,
         "octave_errors": 0,
         "fret_total": 168,
         "fret_agree": 137
       },
-      "f1": 0.9940828402366864,
+      "f1": 0.9882352941176471,
       "octave_rate": 0.0,
       "fret_agreement": 0.8154761904761905
     },
@@ -49,6 +49,54 @@
       "octave_rate": null,
       "fret_agreement": null
     },
+    "pink-15db": {
+      "fixtures": 14,
+      "counts": {
+        "truth": 170,
+        "detected": 163,
+        "tp": 162,
+        "fp": 1,
+        "fn": 8,
+        "octave_errors": 0,
+        "fret_total": 162,
+        "fret_agree": 130
+      },
+      "f1": 0.972972972972973,
+      "octave_rate": 0.0,
+      "fret_agreement": 0.8024691358024691
+    },
+    "pink-20db": {
+      "fixtures": 14,
+      "counts": {
+        "truth": 170,
+        "detected": 168,
+        "tp": 168,
+        "fp": 0,
+        "fn": 2,
+        "octave_errors": 0,
+        "fret_total": 168,
+        "fret_agree": 137
+      },
+      "f1": 0.9940828402366864,
+      "octave_rate": 0.0,
+      "fret_agreement": 0.8154761904761905
+    },
+    "rate-44k1": {
+      "fixtures": 14,
+      "counts": {
+        "truth": 170,
+        "detected": 170,
+        "tp": 168,
+        "fp": 2,
+        "fn": 2,
+        "octave_errors": 0,
+        "fret_total": 168,
+        "fret_agree": 137
+      },
+      "f1": 0.9882352941176471,
+      "octave_rate": 0.0,
+      "fret_agreement": 0.8154761904761905
+    },
     "reported": {
       "fixtures": 6,
       "counts": {
@@ -64,11 +112,108 @@
       "f1": 0.8764044943820225,
       "octave_rate": 0.0,
       "fret_agreement": 1.0
+    },
+    "sweep-s0": {
+      "fixtures": 14,
+      "counts": {
+        "truth": 170,
+        "detected": 169,
+        "tp": 167,
+        "fp": 2,
+        "fn": 3,
+        "octave_errors": 0,
+        "fret_total": 167,
+        "fret_agree": 136
+      },
+      "f1": 0.9852507374631269,
+      "octave_rate": 0.0,
+      "fret_agreement": 0.8143712574850299
+    },
+    "sweep-s1": {
+      "fixtures": 14,
+      "counts": {
+        "truth": 170,
+        "detected": 171,
+        "tp": 169,
+        "fp": 2,
+        "fn": 1,
+        "octave_errors": 0,
+        "fret_total": 169,
+        "fret_agree": 138
+      },
+      "f1": 0.9912023460410557,
+      "octave_rate": 0.0,
+      "fret_agreement": 0.8165680473372781
     }
   },
   "fixtures": {
     "bend_up": {
       "set": "clean-gate",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 3
+      }
+    },
+    "bend_up@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 3
+      }
+    },
+    "bend_up@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 3
+      }
+    },
+    "bend_up@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 3
+      }
+    },
+    "bend_up@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 3
+      }
+    },
+    "bend_up@s1": {
+      "set": "sweep-s1",
       "counts": {
         "truth": 3,
         "detected": 3,
@@ -95,6 +240,71 @@
     },
     "c_major_scale_pos1": {
       "set": "clean-gate",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 12
+      }
+    },
+    "c_major_scale_pos1@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 12
+      }
+    },
+    "c_major_scale_pos1@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 12
+      }
+    },
+    "c_major_scale_pos1@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 12
+      }
+    },
+    "c_major_scale_pos1@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 12
+      }
+    },
+    "c_major_scale_pos1@s1": {
+      "set": "sweep-s1",
       "counts": {
         "truth": 12,
         "detected": 12,
@@ -158,6 +368,71 @@
         "fret_agree": 8
       }
     },
+    "countin_bleed@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "countin_bleed@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "countin_bleed@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "countin_bleed@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "countin_bleed@s1": {
+      "set": "sweep-s1",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
     "countin_bleed_noisy": {
       "set": "noisy-gate",
       "counts": {
@@ -173,6 +448,71 @@
     },
     "detuned_-45c": {
       "set": "clean-gate",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "detuned_-45c@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "detuned_-45c@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "detuned_-45c@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "detuned_-45c@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "detuned_-45c@s1": {
+      "set": "sweep-s1",
       "counts": {
         "truth": 8,
         "detected": 8,
@@ -210,6 +550,71 @@
         "fret_agree": 6
       }
     },
+    "drop_d@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 6,
+        "detected": 6,
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 6,
+        "fret_agree": 6
+      }
+    },
+    "drop_d@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 6,
+        "detected": 6,
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 6,
+        "fret_agree": 6
+      }
+    },
+    "drop_d@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 6,
+        "detected": 6,
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 6,
+        "fret_agree": 6
+      }
+    },
+    "drop_d@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 6,
+        "detected": 6,
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 6,
+        "fret_agree": 6
+      }
+    },
+    "drop_d@s1": {
+      "set": "sweep-s1",
+      "counts": {
+        "truth": 6,
+        "detected": 6,
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 6,
+        "fret_agree": 6
+      }
+    },
     "drop_d_noisy": {
       "set": "noisy-gate",
       "counts": {
@@ -225,6 +630,71 @@
     },
     "e_minor_pentatonic_pos12": {
       "set": "clean-gate",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 2
+      }
+    },
+    "e_minor_pentatonic_pos12@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 2
+      }
+    },
+    "e_minor_pentatonic_pos12@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 2
+      }
+    },
+    "e_minor_pentatonic_pos12@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 2
+      }
+    },
+    "e_minor_pentatonic_pos12@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 2
+      }
+    },
+    "e_minor_pentatonic_pos12@s1": {
+      "set": "sweep-s1",
       "counts": {
         "truth": 12,
         "detected": 12,
@@ -262,6 +732,71 @@
         "fret_agree": 2
       }
     },
+    "legato_slurs@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 17,
+        "detected": 17,
+        "tp": 17,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 17,
+        "fret_agree": 2
+      }
+    },
+    "legato_slurs@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 17,
+        "detected": 17,
+        "tp": 17,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 17,
+        "fret_agree": 2
+      }
+    },
+    "legato_slurs@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 17,
+        "detected": 17,
+        "tp": 17,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 17,
+        "fret_agree": 2
+      }
+    },
+    "legato_slurs@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 17,
+        "detected": 17,
+        "tp": 17,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 17,
+        "fret_agree": 2
+      }
+    },
+    "legato_slurs@s1": {
+      "set": "sweep-s1",
+      "counts": {
+        "truth": 17,
+        "detected": 17,
+        "tp": 17,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 17,
+        "fret_agree": 2
+      }
+    },
     "legato_slurs_noisy": {
       "set": "noisy-gate",
       "counts": {
@@ -279,9 +814,74 @@
       "set": "clean-gate",
       "counts": {
         "truth": 8,
+        "detected": 10,
+        "tp": 8,
+        "fp": 2,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "level_too_hot@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 8,
+        "detected": 10,
+        "tp": 8,
+        "fp": 2,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "level_too_hot@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 8,
         "detected": 8,
         "tp": 8,
         "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "level_too_hot@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "level_too_hot@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 8,
+        "detected": 10,
+        "tp": 8,
+        "fp": 2,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 8
+      }
+    },
+    "level_too_hot@s1": {
+      "set": "sweep-s1",
+      "counts": {
+        "truth": 8,
+        "detected": 10,
+        "tp": 8,
+        "fp": 2,
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 8,
@@ -327,6 +927,71 @@
         "fret_agree": 9
       }
     },
+    "octave_leaps@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 9
+      }
+    },
+    "octave_leaps@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 9
+      }
+    },
+    "octave_leaps@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 9
+      }
+    },
+    "octave_leaps@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 9
+      }
+    },
+    "octave_leaps@s1": {
+      "set": "sweep-s1",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 9
+      }
+    },
     "octave_leaps_noisy": {
       "set": "noisy-gate",
       "counts": {
@@ -342,6 +1007,71 @@
     },
     "octave_traps": {
       "set": "clean-gate",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 7
+      }
+    },
+    "octave_traps@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 7
+      }
+    },
+    "octave_traps@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 7
+      }
+    },
+    "octave_traps@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 7
+      }
+    },
+    "octave_traps@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 8,
+        "detected": 8,
+        "tp": 8,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 8,
+        "fret_agree": 7
+      }
+    },
+    "octave_traps@s1": {
+      "set": "sweep-s1",
       "counts": {
         "truth": 8,
         "detected": 8,
@@ -379,6 +1109,71 @@
         "fret_agree": 6
       }
     },
+    "open_strings@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 6,
+        "detected": 6,
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 6,
+        "fret_agree": 6
+      }
+    },
+    "open_strings@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 6,
+        "detected": 6,
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 6,
+        "fret_agree": 6
+      }
+    },
+    "open_strings@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 6,
+        "detected": 6,
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 6,
+        "fret_agree": 6
+      }
+    },
+    "open_strings@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 6,
+        "detected": 6,
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 6,
+        "fret_agree": 6
+      }
+    },
+    "open_strings@s1": {
+      "set": "sweep-s1",
+      "counts": {
+        "truth": 6,
+        "detected": 6,
+        "tp": 6,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 6,
+        "fret_agree": 6
+      }
+    },
     "open_strings_noisy": {
       "set": "noisy-gate",
       "counts": {
@@ -403,6 +1198,71 @@
         "octave_errors": 0,
         "fret_total": 62,
         "fret_agree": 62
+      }
+    },
+    "repeated_notes_16th_120bpm@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 64,
+        "detected": 62,
+        "tp": 62,
+        "fp": 0,
+        "fn": 2,
+        "octave_errors": 0,
+        "fret_total": 62,
+        "fret_agree": 62
+      }
+    },
+    "repeated_notes_16th_120bpm@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 64,
+        "detected": 56,
+        "tp": 56,
+        "fp": 0,
+        "fn": 8,
+        "octave_errors": 0,
+        "fret_total": 56,
+        "fret_agree": 56
+      }
+    },
+    "repeated_notes_16th_120bpm@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 64,
+        "detected": 62,
+        "tp": 62,
+        "fp": 0,
+        "fn": 2,
+        "octave_errors": 0,
+        "fret_total": 62,
+        "fret_agree": 62
+      }
+    },
+    "repeated_notes_16th_120bpm@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 64,
+        "detected": 61,
+        "tp": 61,
+        "fp": 0,
+        "fn": 3,
+        "octave_errors": 0,
+        "fret_total": 61,
+        "fret_agree": 61
+      }
+    },
+    "repeated_notes_16th_120bpm@s1": {
+      "set": "sweep-s1",
+      "counts": {
+        "truth": 64,
+        "detected": 63,
+        "tp": 63,
+        "fp": 0,
+        "fn": 1,
+        "octave_errors": 0,
+        "fret_total": 63,
+        "fret_agree": 63
       }
     },
     "repeated_notes_16th_120bpm_noisy": {
@@ -496,6 +1356,71 @@
         "fret_agree": 1
       }
     },
+    "slide_up@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 1
+      }
+    },
+    "slide_up@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 3,
+        "detected": 4,
+        "tp": 3,
+        "fp": 1,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 0
+      }
+    },
+    "slide_up@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 1
+      }
+    },
+    "slide_up@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 1
+      }
+    },
+    "slide_up@s1": {
+      "set": "sweep-s1",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 1
+      }
+    },
     "slide_up_noisy": {
       "set": "noisy-gate",
       "counts": {
@@ -511,6 +1436,71 @@
     },
     "vibrato": {
       "set": "clean-gate",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 3
+      }
+    },
+    "vibrato@44k1": {
+      "set": "rate-44k1",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 3
+      }
+    },
+    "vibrato@pink15": {
+      "set": "pink-15db",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 3
+      }
+    },
+    "vibrato@pink20": {
+      "set": "pink-20db",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 3
+      }
+    },
+    "vibrato@s0": {
+      "set": "sweep-s0",
+      "counts": {
+        "truth": 3,
+        "detected": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 3,
+        "fret_agree": 3
+      }
+    },
+    "vibrato@s1": {
+      "set": "sweep-s1",
       "counts": {
         "truth": 3,
         "detected": 3,

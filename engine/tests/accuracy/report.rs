@@ -19,15 +19,50 @@ pub enum Set {
     PhantomOnly,
     /// Human recordings in `testdata/real`.
     Real,
+    /// Sensitivity sweep (R1): the clean-gate fixtures at sensitivity 0. No threshold;
+    /// compared with main.
+    #[serde(rename = "sweep-s0")]
+    SweepS0,
+    /// Sensitivity sweep (R1): the clean-gate fixtures at sensitivity 1. No threshold;
+    /// compared with main.
+    #[serde(rename = "sweep-s1")]
+    SweepS1,
+    /// Held out (R1): the clean-gate fixtures plus seeded pink noise at 20 dB SNR, sensitivity
+    /// 0.5. No threshold; compared with main.
+    #[serde(rename = "pink-20db")]
+    Pink20,
+    /// Held out (R1): the clean-gate fixtures plus seeded pink noise at 15 dB SNR, sensitivity
+    /// 0.5. No threshold; compared with main.
+    #[serde(rename = "pink-15db")]
+    Pink15,
+    /// Held out (R1): the clean-gate fixtures resampled to 44.1 kHz, sensitivity 0.5. No
+    /// threshold; compared with main.
+    #[serde(rename = "rate-44k1")]
+    Rate44k1,
 }
 
 impl Set {
-    pub const ALL: [Set; 5] = [
+    pub const ALL: [Set; 10] = [
         Set::CleanGate,
         Set::NoisyGate,
         Set::Reported,
         Set::PhantomOnly,
         Set::Real,
+        Set::SweepS0,
+        Set::SweepS1,
+        Set::Pink20,
+        Set::Pink15,
+        Set::Rate44k1,
+    ];
+
+    /// The sensitivity-sweep and held-out sets (R1): variants of the clean-gate fixtures, run
+    /// by the harness from the same WAVs.
+    pub const VARIANTS: [Set; 5] = [
+        Set::SweepS0,
+        Set::SweepS1,
+        Set::Pink20,
+        Set::Pink15,
+        Set::Rate44k1,
     ];
 
     pub fn title(self) -> &'static str {
@@ -37,6 +72,11 @@ impl Set {
             Set::Reported => "reported",
             Set::PhantomOnly => "phantom-only",
             Set::Real => "real (reported; gates from 20 takes)",
+            Set::SweepS0 => "sweep s=0 (clean-gate fixtures; no threshold)",
+            Set::SweepS1 => "sweep s=1 (clean-gate fixtures; no threshold)",
+            Set::Pink20 => "held-out pink 20 dB (clean-gate fixtures, s=0.5; no threshold)",
+            Set::Pink15 => "held-out pink 15 dB (clean-gate fixtures, s=0.5; no threshold)",
+            Set::Rate44k1 => "held-out 44.1 kHz (clean-gate fixtures, s=0.5; no threshold)",
         }
     }
 
@@ -359,7 +399,15 @@ pub fn render(info: &RunInfo, rows: &[FixtureRow]) -> String {
         "- Thresholds are enforced on clean-gate and noisy-gate (and on real's octave errors and \
          fret agreement from {REAL_GATE_MIN_TAKES} takes): the harness fails when one is not \
          met; those marked (reported) are not. Matching: same MIDI, onset within 50 ms; \
-         ground-truth notes below E2 (MIDI 40) are not scored.\n"
+         ground-truth notes below E2 (MIDI 40) are not scored."
+    );
+    let _ = writeln!(
+        out,
+        "- Every fixture runs at sensitivity 0.5 except the sweep rows. The sweep and held-out \
+         rows (R1) re-run the clean-gate fixtures at another sensitivity or on perturbed audio \
+         generated in the harness (seeded pink noise at the named SNR; resampling to 44.1 kHz); \
+         they have no threshold, but like every pooled set they are compared with main and fail \
+         on a drop of more than 1 point.\n"
     );
 
     let _ = writeln!(out, "## Pooled\n");
@@ -385,7 +433,7 @@ pub fn render(info: &RunInfo, rows: &[FixtureRow]) -> String {
             continue;
         }
         let p = pool(set, rows);
-        if set == Set::Real && p.fixtures == 0 {
+        if (set == Set::Real || Set::VARIANTS.contains(&set)) && p.fixtures == 0 {
             continue;
         }
         let c = &p.counts;
@@ -435,6 +483,9 @@ pub fn render(info: &RunInfo, rows: &[FixtureRow]) -> String {
 
     for set in Set::ALL {
         let members: Vec<&FixtureRow> = rows.iter().filter(|r| r.set == set).collect();
+        if Set::VARIANTS.contains(&set) && members.is_empty() {
+            continue;
+        }
         let _ = writeln!(out, "## {}\n", set.title());
         if set == Set::Real && info.real_folder.is_none() {
             let _ = writeln!(out, "none (no `testdata/real` folder)\n");

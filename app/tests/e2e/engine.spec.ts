@@ -174,9 +174,13 @@ test('the production engine worker detects and maps the notes of a fixture', asy
 
   const result = analyzed.at(-1);
   expect(result?.type).toBe('result');
-  const detected = (
-    result?.payload as { notes: { startMs: number; endMs: number; midi: number }[] }
-  ).notes;
+  const payload = result?.payload as {
+    notes: { startMs: number; endMs: number; midi: number }[];
+    confidenceThreshold: number;
+  };
+  // The engine reports the confidence threshold c it used (0.35 at sensitivity 0.5).
+  expect(payload.confidenceThreshold).toBe(0.35);
+  const detected = payload.notes;
 
   // Each ground-truth note matches the unused detected note of the same MIDI with the closest
   // onset within 50 ms, and no detected note is left over.

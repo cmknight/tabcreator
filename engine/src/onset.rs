@@ -108,25 +108,22 @@ pub struct Onsets {
 }
 
 /// Finds the onsets in `samples` (the pre-processed signal at 22 050 Hz), with its per-frame
-/// `rms_db` and `pitch` track on the same frames. `k` and `g` come from `params`. `progress`
-/// receives monotone fractions from 0 to 1 of this stage's work.
+/// `rms_db` and `pitch` track on the same frames. `k` comes from `params`; the gate is `params`'
+/// `g` relative to the reference level `ref_db` (a frame passes when `rms_db − ref_db > g`).
+/// `progress` receives monotone fractions from 0 to 1 of this stage's work.
 pub fn detect(
     samples: &[f32],
     rms_db: &[f32],
+    ref_db: f32,
     pitch: &PitchTrack,
     params: &Params,
     mut progress: impl FnMut(f64),
 ) -> Onsets {
     progress(0.0);
     let flux = spectral_flux(samples, |fraction| progress(STFT_SHARE * fraction));
-    let flux_onsets = pick_peaks(
-        &flux,
-        rms_db,
-        samples.len(),
-        params.onset_k,
-        params.gate_dbfs,
-    );
-    let (pitch_onsets, glides) = pitch_changes(pitch, rms_db, params.gate_dbfs);
+    let gate_level = crate::preprocess::gate_level(ref_db, params.gate_db);
+    let flux_onsets = pick_peaks(&flux, rms_db, samples.len(), params.onset_k, gate_level);
+    let (pitch_onsets, glides) = pitch_changes(pitch, rms_db, gate_level);
     let onsets = merge(&flux_onsets, &pitch_onsets);
     progress(1.0);
     Onsets { onsets, glides }
@@ -223,16 +220,16 @@ fn median(values: &mut [f64]) -> f64 {
 
 /// Flux peak picking: frame `n` is an onset when `flux[n]` is the maximum within ±3 frames (ties
 /// go to the earliest), exceeds `k × median(flux[n−7..=n+7]) + 0.05` (window clamped at the
-/// edges) and `rms_db[n] > g`, and is neither an edge frame of `n_samples` samples (see
-/// [`is_edge_frame`]) nor an offset (see [`is_offset`]); then onsets less than
-/// 40 ms after the last kept one are dropped. A frame with no RMS value (no samples) never passes
+/// edges) and `rms_db[n] > gate_level` (the gate's absolute level, dBFS), and is neither an edge
+/// frame of `n_samples` samples (see [`is_edge_frame`]) nor an offset (see [`is_offset`]); then
+/// onsets less than 40 ms after the last kept one are dropped. A frame with no RMS value (no samples) never passes
 /// the gate.
 pub fn pick_peaks(
     flux: &[f64],
     rms_db: &[f32],
     n_samples: usize,
     k: f64,
-    gate_dbfs: f64,
+    gate_level: f64,
 ) -> Vec<usize> {
     let n = flux.len();
     let mut window = Vec::with_capacity(2 * MEDIAN_RADIUS + 1);
@@ -246,7 +243,7 @@ pub fn pick_peaks(
         if !is_max || is_edge_frame(i, n_samples) {
             continue;
         }
-        if !rms_db.get(i).is_some_and(|&db| f64::from(db) > gate_dbfs) {
+        if !rms_db.get(i).is_some_and(|&db| f64::from(db) > gate_level) {
             continue;
         }
         window.clear();
@@ -309,7 +306,7 @@ fn midi_of(pitch: &PitchTrack, i: usize) -> Option<f64> {
 /// Within a run, a frame whose rounded MIDI differs from the run's current value (so by ≥ 1
 /// semitone) and holds for [`PITCH_HOLD_FRAMES`] frames is a change, and the run takes the new
 /// value. A change is a step when the voicing probability dips on its way (see [`is_step`]); a
-/// step whose first frame is above the gate (`rms_db > gate_dbfs`) is an onset there, unless the
+/// step whose first frame is above the gate (`rms_db > gate_level`, dBFS) is an onset there, unless the
 /// previous step's frames up to this one are all in the same dip (one hammer-on passing through
 /// an intermediate semitone that holds for 3 frames). Any other
 /// change is a glide or vibrato: no onset, and the span of moving frames around it (widened by
@@ -317,7 +314,7 @@ fn midi_of(pitch: &PitchTrack, i: usize) -> Option<f64> {
 pub fn pitch_changes(
     pitch: &PitchTrack,
     rms_db: &[f32],
-    gate_dbfs: f64,
+    gate_level: f64,
 ) -> (Vec<usize>, Vec<(usize, usize)>) {
     let n = pitch.len();
     let midi: Vec<Option<f64>> = (0..n).map(|i| midi_of(pitch, i)).collect();
@@ -355,7 +352,7 @@ pub fn pitch_changes(
         if is_step(pitch, run_start, j) {
             let same_dip = last_step.is_some_and(|k| (k..=j).all(dipped));
             last_step = Some(j);
-            if !same_dip && rms_db.get(j).is_some_and(|&db| f64::from(db) > gate_dbfs) {
+            if !same_dip && rms_db.get(j).is_some_and(|&db| f64::from(db) > gate_level) {
                 onsets.push(j);
             }
         } else {
@@ -464,7 +461,14 @@ mod tests {
     fn run(samples: &[f32]) -> Onsets {
         let signal = crate::preprocess::preprocess(samples, 22_050.0, 0.0, None, 0.0).unwrap();
         let pitch = pyin::pyin(&signal.samples, |_| {});
-        detect(&signal.samples, &signal.rms_db, &pitch, &params(), |_| {})
+        detect(
+            &signal.samples,
+            &signal.rms_db,
+            signal.ref_db,
+            &pitch,
+            &params(),
+            |_| {},
+        )
     }
 
     #[test]
@@ -491,7 +495,7 @@ mod tests {
         let pitch = pyin::pyin(&samples, |_| {});
         let rms = vec![0.0f32; pitch.len()];
         let mut seen = Vec::new();
-        detect(&samples, &rms, &pitch, &params(), |f| seen.push(f));
+        detect(&samples, &rms, 0.0, &pitch, &params(), |f| seen.push(f));
         assert_eq!(seen.first(), Some(&0.0));
         assert_eq!(seen.last(), Some(&1.0));
         assert!(seen.len() > 10);

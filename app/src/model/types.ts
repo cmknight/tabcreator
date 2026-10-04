@@ -67,6 +67,7 @@ export interface AnalysisResult {
   notes: DetectedNote[];
   tuningOffsetCents: number; // median deviation of voiced frames from the A440 semitone grid
   belowRangeNotes: number; // voiced notes below E2 that were dropped (drop tuning or capo)
+  confidenceThreshold: number; // the engine's confidence threshold c for this analysis's sensitivity (4 dp), for the app to derive lowConfidence from; the app never re-derives c
 }
 
 /** Input to the engine's `analyze` besides the PCM and sample rate (spine AD-7). Times are ms from untrimmed 0. */

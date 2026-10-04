@@ -61,6 +61,11 @@ pub struct AnalysisResult {
     /// Notes dropped for lying below E2 that lasted at least `min_note_ms`, whatever their
     /// confidence.
     pub below_range_notes: u32,
+    /// The confidence threshold `c` this analysis used ([`Params::confidence_c`], set by the
+    /// sensitivity), rounded to 4 decimal places, for the app to derive `lowConfidence` from;
+    /// the app never re-derives `c`.
+    #[serde(serialize_with = "serialize_rounded")]
+    pub confidence_threshold: f64,
 }
 
 /// Rounds to 4 decimal places (AD-7).
@@ -118,7 +123,7 @@ pub fn build_notes(
     params: &Params,
 ) -> AnalysisResult {
     let n = pitch.len();
-    let gate = params.gate_dbfs;
+    let gate = signal.gate_level(params.gate_db);
     // A frame that may end a note: unvoiced, or at or below the noise gate (frames past the
     // RMS array count as below it).
     let quiet = |i: usize| {
@@ -252,6 +257,7 @@ pub fn build_notes(
         notes,
         tuning_offset_cents,
         below_range_notes,
+        confidence_threshold: params.confidence_c,
     }
 }
 
@@ -310,7 +316,7 @@ mod tests {
     const PARAMS: Params = Params {
         onset_k: 1.5,
         confidence_c: 0.5,
-        gate_dbfs: -50.0,
+        gate_db: -50.0,
         min_note_ms: 40.0,
         max_fret: 24,
     };
@@ -345,6 +351,7 @@ mod tests {
                     offset_ms: 0.0,
                     silent: false,
                     rms_db: vec![-10.0; frames],
+                    ref_db: 0.0,
                 },
                 pitch: PitchTrack {
                     f0_hz: vec![f32::NAN; frames],
@@ -423,6 +430,24 @@ mod tests {
         t.voice(10..47, 60.0, 0.9).voice(53..100, 64.0, 0.9);
         let r = t.build(&[10, 50]);
         assert_eq!(r.notes[0].end_ms, ms(50));
+    }
+
+    #[test]
+    fn the_gate_is_relative_to_the_reference_level() {
+        // Reference −10 dBFS, gate −50 dB: frames at or below −60 dBFS are gated.
+        let take = |quiet_db: f32| {
+            let mut t = Take::new(200);
+            t.signal.ref_db = -10.0;
+            t.voice(10..150, 60.0, 0.9);
+            for db in &mut t.signal.rms_db[80..85] {
+                *db = quiet_db;
+            }
+            t.build(&[10])
+        };
+        // −55 dBFS would be gated against full scale but passes 5 dB above the relative gate.
+        assert_eq!(take(-55.0).notes[0].end_ms, ms(150));
+        // −65 dBFS is under it: the note ends at the gated run.
+        assert_eq!(take(-65.0).notes[0].end_ms, ms(80));
     }
 
     #[test]
@@ -546,7 +571,7 @@ mod tests {
         assert_eq!(
             json,
             format!(
-                r#"{{"notes":[{{"startMs":{start},"endMs":{end},"midi":60,"confidence":0.9123}}],"tuningOffsetCents":{cents},"belowRangeNotes":0}}"#
+                r#"{{"notes":[{{"startMs":{start},"endMs":{end},"midi":60,"confidence":0.9123}}],"tuningOffsetCents":{cents},"belowRangeNotes":0,"confidenceThreshold":0.5}}"#
             )
         );
         assert_eq!(json, serde_json::to_string(&t.build(&[10])).unwrap());
@@ -558,7 +583,7 @@ mod tests {
         let r = t.build(&[0]);
         assert_eq!(
             serde_json::to_string(&r).unwrap(),
-            r#"{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0}"#
+            r#"{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0,"confidenceThreshold":0.5}"#
         );
     }
 
