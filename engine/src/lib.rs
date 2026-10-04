@@ -5,9 +5,11 @@
 //! `analyze` and `map_frets` are pure functions of their inputs (spine AD-7); JSON strings with
 //! camelCase keys cross the wasm boundary.
 //!
-//! `analyze` does not detect notes yet; `map_frets` is the Viterbi fret mapping in [`fretmap`].
+//! `analyze` builds notes in [`notes`] (no octave correction, ring-over removal or glide
+//! capping yet); `map_frets` is the Viterbi fret mapping in [`fretmap`].
 
 pub mod fretmap;
+pub mod notes;
 pub mod onset;
 pub mod preprocess;
 pub mod pyin;
@@ -165,7 +167,7 @@ pub fn analyze_core(
     });
     progress(PROGRESS_PITCH_TRACKED);
     // Onset detection runs from 0.778 to 0.944 (AD-8 weights).
-    let _onsets = onset::detect(
+    let onsets = onset::detect(
         &signal.samples,
         &signal.rms_db,
         &pitch,
@@ -177,12 +179,10 @@ pub fn analyze_core(
         },
     );
     progress(PROGRESS_ONSETS);
-    // No note building yet.
+    // Note building runs from 0.944 to 1.0 (AD-8 weights).
+    let result = notes::build_notes(&signal, &pitch, &onsets, &params);
     progress(1.0);
-    Ok(
-        serde_json::json!({ "notes": [], "tuningOffsetCents": 0, "belowRangeNotes": 0 })
-            .to_string(),
-    )
+    serde_json::to_string(&result).map_err(|e| e.to_string())
 }
 
 /// Pure core of [`map_frets`].
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn version_is_package_version() {
-        assert_eq!(engine_version(), "0.2.0");
+        assert_eq!(engine_version(), "0.3.0");
     }
 
     #[test]
@@ -222,12 +222,21 @@ mod tests {
         let out = analyze_core(&[0.0; 4800], 48_000.0, INPUT, |_| {}).unwrap();
         assert_eq!(
             out,
-            r#"{"belowRangeNotes":0,"notes":[],"tuningOffsetCents":0}"#
+            r#"{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0}"#
         );
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             v,
             json!({"notes": [], "tuningOffsetCents": 0, "belowRangeNotes": 0})
+        );
+    }
+
+    #[test]
+    fn analyze_empty_signal_gives_the_empty_result() {
+        let out = analyze_core(&[], 48_000.0, INPUT, |_| {}).unwrap();
+        assert_eq!(
+            out,
+            r#"{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0}"#
         );
     }
 
