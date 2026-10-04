@@ -14,12 +14,26 @@ export interface LoadedEngine {
   ): string;
   map_frets(notesJson: string, locksJson: string, maxFret: number): string;
   engine_version(): string;
+  /** The last Rust panic's message since the previous call, if any; clears it (US-0.2). */
+  take_panic_message?(): string | undefined;
 }
 
 export type Post = (message: FromWorker) => void;
 
 /** Minimum gap between progress messages for one request (spine AD-8). */
 export const PROGRESS_INTERVAL_MS = 100;
+
+/** A Rust panic's own message when the call panicked (the thrown error then says only
+ * `unreachable`), else the thrown error's message. */
+function failureMessage(engine: LoadedEngine, err: unknown): string {
+  let panic: string | undefined;
+  try {
+    panic = engine.take_panic_message?.();
+  } catch {
+    // An instance that cannot report the panic still rejects with the thrown error.
+  }
+  return panic || errorMessage(err);
+}
 
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message || err.name;
@@ -65,7 +79,7 @@ export function createEngineHandler(
         post({ type: 'result', reqId, payload: JSON.parse(json) as unknown });
       }
     } catch (err) {
-      post({ type: 'error', reqId, code: 'analysis-failed', message: errorMessage(err) });
+      post({ type: 'error', reqId, code: 'analysis-failed', message: failureMessage(engine, err) });
     }
   };
 }
@@ -96,7 +110,12 @@ export async function initEngineWorker(
 async function loadWasm(): Promise<LoadedEngine> {
   const wasm = await import('./pkg/engine.js');
   await wasm.default();
-  return { analyze: wasm.analyze, map_frets: wasm.map_frets, engine_version: wasm.engine_version };
+  return {
+    analyze: wasm.analyze,
+    map_frets: wasm.map_frets,
+    engine_version: wasm.engine_version,
+    take_panic_message: wasm.take_panic_message,
+  };
 }
 
 /** The subset of `DedicatedWorkerGlobalScope` used here; typed structurally so this file also compiles under the DOM lib in tests. */

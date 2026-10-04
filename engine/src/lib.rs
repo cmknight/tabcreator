@@ -1,7 +1,8 @@
 //! TabCreator analysis engine.
 //!
-//! The wasm exports (`analyze`, `map_frets`, `engine_version`) follow the stories' Engine
-//! contract and are called only from `app/src/engine/engine-worker.ts` (spine AD-2). Both
+//! The wasm exports (`analyze`, `map_frets`, `engine_version`, plus `take_panic_message` for the
+//! worker's error replies) follow the stories' Engine contract and are called only from
+//! `app/src/engine/engine-worker.ts` (spine AD-2). Both
 //! `analyze` and `map_frets` are pure functions of their inputs (spine AD-7); JSON strings with
 //! camelCase keys cross the wasm boundary.
 //!
@@ -100,12 +101,32 @@ pub struct Position {
     pub fret: u32,
 }
 
-/// Installs the panic hook once, when the module is instantiated, so a Rust panic reaches the
-/// worker as a thrown error with a readable message on the console.
+/// The message of the last panic, kept by the panic hook until [`take_panic_message`] reads it.
+static PANIC_MESSAGE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Installs the panic hook once, when the module is instantiated. A Rust panic is logged to the
+/// console (`console_error_panic_hook`) and its message kept for [`take_panic_message`], so the
+/// worker can reject the request with a readable message rather than the trap's `unreachable`.
 #[wasm_bindgen(start)]
 pub fn start() {
     static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(console_error_panic_hook::set_once);
+    INIT.call_once(|| {
+        std::panic::set_hook(Box::new(|info| {
+            // A trap leaves no unwinding, so tolerate a poisoned lock rather than lose the message.
+            *PANIC_MESSAGE.lock().unwrap_or_else(|e| e.into_inner()) = Some(info.to_string());
+            console_error_panic_hook::hook(info);
+        }));
+    });
+}
+
+/// The message of the last panic since the previous call, if any; clears it. The worker calls
+/// this after a call throws (US-0.2).
+#[wasm_bindgen]
+pub fn take_panic_message() -> Option<String> {
+    PANIC_MESSAGE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
 }
 
 /// The engine build's version, stored as `Take.analysisVersion` (spine AD-7).
@@ -143,6 +164,12 @@ const PROGRESS_PITCH_TRACKED: f64 = 0.778;
 /// Progress reported once onset detection is done (AD-8 stage weights).
 const PROGRESS_ONSETS: f64 = 0.944;
 
+/// Test-only sentinel: with the `test-panic` feature (off by default, never in the production
+/// build), [`analyze_core`] panics on this sample rate, so the e2e suite can check that a real
+/// Rust panic reaches the worker as an error and the worker keeps serving (US-0.2).
+#[cfg(feature = "test-panic")]
+pub const TEST_PANIC_SAMPLE_RATE: f32 = 12345.0;
+
 /// Pure core of [`analyze`]; `progress` receives monotone fractions in 0..=1.
 pub fn analyze_core(
     pcm: &[f32],
@@ -150,6 +177,10 @@ pub fn analyze_core(
     settings_json: &str,
     mut progress: impl FnMut(f64),
 ) -> Result<String, String> {
+    #[cfg(feature = "test-panic")]
+    if sample_rate == TEST_PANIC_SAMPLE_RATE {
+        panic!("test-panic: sentinel sample rate {sample_rate}");
+    }
     let input: EngineAnalyzeInput =
         serde_json::from_str(settings_json).map_err(|e| format!("invalid analyze input: {e}"))?;
     if !(sample_rate.is_finite() && sample_rate > 0.0) {
@@ -338,6 +369,20 @@ mod tests {
         assert!(analyze_core(&[], 48_000.0, "{}", |_| {}).is_err());
         assert!(analyze_core(&[], 48_000.0, "not json", |_| {}).is_err());
         assert!(analyze_core(&[], 0.0, INPUT, |_| {}).is_err());
+    }
+
+    #[test]
+    fn take_panic_message_takes_once() {
+        *PANIC_MESSAGE.lock().unwrap() = Some("boom".to_owned());
+        assert_eq!(take_panic_message().as_deref(), Some("boom"));
+        assert_eq!(take_panic_message(), None);
+    }
+
+    #[cfg(feature = "test-panic")]
+    #[test]
+    #[should_panic(expected = "test-panic")]
+    fn test_panic_feature_panics_on_the_sentinel_rate() {
+        let _ = analyze_core(&[0.0; 4800], TEST_PANIC_SAMPLE_RATE, INPUT, |_| {});
     }
 
     #[test]

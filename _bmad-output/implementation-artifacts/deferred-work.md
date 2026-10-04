@@ -1,6 +1,7 @@
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-platform-baseline/story-engine-crate-and-worker-bridge-plan.md`
   summary: Verify that a real Rust panic in the wasm engine surfaces in the worker as a catchable error and that the same instance keeps serving later requests (US-0.2 panic AC).
   evidence: Unverified (maybe-false, medium if true) — story 1.2 tests the panic path only with a JS throw in a fake engine; settle with a wasm-bindgen-test or an e2e that triggers a test-only panic export.
+  status: settled 2026-10-03 (story 10, production worker on real detection) — app/tests/e2e/engine.spec.ts serves a test wasm built with the engine's off-by-default `test-panic` feature; three real panics in a row each reply `analysis-failed` with the panic's own message (engine export `take_panic_message`, used by the worker), and the same worker then returns a valid result.
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-platform-baseline/story-refactor-sweep-plan.md`
   summary: A raw file locked by an open writer survives deleteTake until the start-up orphan scan — owner US-3.2.
   evidence: deleteTake removes OPFS files best-effort (spine AD-15); removeEntry fails on a file held by a sync access handle and the error is swallowed.

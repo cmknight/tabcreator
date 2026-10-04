@@ -84,6 +84,13 @@ jobs:
         working-directory: engine
         run: cargo test --locked
 
+      # The off-by-default `test-panic` feature (the e2e panic check's sentinel) and its test.
+      - name: cargo clippy and test (test-panic feature)
+        working-directory: engine
+        run: |
+          cargo clippy --locked --all-targets --features test-panic -- -D warnings
+          cargo test --locked --lib --features test-panic
+
       # US-8.4: the fixture accuracy report and its threshold gates (F1, octave errors and fret
       # agreement on the gate sets; the step fails when one is missed), built in release
       # so its analyze timing is meaningful. Published to the job summary and as an artifact
@@ -195,6 +202,15 @@ jobs:
             exit 1
           fi
 
+      # The test-only `test-panic` engine (sentinel panic) must never reach the production bundle;
+      # its panic string would sit in the wasm data section.
+      - name: No test-panic engine in the production bundle
+        run: |
+          if grep -rE 'test-panic|sentinel sample rate' app/dist; then
+            echo "::error::test-panic engine code found in app/dist"
+            exit 1
+          fi
+
       # Spine AD-13: the CSP meta and relative asset URLs (so the site works under /tabcreator/).
       - name: CSP and relative assets in the production bundle
         run: |
@@ -223,6 +239,13 @@ jobs:
 
       - name: Install Playwright Chromium
         run: pnpm --filter app exec playwright install --with-deps chromium
+
+      # The test-only engine wasm with the `test-panic` feature, which engine.spec.ts serves in
+      # place of the production wasm through a route to check a real Rust panic (US-0.2). Built
+      # into engine/test-panic-pkg/, after the bundle checks and the Pages upload, so app/dist
+      # holds only the production wasm.
+      - name: Build test-panic engine
+        run: pnpm build:engine:test-panic
 
       - name: Playwright
         run: pnpm e2e

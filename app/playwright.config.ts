@@ -29,11 +29,14 @@ const MIC_FIXTURE = resolve(
 if (!existsSync(MIC_FIXTURE)) throw new Error(`prod-mic fixture missing: ${MIC_FIXTURE}`);
 
 /**
- * Locally, build the engine wasm (so Rust edits are never served stale) and the app first. In
+ * Locally, build the engine wasm (so Rust edits are never served stale), the test-only
+ * `test-panic` engine that engine.spec.ts routes in, and the app first. In
  * CI, serve the dist/ the workflow already built, checked and uploaded for Pages, so the
  * browser tests run against exactly the published bytes.
  */
-const BUILD = process.env.CI ? '' : 'pnpm -w run build:engine && pnpm exec vite build && ';
+const BUILD = process.env.CI
+  ? ''
+  : 'pnpm -w run build:engine && pnpm -w run build:engine:test-panic && pnpm exec vite build && ';
 
 export default defineConfig({
   testDir: './tests/e2e',

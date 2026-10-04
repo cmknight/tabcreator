@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build:engine": "wasm-pack build engine --release --target web --out-dir ../app/src/engine/pkg",
+    "build:engine:test-panic": "wasm-pack build engine --release --target web --out-dir test-panic-pkg -- --features test-panic",
     "dev": "pnpm build:engine && pnpm --filter app dev",
     "build": "pnpm build:engine && pnpm --filter app build",
     "lint": "pnpm --filter app lint",

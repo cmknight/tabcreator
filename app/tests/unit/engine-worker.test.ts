@@ -132,6 +132,40 @@ describe('engine worker handler', () => {
     expect(posted.at(-1)).toEqual({ type: 'result', reqId: 2, payload: JSON.parse(EMPTY) });
   });
 
+  it('replies with the Rust panic message when the engine reports one', () => {
+    const posted: FromWorker[] = [];
+    let panic: string | undefined;
+    const handle = createEngineHandler(
+      fakeEngine({
+        analyze: () => {
+          panic = 'panicked at src/lib.rs:1:1:\nboom';
+          throw new Error('unreachable');
+        },
+        map_frets: () => {
+          throw new Error('invalid notes');
+        },
+        take_panic_message: () => {
+          const message = panic;
+          panic = undefined;
+          return message;
+        },
+      }),
+      (m) => posted.push(m),
+    );
+    handle(analyzeMsg(1));
+    handle(mapMsg(2));
+    expect(posted).toEqual([
+      {
+        type: 'error',
+        reqId: 1,
+        code: 'analysis-failed',
+        message: 'panicked at src/lib.rs:1:1:\nboom',
+      },
+      // No panic recorded: the thrown error's own message.
+      { type: 'error', reqId: 2, code: 'analysis-failed', message: 'invalid notes' },
+    ]);
+  });
+
   it('turns invalid JSON from the engine into analysis-failed', () => {
     const posted: FromWorker[] = [];
     const handle = createEngineHandler(fakeEngine({ map_frets: () => 'nope' }), (m) =>

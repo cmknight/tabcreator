@@ -5,6 +5,8 @@ playwright-report/
 coverage/
 engine/target/
 app/src/engine/pkg/
+# The test-only engine wasm with the `test-panic` feature (pnpm build:engine:test-panic).
+engine/test-panic-pkg/
 
 # Personal Claude Code settings
 .claude/settings.local.json

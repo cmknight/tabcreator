@@ -9,6 +9,12 @@ description = "TabCreator analysis engine (Rust to WebAssembly)"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Test-only: analyze_core panics on a sentinel sample rate (TEST_PANIC_SAMPLE_RATE), for the e2e
+# check that a real Rust panic reaches the worker as an error. Off by default; the production
+# wasm is built without it (`pnpm build:engine:test-panic` builds the test wasm).
+test-panic = []
+
 [dependencies]
 # Versions pinned exactly (spine Stack, AD-7). js-sys is not in the Stack table:
 # 0.3.106 is the release that requires wasm-bindgen =0.2.129 (progress callback `Function`).
