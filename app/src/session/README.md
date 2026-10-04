@@ -4,4 +4,4 @@ recording-session.ts composes its input derivations through input-derivation.ts:
 
 recording-recovery.ts is a module of recording-session.ts (story 3.11): the start-up recovery scan, Open and Discard of unfinished takes; the store composes it and publishes its list as `recovered`.
 
-take-lifecycle.ts is a module of recording-session.ts: the take in progress and the recording state machine (start, count-in, chunks, length limits, failure stops, the save). take-save.ts holds what recording and recovery share: `MIN_TAKE_MS`, the clip counter and the save step.
+take-lifecycle.ts is a module of recording-session.ts: the take in progress and the recording state machine (start, count-in, chunks, length limits, failure stops, the save). take-save.ts holds what recording and recovery share: `MIN_TAKE_MS` and its one test `isTooShort`, the clip counter and the save step. The store's `isBusy()` is the one busy answer for its `beforeunload` guard and app-reload.ts.

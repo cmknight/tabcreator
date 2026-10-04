@@ -3,8 +3,10 @@ import { ANALYSER_FFT_SIZE, type Capture } from '../../src/audio/mic';
 import { AppError } from '../../src/model/errors';
 import type { Take } from '../../src/model/types';
 import type { OpenedInput } from '../../src/session/input-derivation';
+import { reloadUnlessBusy } from '../../src/session/app-reload';
 import {
   createRecordingSession,
+  HANDOVER_WAIT_MS,
   MAX_TAKE_MS,
   readDevLimits,
   takeTitle,
@@ -351,7 +353,7 @@ describe('recording a take', () => {
 
   it('stops the capture and shows the error when createTake fails', async () => {
     const t = setup({
-      createTake: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
+      createTake: vi.fn(() => Promise.reject(new AppError('storage-failed', 'io'))),
     });
     await t.session.allowMic();
     await t.session.record();
@@ -359,14 +361,54 @@ describe('recording a take', () => {
     expect(t.deps.openRawWriter).not.toHaveBeenCalled();
     expect(t.session.getSnapshot()).toMatchObject({
       mic: 'error',
-      errorCode: 'storage-full',
+      errorCode: 'storage-failed',
       recording: 'idle',
       activeTakeId: null,
     });
     expect(t.input.close).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the take recording and shows the error when saving it fails', async () => {
+  // Story 5.2 (DS3b): was "shows the error card" for a storage-full createTake, the defect.
+  it('createTake failing storage-full: the storage-full banner, the mic kept live, no card', async () => {
+    const t = setup({
+      createTake: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
+    });
+    await t.session.allowMic();
+    await t.session.record();
+    expect(t.capture.abort).toHaveBeenCalledTimes(1);
+    expect(t.deps.openRawWriter).not.toHaveBeenCalled();
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'live',
+      recording: 'idle',
+      activeTakeId: null,
+      storageFull: true,
+      storageFullSaved: false,
+    });
+    expect(t.session.getSnapshot().errorCode).toBeUndefined();
+    expect(t.input.close).not.toHaveBeenCalled();
+  });
+
+  it('openRawWriter failing storage-full: the storage-full banner, the mic kept live, no card', async () => {
+    const t = setup({
+      openRawWriter: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
+    });
+    await t.session.allowMic();
+    const started = t.session.record();
+    t.created.resolve();
+    await started;
+    expect(t.capture.abort).toHaveBeenCalledTimes(1);
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'live',
+      recording: 'idle',
+      storageFull: true,
+      storageFullSaved: false,
+    });
+    expect(t.session.getSnapshot().errorCode).toBeUndefined();
+    expect(t.input.close).not.toHaveBeenCalled();
+  });
+
+  // Story 5.2 (DS3): was "closes the mic and shows the error card", the defect.
+  it('a save that fails storage-full: not saved, the mic live, save-failed notice, the banner', async () => {
     const t = await recording({
       writeCompressed: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
     });
@@ -376,13 +418,17 @@ describe('recording a take', () => {
     expect(t.deps.navigate).not.toHaveBeenCalled();
     expect(t.capture.abort).toHaveBeenCalledTimes(1);
     expect(t.writer.close).toHaveBeenCalledTimes(1);
-    expect(t.input.close).toHaveBeenCalledTimes(1);
+    expect(t.input.close).not.toHaveBeenCalled();
     expect(t.session.getSnapshot()).toMatchObject({
-      mic: 'error',
-      errorCode: 'storage-full',
+      mic: 'live',
       recording: 'idle',
       activeTakeId: null,
+      notice: { kind: 'save-failed' },
+      savedSeq: 0,
+      storageFull: true,
+      storageFullSaved: false,
     });
+    expect(t.session.getSnapshot().errorCode).toBeUndefined();
   });
 
   it('closes the writer and shows the error when the capture fails to start', async () => {
@@ -524,11 +570,12 @@ describe('failure stops', () => {
     expect(t.deps.writeCompressed).not.toHaveBeenCalled();
     expect(t.deps.patchTake).not.toHaveBeenCalled();
     expect(t.deps.navigate).not.toHaveBeenCalled();
+    // Story 5.2 (DS6c): was `switched`, which replaced the too-short notice at once.
     expect(t.session.getSnapshot()).toMatchObject({
       mic: 'live',
       recording: 'idle',
-      // Nothing was saved, so the toast is the plain switch.
-      notice: { kind: 'switched' },
+      // Nothing was saved: the too-short notice stays, not replaced by the switch.
+      notice: { kind: 'too-short' },
       savedSeq: 0,
     });
   });
@@ -541,10 +588,11 @@ describe('failure stops', () => {
     expect(t.deps.patchTake).not.toHaveBeenCalled();
     expect(t.deps.deleteTake).not.toHaveBeenCalled();
     expect(t.writer.close).toHaveBeenCalledTimes(1);
+    // Story 5.2 (DS3): was `switched`; a failed save now says so.
     expect(t.session.getSnapshot()).toMatchObject({
       mic: 'live',
       recording: 'idle',
-      notice: { kind: 'switched' },
+      notice: { kind: 'save-failed' },
       savedSeq: 0,
     });
   });
@@ -571,8 +619,9 @@ describe('failure stops', () => {
       'take-1',
       {
         status: 'recorded',
-        // Only the samples actually written: chunks 1 and 2.
-        durationMs: 2000,
+        // Story 5.2 (DS2): was 2000 (only the samples written). The compressed copy holds every
+        // captured chunk: 1, 2, the rejected 3 and the final half chunk at stop.
+        durationMs: 3500,
         audioMime: 'audio/webm;codecs=opus',
         stopReason: 'storage-full',
         clipped: false,
@@ -587,6 +636,8 @@ describe('failure stops', () => {
       activeTakeId: null,
       savedSeq: 1,
       storageFull: true,
+      // Saved: the banner may say so.
+      storageFullSaved: true,
     });
     expect(t.session.getSnapshot().errorCode).toBeUndefined();
     // stopping, then idle with the banner in one notify.
@@ -639,11 +690,12 @@ describe('failure stops', () => {
       t.log.push('capture.stop');
       return { parts: [new Blob(['webm'])] };
     });
-    // 0.2 s written, then the disk fills.
-    t.emit(chunk(1, RATE / 5));
+    // 0.1 s written, then the disk fills on the next 0.1 s. Story 5.2 (DS2): the second chunk
+    // was 1 s, a take whose compressed copy (1.2 s) was deleted as short, the defect.
+    t.emit(chunk(1, RATE / 10));
     await flush();
     vi.mocked(t.writer.append).mockImplementation(storageFull);
-    t.emit(chunk(2));
+    t.emit(chunk(2, RATE / 10));
     await flush();
     await flush();
     expect(t.deps.deleteTake).toHaveBeenCalledWith('take-1', 'recording-session');
@@ -655,6 +707,8 @@ describe('failure stops', () => {
       notice: { kind: 'too-short' },
       savedSeq: 0,
       storageFull: true,
+      // Nothing was saved: the banner does not say "saved".
+      storageFullSaved: false,
     });
   });
 
@@ -666,26 +720,33 @@ describe('failure stops', () => {
     await t.session.stop('user');
     await flush();
     expect(t.deps.patchTake).toHaveBeenCalledTimes(1);
+    // Story 5.2 (DS2): was 2000 (the samples written); every captured chunk counts.
     expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
       stopReason: 'storage-full',
-      durationMs: 2000,
+      durationMs: 3500,
     });
     expect(t.deps.navigate).not.toHaveBeenCalled();
     expect(t.session.getSnapshot()).toMatchObject({ mic: 'live', storageFull: true });
   });
 
-  it("another append failure keeps today's behaviour: the take goes on and Stop saves it", async () => {
+  it('another append failure: the take goes on, Stop saves it with every chunk counted', async () => {
     const t = await recording();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(t.writer.append).mockImplementationOnce(() =>
       Promise.reject(new AppError('storage-failed', 'io')),
     );
     t.emit(chunk(3));
     await flush();
     expect(t.session.getSnapshot()).toMatchObject({ recording: 'recording', storageFull: false });
+    // Counted and logged through the dev diagnostics.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('1 so far');
+    warn.mockRestore();
     await t.session.stop('user');
+    // Story 5.2 (DS1): was 2500, the failed chunk left out; the compressed copy has it.
     expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
       stopReason: 'user',
-      durationMs: 2500,
+      durationMs: 3500,
     });
     expect(t.deps.navigate).toHaveBeenCalledWith('take-1');
   });
@@ -944,7 +1005,7 @@ describe('count-in', () => {
 
   it('createTake failing at beat five aborts the capture and shows the error', async () => {
     const t = await live(120, {
-      createTake: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
+      createTake: vi.fn(() => Promise.reject(new AppError('storage-failed', 'io'))),
     });
     const started = t.session.record();
     await vi.advanceTimersByTimeAsync(0);
@@ -954,10 +1015,30 @@ describe('count-in', () => {
     expect(t.deps.openRawWriter).not.toHaveBeenCalled();
     expect(t.session.getSnapshot()).toMatchObject({
       mic: 'error',
-      errorCode: 'storage-full',
+      errorCode: 'storage-failed',
       recording: 'idle',
       activeTakeId: null,
     });
+  });
+
+  // Story 5.2 (DS3b): a storage-full here took the error-card path, the defect.
+  it('createTake failing storage-full at beat five: the banner, the mic kept live', async () => {
+    const t = await live(120, {
+      createTake: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
+    });
+    const started = t.session.record();
+    await vi.advanceTimersByTimeAsync(0);
+    await clockTo(t, 12.015);
+    await started;
+    expect(t.capture.abort).toHaveBeenCalledTimes(1);
+    expect(t.session.getSnapshot()).toMatchObject({
+      mic: 'live',
+      recording: 'idle',
+      activeTakeId: null,
+      storageFull: true,
+      storageFullSaved: false,
+    });
+    expect(t.session.getSnapshot().errorCode).toBeUndefined();
   });
 
   it('clears the dev clock hook when a take starts without a count-in', async () => {
@@ -1659,5 +1740,401 @@ describe('recovery in the store (story 3.11)', () => {
     expect(addUnloadGuard).toHaveBeenCalledTimes(1);
     await session.stop('user');
     expect(remove).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Story 5.2: take-save robustness (Recording retro DS1–DS7). Each test reproduces its defect.
+describe('take-save robustness (story 5.2)', () => {
+  /** Recovery deps where take `id` is still unfinished, with `samples` of raw audio. */
+  function unfinished(id: string, samples: number): NonNullable<RecordingDeps['recovery']> {
+    const stored: Take = {
+      id,
+      title: 'Take',
+      createdAt: new Date(NOW).toISOString(),
+      status: 'recording',
+      durationMs: 0,
+      sampleRate: RATE,
+      tuning: 'EADGBE',
+      micLabel: 'USB',
+      audioMime: null,
+      trimStartMs: 0,
+      trimEndMs: null,
+      settings: { ...ANALYSIS_DEFAULTS },
+      analysisVersion: null,
+      updatedAt: new Date(NOW).toISOString(),
+    };
+    return {
+      listTakes: vi.fn(async () => [stored]),
+      getTake: vi.fn(async (takeId: string) => (takeId === id ? stored : null)),
+      listRaw: vi.fn(async () => [id]),
+      listCompressed: vi.fn(async () => []),
+      rawSampleCount: vi.fn(async () => samples),
+      readRaw: vi.fn(async () => new Float32Array(samples)),
+      readCompressed: vi.fn(async () => null),
+      deleteRaw: vi.fn(async () => {}),
+      deleteAudio: vi.fn(async () => {}),
+      encodePcm: vi.fn(async () => new Blob(['x'], { type: 'audio/webm;codecs=opus' })),
+      encodeWav: vi.fn(() => new Blob(['x'], { type: 'audio/wav' })),
+    };
+  }
+
+  /** Live, then recording with the take created and its writer open; no chunk yet. */
+  async function started(overrides: Partial<RecordingDeps> = {}) {
+    const t = setup(overrides);
+    await t.session.allowMic();
+    const rec = t.session.record();
+    t.created.resolve();
+    await rec;
+    return t;
+  }
+
+  /** The capture's stop delivers `samples` as its final chunk (none when 0). */
+  function finalChunk(t: ReturnType<typeof setup>, samples: number, clipped = 0) {
+    vi.mocked(t.capture.stop).mockImplementation(async () => {
+      t.log.push('capture.stop');
+      if (samples > 0) t.emit(chunk(9, samples), clipped);
+      return { parts: [new Blob(['webm'])] };
+    });
+  }
+
+  const ioError = () => Promise.reject(new AppError('storage-failed', 'io'));
+
+  describe('DS1: a failed raw append never shrinks the take', () => {
+    it('5 s take, raw appends failing from 1 s on: saved recorded at 5000 ms, not deleted', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const t = await started();
+      finalChunk(t, RATE);
+      t.emit(chunk(1));
+      await flush();
+      vi.mocked(t.writer.append).mockImplementation(ioError);
+      t.emit(chunk(2));
+      t.emit(chunk(3));
+      t.emit(chunk(4));
+      await flush();
+      await t.session.stop('user');
+      expect(t.deps.deleteTake).not.toHaveBeenCalled();
+      expect(t.deps.writeCompressed).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
+        status: 'recorded',
+        durationMs: 5000,
+        stopReason: 'user',
+      });
+      // rawFailures: chunks 2, 3, 4 and the final one, each logged with the running count.
+      expect(warn).toHaveBeenCalledTimes(4);
+      expect(String(warn.mock.calls[3]![0])).toContain('4 so far');
+      warn.mockRestore();
+    });
+
+    it('every raw append failing: the take is still saved, never deleted as short', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const t = await started();
+      vi.mocked(t.writer.append).mockImplementation(ioError);
+      t.emit(chunk(1));
+      t.emit(chunk(2));
+      await flush();
+      await t.session.stop('user');
+      expect(t.deps.deleteTake).not.toHaveBeenCalled();
+      expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
+        status: 'recorded',
+        durationMs: 2500,
+      });
+      expect(t.session.getSnapshot().notice).toBeUndefined();
+      warn.mockRestore();
+    });
+  });
+
+  describe('DS2: storage-full keeps the metadata true', () => {
+    it('storage full at 2 s, capture stopping at 2.3 s: 2300 ms, clipped from an unwritten chunk', async () => {
+      const t = await started();
+      finalChunk(t, RATE / 10, 1);
+      t.emit(chunk(1));
+      t.emit(chunk(2));
+      await flush();
+      vi.mocked(t.writer.append).mockImplementation(() =>
+        Promise.reject(new AppError('storage-full', 'quota')),
+      );
+      t.emit(chunk(3, RATE / 5));
+      await flush();
+      await flush();
+      expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toEqual({
+        status: 'recorded',
+        durationMs: 2300,
+        audioMime: 'audio/webm;codecs=opus',
+        stopReason: 'storage-full',
+        // Only the final chunk, never written to the raw file, clipped.
+        clipped: true,
+      });
+    });
+  });
+
+  describe('DS3: a failed save is reported as failed', () => {
+    it('writeCompressed rejecting on a user stop: save-failed notice, mic live, re-offered', async () => {
+      const t = await recording({
+        writeCompressed: vi.fn(ioError),
+        recovery: unfinished('take-1', RATE * 2),
+      });
+      await t.session.stop('user');
+      await flush();
+      await flush();
+      expect(t.deps.patchTake).not.toHaveBeenCalled();
+      expect(t.deps.navigate).not.toHaveBeenCalled();
+      expect(t.input.close).not.toHaveBeenCalled();
+      expect(t.session.getSnapshot()).toMatchObject({
+        mic: 'live',
+        recording: 'idle',
+        notice: { kind: 'save-failed' },
+        savedSeq: 0,
+        storageFull: false,
+      });
+      expect(t.session.getSnapshot().errorCode).toBeUndefined();
+      // Offered again in this session, by the recovered-take banner.
+      expect(t.session.getSnapshot().recovered).toEqual([
+        { id: 'take-1', createdAt: new Date(NOW).toISOString(), durationMs: 2000, opening: false },
+      ]);
+    });
+
+    it('a max-length save that fails: the same, with no Tab', async () => {
+      const t = await recording({
+        patchTake: vi.fn(ioError),
+        recovery: unfinished('take-1', RATE * 2),
+      });
+      t.reachCap();
+      await flush();
+      await flush();
+      expect(t.deps.navigate).not.toHaveBeenCalled();
+      expect(t.session.getSnapshot()).toMatchObject({
+        mic: 'live',
+        recording: 'idle',
+        notice: { kind: 'save-failed' },
+      });
+      expect(t.session.getSnapshot().recovered.map((r) => r.id)).toEqual(['take-1']);
+    });
+
+    it('a storage-full stop whose save fails: the banner never says saved; re-offered', async () => {
+      const t = await recording({
+        writeCompressed: vi.fn(ioError),
+        recovery: unfinished('take-1', RATE * 2),
+      });
+      vi.mocked(t.writer.append).mockImplementation(() =>
+        Promise.reject(new AppError('storage-full', 'quota')),
+      );
+      t.emit(chunk(3));
+      await flush();
+      await flush();
+      await flush();
+      expect(t.session.getSnapshot()).toMatchObject({
+        mic: 'live',
+        notice: { kind: 'save-failed' },
+        storageFull: true,
+        storageFullSaved: false,
+        savedSeq: 0,
+      });
+      expect(t.session.getSnapshot().recovered.map((r) => r.id)).toEqual(['take-1']);
+    });
+
+    it('a too-short take whose delete fails: the re-offer deletes it', async () => {
+      const recovery = unfinished('take-1', RATE / 5);
+      const deleteTake = vi
+        .fn<RecordingDeps['deleteTake']>()
+        .mockRejectedValueOnce(new AppError('storage-failed', 'io'))
+        .mockResolvedValue(undefined);
+      const t = await started({ deleteTake, recovery });
+      finalChunk(t, RATE / 5);
+      await t.session.stop('user');
+      await flush();
+      await flush();
+      expect(t.session.getSnapshot()).toMatchObject({
+        mic: 'live',
+        notice: { kind: 'too-short' },
+        recovered: [],
+      });
+      // Tried at stop, then again by the scan for that take.
+      expect(deleteTake).toHaveBeenCalledTimes(2);
+    });
+
+    it('busy until the re-offer has run', async () => {
+      const recovery = unfinished('take-1', RATE * 2);
+      const scanned = deferred<number>();
+      vi.mocked(recovery.rawSampleCount).mockReturnValue(scanned.promise);
+      const t = await recording({ writeCompressed: vi.fn(ioError), recovery });
+      await t.session.stop('user');
+      await flush();
+      expect(t.session.getSnapshot().recording).toBe('idle');
+      expect(t.session.isBusy()).toBe(true);
+      scanned.resolve(RATE * 2);
+      await flush();
+      expect(t.session.isBusy()).toBe(false);
+    });
+  });
+
+  describe('DS5: Stop while starting is queued', () => {
+    it('Space then Space within 50 ms: the take is stopped, one take saved', async () => {
+      const t = setup();
+      await t.session.allowMic();
+      const rec = t.session.record();
+      expect(t.session.getSnapshot().recording).toBe('starting');
+      const stopped = t.session.stop('user');
+      t.emit(chunk(1));
+      t.created.resolve();
+      await rec;
+      await stopped;
+      expect(t.deps.createTake).toHaveBeenCalledTimes(1);
+      expect(t.deps.patchTake).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({
+        status: 'recorded',
+        stopReason: 'user',
+        durationMs: 1500,
+      });
+      expect(t.deps.navigate).toHaveBeenCalledWith('take-1');
+      expect(t.session.getSnapshot()).toMatchObject({ recording: 'idle', activeTakeId: null });
+    });
+
+    it('a Stop held while a start fails settles, with nothing saved', async () => {
+      const t = setup({
+        createTake: vi.fn(() => Promise.reject(new AppError('storage-full', 'x'))),
+      });
+      await t.session.allowMic();
+      const rec = t.session.record();
+      const stopped = t.session.stop('user');
+      await rec;
+      await stopped;
+      expect(t.deps.patchTake).not.toHaveBeenCalled();
+      expect(t.session.getSnapshot().recording).toBe('idle');
+    });
+  });
+
+  describe('DS6: the requested stop reason wins', () => {
+    it('ended queued, then a user Stop: saved as user, and the Tab opens', async () => {
+      const t = setup();
+      await t.session.allowMic();
+      const rec = t.session.record();
+      // The track ends while the take is created: its handling waits behind the start.
+      await t.endTrack();
+      const stopped = t.session.stop('user');
+      t.created.resolve();
+      await rec;
+      await stopped;
+      await flush();
+      expect(t.deps.patchTake).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({ stopReason: 'user' });
+      expect(t.deps.navigate).toHaveBeenCalledWith('take-1');
+    });
+
+    it('a user stop finishing after a handover: saved, no navigation', async () => {
+      const write = deferred<void>();
+      const t = await recording({ writeCompressed: vi.fn(() => write.promise) });
+      const stopped = t.session.stop('user');
+      const handedOver = t.session.releaseForHandover();
+      write.resolve();
+      await stopped;
+      await handedOver;
+      expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({ stopReason: 'user' });
+      expect(t.deps.navigate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('DS7: one answer to "is it busy?"', () => {
+    it('busy while a take counts in, starts, records or stops; not when idle', async () => {
+      const t = setup();
+      await t.session.allowMic();
+      expect(t.session.isBusy()).toBe(false);
+      const rec = t.session.record();
+      expect(t.session.getSnapshot().recording).toBe('starting');
+      expect(t.session.isBusy()).toBe(true);
+      t.created.resolve();
+      await rec;
+      expect(t.session.getSnapshot().recording).toBe('recording');
+      expect(t.session.isBusy()).toBe(true);
+      const stopped = t.session.stop('user');
+      expect(t.session.getSnapshot().recording).toBe('stopping');
+      expect(t.session.isBusy()).toBe(true);
+      await stopped;
+      expect(t.session.isBusy()).toBe(false);
+
+      t.prefs.countIn = { on: true, bpm: 120 };
+      const counting = createRecordingSession(t.deps);
+      await counting.allowMic();
+      void counting.record();
+      await flush();
+      expect(counting.getSnapshot().recording).toBe('count-in');
+      expect(counting.isBusy()).toBe(true);
+      await counting.stop('user');
+      expect(counting.isBusy()).toBe(false);
+    });
+
+    it('a recovery rebuild running: reload refused and the unload guard armed', async () => {
+      const remove = vi.fn();
+      const addUnloadGuard = vi.fn(() => remove);
+      const recovery = unfinished('old', RATE * 2);
+      const encoded = deferred<Blob>();
+      vi.mocked(recovery.encodePcm).mockReturnValueOnce(encoded.promise);
+      const t = setup({ recovery, addUnloadGuard });
+      await t.session.scanForRecovery();
+      const opening = t.session.openRecovered('old');
+      await flush();
+      expect(t.session.getSnapshot().recording).toBe('idle');
+      expect(t.session.isBusy()).toBe(true);
+      const reload = vi.fn();
+      expect(reloadUnlessBusy(t.session, reload)).toBe(false);
+      expect(reload).not.toHaveBeenCalled();
+      expect(addUnloadGuard).toHaveBeenCalledTimes(1);
+      encoded.resolve(new Blob(['x'], { type: 'audio/webm;codecs=opus' }));
+      await opening;
+      expect(t.session.isBusy()).toBe(false);
+      expect(reloadUnlessBusy(t.session, reload)).toBe(true);
+      expect(remove).toHaveBeenCalledTimes(1);
+    });
+
+    it('the guard disarms at the handover deadline while the save still runs', async () => {
+      const remove = vi.fn();
+      const addUnloadGuard = vi.fn(() => remove);
+      const t = await recording({
+        addUnloadGuard,
+        writeCompressed: vi.fn(() => new Promise<void>(() => {})),
+      });
+      expect(addUnloadGuard).toHaveBeenCalledTimes(1);
+      vi.useFakeTimers();
+      try {
+        void t.session.releaseForHandover();
+        await vi.advanceTimersByTimeAsync(HANDOVER_WAIT_MS - 1);
+        expect(remove).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(remove).toHaveBeenCalledTimes(1);
+        // Still saving, so still busy, but the tab no longer guards the page.
+        expect(t.session.getSnapshot().recording).toBe('stopping');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("the guard disarms once a handover's save has finished", async () => {
+      const remove = vi.fn();
+      const addUnloadGuard = vi.fn(() => remove);
+      const t = await recording({ addUnloadGuard });
+      await t.session.releaseForHandover();
+      expect(remove).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('rounding: one too-short verdict', () => {
+    it('a 499.6 ms take is kept (rounded to 500 ms)', async () => {
+      const t = await started();
+      finalChunk(t, 0);
+      t.emit(chunk(1, 23_981));
+      await flush();
+      await t.session.stop('user');
+      expect(t.deps.deleteTake).not.toHaveBeenCalled();
+      expect(vi.mocked(t.deps.patchTake).mock.calls[0]![1]).toMatchObject({ durationMs: 500 });
+    });
+
+    it('a 499.4 ms take is deleted (rounded to 499 ms)', async () => {
+      const t = await started();
+      finalChunk(t, 0);
+      t.emit(chunk(1, 23_971));
+      await flush();
+      await t.session.stop('user');
+      expect(t.deps.deleteTake).toHaveBeenCalledWith('take-1', 'recording-session');
+      expect(t.deps.patchTake).not.toHaveBeenCalled();
+    });
   });
 });

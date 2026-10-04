@@ -21,11 +21,14 @@
 
 import { engineClient } from '../engine/engine-client';
 import { db, type ConnectionState } from '../storage/db';
-import { recordingSession } from './recording-session';
+import { HANDOVER_WAIT_MS, recordingSession } from './recording-session';
 
 export const INSTANCE_LOCK_NAME = 'tabcreator-instance';
-/** How long "Use here" waits for the holder to release before stealing the lock, ms. */
-export const HANDOVER_WAIT_MS = 3000;
+/**
+ * How long "Use here" waits for the holder to release before stealing the lock, ms. Defined by
+ * the recording store, whose unload guard disarms at the same deadline.
+ */
+export { HANDOVER_WAIT_MS };
 /** How long after a grant the recovery scan starts, ms: past the old holder's handover window. */
 export const RECOVERY_SCAN_DELAY_MS = HANDOVER_WAIT_MS + 500;
 

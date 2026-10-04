@@ -5,6 +5,7 @@ import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
 import { ErrorIcon } from '../components/icons';
 import { strings } from '../strings';
+import { showToast } from '../toast';
 import styles from './Screen.module.css';
 import settingsStyles from './Settings.module.css';
 
@@ -19,6 +20,14 @@ function engineLine(engine: EngineStatus): string {
   }
 }
 
+/**
+ * Reload: refused while a take is recorded or saved, or a recovered take rebuilt; a toast then
+ * says why (story 5.2), so the press is never silently ignored.
+ */
+export function reloadOrExplain(reload: () => boolean = reloadApp): void {
+  if (!reload()) showToast({ message: strings['settings.reloadBusy'] });
+}
+
 export function Settings() {
   const { engine } = useSyncExternalStore(settingsSession.subscribe, settingsSession.getSnapshot);
   return (
@@ -27,7 +36,7 @@ export function Settings() {
         <div className={`${banner.banner} ${banner.error} ${settingsStyles.bannerError}`}>
           <ErrorIcon className={banner.icon} />
           <p className={banner.text}>{strings['global.engineFailed']}</p>
-          <button type="button" className={buttons.secondary} onClick={reloadApp}>
+          <button type="button" className={buttons.secondary} onClick={() => reloadOrExplain()}>
             {strings['global.reload']}
           </button>
         </div>

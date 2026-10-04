@@ -114,6 +114,17 @@ export const strings = {
   'record.stopped': 'Recording stopped',
   /** The error banner after a take is stopped because storage is full (story 3.9). */
   'record.storageFull': 'Storage is full — recording stopped and saved',
+  /**
+   * The storage-full banner when nothing was saved (the save failed, the take was too short, or
+   * it could not be created): EXPERIENCE.md's Storage full copy, which never says "saved".
+   */
+  'record.storageFullUnsaved':
+    'Storage is full — delete takes or their audio, or back up and clear',
+  /**
+   * The toast when a stopped take could not be saved (story 5.2; new copy, not yet in
+   * EXPERIENCE.md): the take is offered for recovery by the recovered-take banner.
+   */
+  'record.saveFailed': "Recording stopped but couldn't be saved — you'll be offered it to recover",
   /** The storage-full banner's link to the Library. */
   'record.storageFullLibrary': 'Go to Library',
   /** The recovered-take banner (EXPERIENCE.md Recovered take): the take's start time and length. */
@@ -170,6 +181,11 @@ export const strings = {
   'settings.about': 'About',
   'settings.engineVersion': (version: string) => `Engine v${version}`,
   'settings.engineVersionUnavailable': 'Engine version unavailable',
+  /**
+   * The toast when Reload is refused because a take is being recorded or saved, or a recovered
+   * take rebuilt (story 5.2; new copy, not yet in EXPERIENCE.md).
+   */
+  'settings.reloadBusy': "Can't reload while a recording is in progress or being saved",
 } as const;
 
 export type StringKey = keyof typeof strings;

@@ -837,11 +837,16 @@ test('storage full mid-take: saved as storage-full, the error banner with a Libr
     stopReason: 'storage-full',
     audioMime: MIME,
   });
-  // Only the samples actually written: up to the last full chunk before the hook.
+  // Story 5.2 (DS2): was "only the samples written to the raw file" (within 50 ms of it), the
+  // defect. The length now counts every captured chunk until the stop completes, as the
+  // compressed copy does: from the hook at 2 s plus the stop, and never less than the raw file.
   const { durationMs, sampleRate } = saved.take!;
-  expect(durationMs).toBeGreaterThanOrEqual(1_000);
-  expect(durationMs).toBeLessThanOrEqual(3_000);
-  expect(Math.abs(durationMs - (saved.rawSamples! / sampleRate) * 1000)).toBeLessThan(50);
+  const rawMs = (saved.rawSamples! / sampleRate) * 1000;
+  expect(rawMs).toBeGreaterThanOrEqual(1_000);
+  expect(rawMs).toBeLessThanOrEqual(3_000);
+  expect(durationMs).toBeGreaterThanOrEqual(2_000);
+  expect(durationMs).toBeLessThanOrEqual(4_000);
+  expect(durationMs).toBeGreaterThanOrEqual(Math.floor(rawMs));
 
   // Record remounting with the banner showing announces it again: via its link to the Library
   // and back.

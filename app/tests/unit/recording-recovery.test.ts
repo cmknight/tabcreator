@@ -167,7 +167,8 @@ describe('recovery scan', () => {
         ['edge', take('edge')],
       ]),
       raw: new Map([
-        ['short', new Float32Array(RATE / 2 - 1)],
+        // Under 499.5 ms (rounded to 499, isTooShort); one sample short of 0.5 s rounds to 500.
+        ['short', new Float32Array(RATE / 2 - 25)],
         ['edge', new Float32Array(RATE / 2)],
       ]),
     });
@@ -437,5 +438,162 @@ describe('Discard', () => {
     const t = setup({ takes: new Map([['a', take('a')]]) });
     await t.recovery.discard('a');
     expect(t.host.deleteTake).not.toHaveBeenCalled();
+  });
+});
+
+// Story 5.2 (DS4): recovery never acts on a saved take; (DS3) the scan for one take, run when
+// this tab's own save failed; and the shared too-short verdict (isTooShort, rounded ms).
+describe('never a saved take (story 5.2)', () => {
+  it('Discard of a take saved since it was offered: not deleted, its banner removed', async () => {
+    const t = setup({ takes: new Map([['a', take('a')]]), raw: new Map([['a', seconds(1)]]) });
+    await t.recovery.scan();
+    expect(t.published().map((r) => r.id)).toEqual(['a']);
+    t.takes.set('a', take('a', { status: 'recorded' }));
+    const deleted = vi.fn();
+    await t.recovery.discard('a', deleted);
+    expect(t.host.deleteTake).not.toHaveBeenCalled();
+    expect(t.raw.has('a')).toBe(true);
+    expect(t.published()).toEqual([]);
+    // The banner goes, so focus still moves.
+    expect(deleted).toHaveBeenCalledTimes(1);
+  });
+
+  it('a take saved between the take list and the offer is not offered', async () => {
+    const t = setup({ takes: new Map([['a', take('a')]]), raw: new Map([['a', seconds(1)]]) });
+    vi.mocked(t.deps.rawSampleCount).mockImplementationOnce(async (id) => {
+      // Saved by its own tab while the scan measured it.
+      t.takes.set(id, take(id, { status: 'recorded' }));
+      return RATE;
+    });
+    await t.recovery.scan();
+    expect(t.published()).toEqual([]);
+    expect(t.host.deleteTake).not.toHaveBeenCalled();
+  });
+
+  it("this tab's take as seen before the take list is read is never offered", async () => {
+    const t = setup(
+      { takes: new Map([['mine', take('mine')]]), raw: new Map([['mine', seconds(1)]]) },
+      { activeTakeId: 'mine' },
+    );
+    // It finishes while the list is read; the list still shows it unfinished, and the re-read
+    // before the offer is stale too (the patch has not landed).
+    vi.mocked(t.deps.listTakes).mockImplementationOnce(async () => {
+      t.setActive(null);
+      return [take('mine')];
+    });
+    await t.recovery.scan();
+    expect(t.published()).toEqual([]);
+    expect(t.host.deleteTake).not.toHaveBeenCalled();
+  });
+
+  it('this tab taking a take between the list and the offer: not offered', async () => {
+    const t = setup({ takes: new Map([['a', take('a')]]), raw: new Map([['a', seconds(1)]]) });
+    vi.mocked(t.deps.rawSampleCount).mockImplementationOnce(async () => {
+      t.setActive('a');
+      return RATE;
+    });
+    await t.recovery.scan();
+    expect(t.published()).toEqual([]);
+  });
+
+  it('rounding: 499.6 ms of raw is offered (500 ms), 499.4 ms deleted, as recording decides', async () => {
+    const t = setup({
+      takes: new Map([
+        ['kept', take('kept')],
+        ['short', take('short')],
+      ]),
+      raw: new Map([
+        ['kept', new Float32Array(23_981)],
+        ['short', new Float32Array(23_971)],
+      ]),
+    });
+    await t.recovery.scan();
+    expect(t.published()).toEqual([expect.objectContaining({ id: 'kept', durationMs: 500 })]);
+    expect(t.log).toEqual(['deleteTake short']);
+  });
+});
+
+describe('reoffer (story 5.2)', () => {
+  it('offers the take again, in creation order among those offered', async () => {
+    const t = setup({
+      takes: new Map([['b', take('b', { createdAt: '2026-10-02T21:15:00.000Z' })]]),
+      raw: new Map([['b', seconds(1)]]),
+    });
+    await t.recovery.scan();
+    t.takes.set('a', take('a', { createdAt: '2026-10-02T21:14:00.000Z' }));
+    t.raw.set('a', seconds(2));
+    await t.recovery.reoffer('a');
+    expect(t.published().map((r) => [r.id, r.durationMs])).toEqual([
+      ['a', 2000],
+      ['b', 1000],
+    ]);
+  });
+
+  it('too short: deletes it, with no banner', async () => {
+    const t = setup({ takes: new Map([['a', take('a')]]), raw: new Map([['a', seconds(0.2)]]) });
+    await t.recovery.reoffer('a');
+    expect(t.log).toEqual(['deleteTake a']);
+    expect(t.published()).toEqual([]);
+  });
+
+  it('a take saved, gone, or offered already: nothing', async () => {
+    const t = setup({
+      takes: new Map([
+        ['saved', take('saved', { status: 'recorded' })],
+        ['a', take('a')],
+      ]),
+      raw: new Map([
+        ['saved', seconds(1)],
+        ['a', seconds(1)],
+      ]),
+    });
+    await t.recovery.reoffer('saved');
+    await t.recovery.reoffer('gone');
+    expect(t.published()).toEqual([]);
+    await t.recovery.reoffer('a');
+    await t.recovery.reoffer('a');
+    expect(t.published().map((r) => r.id)).toEqual(['a']);
+    expect(t.host.deleteTake).not.toHaveBeenCalled();
+  });
+
+  it('this tab recording it again, or an unreadable database: nothing, never rejects', async () => {
+    const t = setup({ takes: new Map([['a', take('a')]]), raw: new Map([['a', seconds(1)]]) });
+    t.setActive('a');
+    await t.recovery.reoffer('a');
+    expect(t.published()).toEqual([]);
+    t.setActive(null);
+    vi.mocked(t.deps.getTake).mockRejectedValueOnce(new AppError('storage-failed', 'x'));
+    await expect(t.recovery.reoffer('a')).resolves.toBeUndefined();
+    expect(t.published()).toEqual([]);
+  });
+});
+
+describe('reoffer with a compressed copy or a scan in flight (story 5.2)', () => {
+  it('a short raw file but a compressed copy: offered, not deleted', async () => {
+    const t = setup({
+      takes: new Map([['a', take('a')]]),
+      raw: new Map([['a', seconds(0.2)]]),
+      audio: new Map([['a', new Blob(['x'], { type: 'audio/webm;codecs=opus' })]]),
+    });
+    await t.recovery.reoffer('a');
+    expect(t.host.deleteTake).not.toHaveBeenCalled();
+    expect(t.published().map((r) => r.id)).toEqual(['a']);
+  });
+
+  it('a re-offer during a scan that saw the take as its own still offers it', async () => {
+    const t = setup(
+      { takes: new Map([['a', take('a')]]), raw: new Map([['a', seconds(1)]]) },
+      { activeTakeId: 'a' },
+    );
+    const listed = deferred<Take[]>();
+    vi.mocked(t.deps.listTakes).mockReturnValueOnce(listed.promise);
+    const scan = t.recovery.scan();
+    // This tab's save of `a` fails meanwhile, and it re-offers the take.
+    t.setActive(null);
+    const reoffer = t.recovery.reoffer('a');
+    listed.resolve([take('a')]);
+    await scan;
+    await reoffer;
+    expect(t.published().map((r) => r.id)).toEqual(['a']);
   });
 });

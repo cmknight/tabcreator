@@ -13,6 +13,15 @@ import type { TakePatch } from '../storage/db';
  */
 export const MIN_TAKE_MS = 500;
 
+/**
+ * Whether a take of `durationMs` is under `MIN_TAKE_MS`, compared in whole (rounded) ms: the one
+ * test recording (at stop) and recovery (at the scan) both apply, so a take gets the same verdict
+ * on both paths (499.6 ms rounds to 500 and is kept).
+ */
+export function isTooShort(durationMs: number): boolean {
+  return !(Math.round(durationMs) >= MIN_TAKE_MS);
+}
+
 /** How many of `samples` clipped (|x| ≥ `CLIP_LEVEL`). */
 export function countClipped(samples: Float32Array): number {
   let count = 0;

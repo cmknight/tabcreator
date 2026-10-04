@@ -26,18 +26,31 @@
 // capMs`, so no timer can extend it; when that stop completes the take is saved with
 // `stopReason: 'max-length'` (it stays `recording`, so Stop works, until then). When its
 // audio-clock time reaches `capMs − leadMs` the snapshot's `nearLimit` turns on (one notify; a
-// wall-clock timer that re-reads the audio clock). A take stopped under `MIN_TAKE_MS` is deleted
-// (record and files) with a `too-short` notice and no navigation. Each saved take bumps
-// `savedSeq`, so the shell can announce it.
+// wall-clock timer that re-reads the audio clock). A take shorter than `MIN_TAKE_MS`
+// (take-save.ts's `isTooShort`, the test recovery applies too) is deleted (record and files) with
+// a `too-short` notice and no navigation. Each saved take bumps `savedSeq`, so the shell can
+// announce it. A take's length counts every captured chunk, whether or not its raw append
+// succeeded (the compressed copy holds them all); a raw append that fails other than
+// `storage-full` is counted and logged (dev diagnostics), and the take goes on.
+//
+// Stops (story 5.2): a Stop pressed while the take is `starting` is held and runs as soon as it
+// records. The reason a Stop or the cap requested wins over a mic loss already queued, and a
+// stop that finishes after a handover never navigates.
 //
 // Failure stops (story 3.9, CAP-25, CAP-26): when the track of the input a take records ends,
 // the store's queued handling first runs the stop pipeline here with `stopReason: 'mic-lost'` (no
 // navigation; `inputEnded`). When a raw append rejects with `storage-full`, nothing more is
 // appended and the take is saved with `stopReason: 'storage-full'`, the snapshot's `storageFull`
-// on (the Record banner) until the next take starts; when that save fails too, the take stays
-// `recording` with its raw chunks for recovery, with no error card. A handover saves the take as
-// `instance-lost` (`beginHandover`, `finishForHandover`). A failed record or stop has the host
-// close the input and show the error card (`failInput`).
+// on (the Record banner) until the next take starts. A handover saves the take as
+// `instance-lost` (`beginHandover`, `finishForHandover`). A `storage-full` while the take is
+// created or its raw writer opened shows the same banner with the mic kept live; any other
+// failed start has the host close the input and show the error card (`failInput`).
+//
+// Failed saves (story 5.2): whatever the stop, a save that fails never reports the take saved.
+// The take stays `recording` with its raw file, the mic stays live, a `save-failed` notice is
+// posted (with the storage-full banner when storage is full, `storageFullSaved` off), and once
+// its raw writer has closed the take is offered again in this session (the host's `reoffer`,
+// the recovery scan for that one take).
 //
 // Clipping (US-1.3, spine AD-14): the capture reports each chunk's clipped samples (|x| at or
 // above the meter's Too loud threshold); the take's clip counter (take-save.ts) keeps the total,
@@ -48,13 +61,14 @@ import { activeDevice, type Capture } from '../audio/mic';
 import { COUNT_IN_BEATS, countInSchedule } from '../audio/metronome';
 import { RECORDING_MIME } from '../audio/recorder';
 import { AppError, isAppError } from '../model/errors';
+import { devWarn } from '../model/log';
 import type { AnalysisSettings, StopReason, Take } from '../model/types';
 import type { RawWriter } from '../storage/audio-store';
 import type { TakePatch } from '../storage/db';
 import { DEFAULT_PREFS } from '../storage/prefs';
 import type { OpenedInput } from './input-derivation';
 import type { RecordingSnapshot } from './recording-session';
-import { type ClipCounter, createClipCounter, MIN_TAKE_MS, saveTake } from './take-save';
+import { type ClipCounter, createClipCounter, isTooShort, saveTake } from './take-save';
 
 /**
  * Where a take is: none, counting in (no take yet), being created, capturing, or being saved.
@@ -173,6 +187,13 @@ export interface TakeLifecycleHost {
   nextNoticeSeq(): number;
   /** A record or stop failed: close the input and show the error card for `err`. */
   failInput(err: unknown): void;
+  /**
+   * Runs the recovery scan for take `id` alone (a take whose save or delete failed: it is still
+   * `recording`, so it is offered again, or deleted when too short). Never rejects.
+   */
+  reoffer(id: string): Promise<void>;
+  /** `settling()` changed (the store re-reads whether it is busy). */
+  busyChanged(): void;
 }
 
 export interface TakeLifecycle {
@@ -184,20 +205,27 @@ export interface TakeLifecycle {
   activeTakeId(): string | null;
   /** The published `nearLimit`: kept while the take records or stops, else off. */
   nearLimit(): boolean;
+  /**
+   * A failed stop's after-work runs: its raw writer closing, then the take offered again (or
+   * deleted) through recovery.
+   */
+  settling(): boolean;
   /** Starts a take on the host's input (run inside the store's queue). Never rejects. */
   start(): Promise<void>;
   /**
-   * Stop: cancels a count-in, or (while `recording`) marks `stopping` and queues the save. A
-   * no-op otherwise. Never rejects.
+   * Stop: cancels a count-in, or (while `recording`) marks `stopping` and queues the save. While
+   * `starting` it is held and runs as soon as the take records; it settles once that save does.
+   * A no-op otherwise. Never rejects.
    */
   stop(reason: Extract<StopReason, 'user'>): Promise<void>;
   /** The track of `opened` has ended: a count-in on it is cancelled at once. */
   inputEnding(opened: OpenedInput): void;
   /**
    * The ended track's handling (inside the queue): a take recording on `opened` is stopped and
-   * saved as `mic-lost`; one not yet recording is abandoned. Resolves true when a take was saved.
+   * saved as `mic-lost` (or with the reason of a Stop or cap already requested); one not yet
+   * recording is abandoned. Resolves as what became of the take (`none`: no take was stopped).
    */
-  inputEnded(opened: OpenedInput): Promise<boolean>;
+  inputEnded(opened: OpenedInput): Promise<TakeOutcome>;
   /** A handover starts: a count-in is cancelled and a recording take marked `stopping`. */
   beginHandover(): void;
   /** The handover's save (queued): a recording or stopping take is saved as `instance-lost`. */
@@ -207,6 +235,12 @@ export interface TakeLifecycle {
   /** The count-in's beat as shown, counting down from 4; null when no count-in runs. */
   readCountInBeat(): number | null;
 }
+
+/**
+ * What a stop did with its take: saved, deleted as too short, failed to save (left `recording`
+ * for recovery), or nothing (no take to stop).
+ */
+export type TakeOutcome = 'saved' | 'short' | 'failed' | 'none';
 
 /** A take from `start()` until it is saved, fails or is abandoned. */
 interface ActiveTake {
@@ -219,8 +253,17 @@ interface ActiveTake {
   held: Float32Array[];
   /** The raw appends, chained in order. */
   appends: Promise<void>;
-  /** Samples appended to the raw file so far. */
-  samples: number;
+  /**
+   * Samples captured so far, every chunk counted whether or not its raw append succeeded: the
+   * compressed copy holds them all, so the saved `durationMs` is this.
+   */
+  captured: number;
+  /** Raw appends that failed other than `storage-full` (logged; the take goes on). */
+  rawFailures: number;
+  /** The stop reason a Stop or the cap requested; it wins over a mic loss queued before it. */
+  requested: Extract<StopReason, 'user' | 'max-length'> | null;
+  /** A Stop pressed while `starting`: runs once the take records; settles with its save. */
+  pendingStop: { promise: Promise<void>; resolve: () => void } | null;
   /** Captured samples that clipped so far; saved as `clipped` at stop. */
   clips: ClipCounter;
   /** Set when the take is given up; later chunks are dropped. */
@@ -328,9 +371,7 @@ export function createTakeLifecycle(
     void capture.capped.then(() => {
       // A Stop (or a failure) came first: that path saves (or keeps) the take.
       if (active !== take || take.abandoned || machine.state !== 'recording') return;
-      stopWatchingLimits(take);
-      transition('stopping');
-      host.enqueue(() => finishTake('max-length').then(() => {})).catch(() => {});
+      void requestStop(take, 'max-length');
     });
   }
 
@@ -343,6 +384,7 @@ export function createTakeLifecycle(
   function onChunk(take: ActiveTake, samples: Float32Array, clipped: number) {
     // A chunk after the take was saved, deleted or given up is dropped.
     if (take.abandoned || active !== take) return;
+    take.captured += samples.length;
     take.clips.add(clipped);
     if (take.writer) appendRaw(take, take.writer, samples);
     else take.held.push(samples);
@@ -351,15 +393,19 @@ export function createTakeLifecycle(
   function appendRaw(take: ActiveTake, writer: RawWriter, samples: Float32Array) {
     take.appends = take.appends
       .then(async () => {
-        // Once storage is full nothing more is written, so `durationMs` is what reached the file.
+        // Once storage is full nothing more is written (the take is counted all the same).
         if (take.storageFull) return;
         await writer.append(samples);
-        // Counted once written, so `durationMs` never exceeds the raw file.
-        take.samples += samples.length;
       })
       .catch((err: unknown) => {
-        if (isAppError(err) && err.code === 'storage-full') onStorageFull(take);
-        // Any other failure: the chain goes on with the next chunk (a residual of story 3.9).
+        if (isAppError(err) && err.code === 'storage-full') {
+          onStorageFull(take);
+          return;
+        }
+        // Any other failure: counted and logged; the chain goes on with the next chunk, and the
+        // take's length still counts the chunk (the compressed copy has it).
+        take.rawFailures++;
+        devWarn(`Raw append failed for take ${take.id} (${take.rawFailures} so far)`, err);
       });
   }
 
@@ -384,8 +430,37 @@ export function createTakeLifecycle(
     take.capture?.abort();
     const writer = take.writer;
     void take.appends.then(() => writer?.close()).catch(() => {});
+    settlePendingStop(take);
     if (active === take) active = null;
     transition('idle');
+  }
+
+  /** Settles a Stop held while `take` was starting (the take failed, or was given up). */
+  function settlePendingStop(take: ActiveTake | null) {
+    take?.pendingStop?.resolve();
+    if (take) take.pendingStop = null;
+  }
+
+  /**
+   * A start that failed: the take is gone. A `storage-full` (creating the take or opening its raw
+   * writer) shows the storage-full banner and keeps the mic live; any other failure is
+   * `failRecording`'s.
+   */
+  function failStart(take: ActiveTake, err: unknown) {
+    take.abandoned = true;
+    settlePendingStop(take);
+    if (!(isAppError(err) && err.code === 'storage-full')) {
+      failRecording(err);
+      return;
+    }
+    if (active) stopWatchingLimits(active);
+    if (countIn) {
+      countIn.cancelClicks();
+      clearTimeout(countIn.timer);
+      countIn = null;
+    }
+    active = null;
+    transition('idle', { storageFull: true, storageFullSaved: false });
   }
 
   /**
@@ -394,6 +469,7 @@ export function createTakeLifecycle(
    */
   function failRecording(err: unknown) {
     if (active) stopWatchingLimits(active);
+    settlePendingStop(active);
     if (countIn) {
       countIn.cancelClicks();
       clearTimeout(countIn.timer);
@@ -456,7 +532,10 @@ export function createTakeLifecycle(
       writer: null,
       held: [],
       appends: Promise.resolve(),
-      samples: 0,
+      captured: 0,
+      rawFailures: 0,
+      requested: null,
+      pendingStop: null,
       clips: createClipCounter(),
       abandoned: false,
       storageFull: false,
@@ -486,15 +565,15 @@ export function createTakeLifecycle(
         attempt(() => deps.createTake(record).then(() => deps.openRawWriter(take.id))),
       ]);
     } catch (err) {
-      take.abandoned = true;
-      failRecording(err);
+      failStart(take, err);
       return;
     }
     if (captured.status === 'rejected' || opening.status === 'rejected') {
       take.abandoned = true;
       if (captured.status === 'fulfilled') captured.value.abort();
       if (opening.status === 'fulfilled') void opening.value.close().catch(() => {});
-      failRecording(
+      failStart(
+        take,
         captured.status === 'rejected'
           ? captured.reason
           : (opening as PromiseRejectedResult).reason,
@@ -511,6 +590,12 @@ export function createTakeLifecycle(
     for (const samples of take.held.splice(0)) appendRaw(take, writer, samples);
     transition('recording');
     watchLimits(take);
+    // A Stop pressed while the take was starting runs now (a quick Space-Space).
+    const pending = take.pendingStop;
+    if (pending) {
+      take.pendingStop = null;
+      void requestStop(take, 'user').then(pending.resolve);
+    }
   }
 
   /**
@@ -589,7 +674,7 @@ export function createTakeLifecycle(
     } catch (err) {
       take.abandoned = true;
       capture.abort();
-      failRecording(err);
+      failStart(take, err);
       return;
     }
     begin(take, writer);
@@ -651,46 +736,97 @@ export function createTakeLifecycle(
       cancelCountIn();
       return Promise.resolve();
     }
-    if (machine.state !== 'recording') return Promise.resolve();
-    if (active) stopWatchingLimits(active);
+    if (machine.state === 'starting' && active) {
+      // Held until the take records (`begin`), then stopped: a Stop is never dropped.
+      if (!active.pendingStop) {
+        let resolve!: () => void;
+        const promise = new Promise<void>((r) => (resolve = r));
+        active.pendingStop = { promise, resolve };
+      }
+      return active.pendingStop.promise;
+    }
+    if (machine.state !== 'recording' || !active) return Promise.resolve();
+    return requestStop(active, reason);
+  }
+
+  /**
+   * A Stop or the cap, while `take` records: marks `stopping`, records the requested reason (it
+   * wins over a mic loss already queued) and queues the save. Settles with the save.
+   */
+  function requestStop(
+    take: ActiveTake,
+    reason: Extract<StopReason, 'user' | 'max-length'>,
+  ): Promise<void> {
+    stopWatchingLimits(take);
+    take.requested = reason;
     transition('stopping');
     return host.enqueue(() => finishTake(reason).then(() => {})).catch(() => {});
   }
 
+  /** Failed stops whose after-work (the raw writer closing, the re-offer) still runs. */
+  let settlingCount = 0;
+
+  /**
+   * After a failed save or delete: once the raw writer has closed, the take is offered again for
+   * recovery in this session (or, too short, deleted) through the host's scan for it.
+   */
+  function reofferAfter(closed: Promise<unknown>, id: string) {
+    settlingCount++;
+    host.busyChanged();
+    void closed
+      .catch(() => {})
+      .then(() => host.reoffer(id))
+      .catch(() => {})
+      .finally(() => {
+        settlingCount--;
+        host.busyChanged();
+      });
+  }
+
   /**
    * The stop pipeline: stops the capture (already stopped at the cap for `max-length`), then
-   * saves the take, or deletes it when it is under `MIN_TAKE_MS`. A take whose raw appends hit
-   * `storage-full` is saved as `storage-full` whatever `reason` asked. A `user` or `max-length`
-   * save opens its Tab; a failure stop (`mic-lost`, `storage-full`, `instance-lost`) stays on
-   * Record, and when its save fails the take is left `recording` for recovery with no error card
-   * (the `storage-full` banner still shows). Settles as what became of the take.
+   * saves the take, or deletes it when it is too short (`isTooShort`). Its length counts every
+   * captured chunk, so a raw append that failed never shortens it. The reason saved is the one a
+   * Stop or the cap requested, if any, else `reason`; a take whose raw appends hit
+   * `storage-full` is saved as `storage-full` whatever was asked. A `user` or `max-length` save
+   * opens its Tab, unless the store has been handed over meanwhile; a failure stop (`mic-lost`,
+   * `storage-full`, `instance-lost`) stays on Record.
+   *
+   * A save that fails leaves the take `recording` with its raw file: the mic stays live (no error
+   * card), a `save-failed` notice is posted (the storage-full banner too when storage is full),
+   * and the take is offered again for recovery once its writer has closed. A too-short take whose
+   * delete fails is handed to the same re-offer (which deletes it). Settles as what became of
+   * the take.
    */
-  async function finishTake(reason: StopReason): Promise<'saved' | 'short' | 'failed' | 'none'> {
+  async function finishTake(reason: StopReason): Promise<TakeOutcome> {
     const take = active;
     if (!take || take.abandoned || !take.capture || !take.writer) return 'none';
     const { capture, writer } = take;
     stopWatchingLimits(take);
-    let stopReason = reason;
+    let stopReason: StopReason = take.requested ?? reason;
     try {
       const { parts } = await capture.stop();
       await take.appends;
       if (take.storageFull) stopReason = 'storage-full';
-      const durationMs = Math.round((take.samples / capture.sampleRate) * 1000);
-      // A max-length stop is never short; any other stop under 0.5 s keeps nothing (AD-9).
-      if (stopReason !== 'max-length' && durationMs < MIN_TAKE_MS) {
+      const durationMs = Math.round((take.captured / capture.sampleRate) * 1000);
+      // A max-length stop is never short; any other too-short stop keeps nothing (AD-9).
+      if (stopReason !== 'max-length' && isTooShort(durationMs)) {
+        let deleted = true;
         try {
           await writer.close();
           await deps.deleteTake(take.id, 'recording-session');
         } catch {
-          // The `recording` record (and its raw file) left behind is the recovery scan's to
-          // remove (story 3.11); the take is discarded all the same.
+          // The `recording` record (and its raw file) left behind goes to the re-offer below,
+          // which deletes it as too short; the take is discarded all the same.
+          deleted = false;
         }
         active = null;
         // A short take that hit storage-full still raises the banner: the disk is full.
         transition('idle', {
           notice: { kind: 'too-short', seq: host.nextNoticeSeq() },
-          ...(take.storageFull ? { storageFull: true } : {}),
+          ...(take.storageFull ? { storageFull: true, storageFullSaved: false } : {}),
         });
+        if (!deleted) reofferAfter(Promise.resolve(), take.id);
         return 'short';
       }
       await saveTake(deps, take.id, {
@@ -702,26 +838,30 @@ export function createTakeLifecycle(
         afterWrite: () => writer.close(),
       });
     } catch (err) {
+      devWarn(`Saving take ${take.id} failed (${stopReason}); left for recovery`, err);
       take.abandoned = true;
       capture.abort();
       // The raw file keeps what was written; recovery (story 3.11) rebuilds the take.
-      void take.appends.then(() => writer.close()).catch(() => {});
-      if (take.storageFull || stopReason === 'mic-lost' || stopReason === 'instance-lost') {
-        // A failure stop: the mic is handled by its own path (kept live, or the idle rule).
-        active = null;
-        transition('idle', take.storageFull ? { storageFull: true } : {});
-        return 'failed';
-      }
-      failRecording(err);
+      const closed = take.appends.then(() => writer.close());
+      const full = take.storageFull || (isAppError(err) && err.code === 'storage-full');
+      active = null;
+      transition('idle', {
+        notice: { kind: 'save-failed', seq: host.nextNoticeSeq() },
+        ...(full ? { storageFull: true, storageFullSaved: false } : {}),
+      });
+      reofferAfter(closed, take.id);
       return 'failed';
     }
     active = null;
     const full = stopReason === 'storage-full';
     transition('idle', {
       savedSeq: host.snapshot().savedSeq + 1,
-      ...(full ? { storageFull: true } : {}),
+      ...(full ? { storageFull: true, storageFullSaved: true } : {}),
     });
-    if (stopReason === 'user' || stopReason === 'max-length') deps.navigate(take.id);
+    // A stop that finishes after a handover stays put: this tab no longer runs the app.
+    if ((stopReason === 'user' || stopReason === 'max-length') && !host.handedOver()) {
+      deps.navigate(take.id);
+    }
     return 'saved';
   }
 
@@ -729,17 +869,18 @@ export function createTakeLifecycle(
     if (countIn?.take.input === opened) cancelCountIn();
   }
 
-  async function inputEnded(opened: OpenedInput): Promise<boolean> {
+  async function inputEnded(opened: OpenedInput): Promise<TakeOutcome> {
     const take = active;
-    if (take?.input !== opened) return false;
+    if (take?.input !== opened) return 'none';
     if (machine.state === 'recording' || machine.state === 'stopping') {
-      // Already inside the queue: the pipeline runs here, not re-enqueued.
+      // Already inside the queue: the pipeline runs here, not re-enqueued. A Stop or the cap
+      // requested first keeps its reason (finishTake reads it).
       stopWatchingLimits(take);
       transition('stopping');
-      return (await finishTake('mic-lost')) === 'saved';
+      return finishTake('mic-lost');
     }
     abandon(take);
-    return false;
+    return 'none';
   }
 
   function beginHandover() {
@@ -766,6 +907,7 @@ export function createTakeLifecycle(
     publishedTakeId,
     activeTakeId: () => active?.id ?? null,
     nearLimit,
+    settling: () => settlingCount > 0,
     start: startTake,
     stop,
     inputEnding,

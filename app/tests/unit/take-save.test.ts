@@ -3,6 +3,7 @@ import { CLIP_LEVEL } from '../../src/model/level-warnings';
 import {
   countClipped,
   createClipCounter,
+  isTooShort,
   MIN_TAKE_MS,
   saveTake,
   type SaveTarget,
@@ -14,6 +15,25 @@ import {
 describe('MIN_TAKE_MS', () => {
   it('is 0.5 s (spine AD-9)', () => {
     expect(MIN_TAKE_MS).toBe(500);
+  });
+});
+
+// Story 5.2: the one too-short test, in rounded ms, that recording and recovery both apply.
+describe('isTooShort', () => {
+  it.each([
+    [0, true],
+    [499.4, true],
+    [499.49, true],
+    [499.5, false],
+    [499.6, false],
+    [500, false],
+    [300_000, false],
+  ])('%s ms → %s', (ms, short) => {
+    expect(isTooShort(ms)).toBe(short);
+  });
+
+  it('a length that is not a number is too short', () => {
+    expect(isTooShort(Number.NaN)).toBe(true);
   });
 });
 

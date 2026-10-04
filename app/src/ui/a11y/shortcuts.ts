@@ -78,9 +78,11 @@ type RecordToggleStore = Pick<RecordingSession, 'getSnapshot' | 'record' | 'stop
 
 /**
  * Space on Record: while the mic is live, idle → `record()`, recording → `stop('user')`,
- * count-in → `stop('user')` (cancels it); ignored while the take starts or stops, or with no
- * live mic. The latency marks are set (and cleared) only with the count-in off: with it on, the
- * capture opens at beat five, so the pair would measure the count-in, not the latency.
+ * starting → `stop('user')` (the store holds it until the take records, so a quick Space-Space
+ * still stops the take), count-in → `stop('user')` (cancels it); ignored while the take stops,
+ * or with no live mic. The latency marks are set (and cleared) only with the count-in off: with
+ * it on, the capture opens at beat five, so the pair would measure the count-in, not the
+ * latency.
  */
 export function recordToggle(
   store: RecordToggleStore,
@@ -95,7 +97,7 @@ export function recordToggle(
     } else if (recording === 'recording') {
       if (!countIn.on) mark(false);
       void store.stop('user');
-    } else if (recording === 'count-in') {
+    } else if (recording === 'count-in' || recording === 'starting') {
       void store.stop('user');
     }
   };

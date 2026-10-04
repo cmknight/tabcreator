@@ -9,13 +9,19 @@
 // `open(id)` rebuilds an offered take: compressed audio already saved is kept (never
 // overwritten), else the raw file is re-encoded (falling back to WAV); then the take is patched
 // `recorded` with `stopReason: 'recovered'` and its Tab opened. The raw file stays for analysis.
-// The minimum, the clip count and the save step are shared with recording (take-save.ts).
-// `discard(id)` deletes the take and its files.
+// The minimum (`isTooShort`), the clip count and the save step are shared with recording
+// (take-save.ts). `discard(id)` re-reads the take and deletes it with its files only while it is
+// still unfinished; a take saved meanwhile only loses its banner.
+//
+// Never a saved take (story 5.2): the scan skips this tab's take as seen before and after the
+// take list is read, and re-reads each take just before offering it, so a take saved in between
+// is never offered. `reoffer(id)` is the scan for one take, run when this tab's own save of it
+// failed: it is offered again in the same session (or, too short, deleted).
 
 import type { Take } from '../model/types';
 import type { CompressedFile } from '../storage/audio-store';
 import type { TakePatch } from '../storage/db';
-import { createClipCounter, MIN_TAKE_MS, saveTake } from './take-save';
+import { createClipCounter, isTooShort, saveTake } from './take-save';
 
 /** An unfinished take offered for recovery. */
 export interface RecoveredTake {
@@ -71,10 +77,17 @@ export interface RecordingRecovery {
   /** Rebuilds the offered take `id` and opens its Tab. Never rejects. */
   open(id: string): Promise<void>;
   /**
-   * Deletes the offered take `id` (record and files). `deleted` runs once the delete has
-   * committed, just before the banner's entry goes (the UI moves focus there). Never rejects.
+   * Deletes the offered take `id` (record and files), once a re-read shows it still unfinished;
+   * otherwise only its banner goes. `deleted` runs once the delete has committed (or was found
+   * not needed), just before the banner's entry goes (the UI moves focus there). Never rejects.
    */
   discard(id: string, deleted?: () => void): Promise<void>;
+  /**
+   * The scan for take `id` alone (this tab's save of it failed): offered again when it is still
+   * unfinished and long enough, deleted when too short. A no-op after a handover, or while it is
+   * offered already. Never rejects.
+   */
+  reoffer(id: string): Promise<void>;
 }
 
 /** Runs `fn`, ignoring a failure (best-effort cleanup; the next start retries it). */
@@ -108,9 +121,66 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
     return (await deps.getTake(id)) === null;
   }
 
+  /**
+   * An unfinished take, not this tab's (`own`): offered with its raw length, or deleted (after a
+   * re-read) when too short; null when it is not offered.
+   */
+  async function consider(take: Take, own: ReadonlySet<string>): Promise<RecoveredTake | null> {
+    if (take.status !== 'recording' || own.has(take.id) || take.id === host.activeTakeId()) {
+      return null;
+    }
+    let samples: number;
+    try {
+      samples = await deps.rawSampleCount(take.id);
+    } catch {
+      // Unreadable now: left for the next start.
+      return null;
+    }
+    const ms = take.sampleRate > 0 ? (samples / take.sampleRate) * 1000 : 0;
+    // A compressed copy already saved holds the whole take (its raw appends may have failed):
+    // it is offered, never deleted for a short raw file.
+    if (isTooShort(ms) && !(await deps.readCompressed(take.id).catch(() => null))) {
+      await quietly(async () => {
+        // Re-read: only a take still unfinished is deleted.
+        const now = await deps.getTake(take.id);
+        if (now?.status === 'recording') await host.deleteTake(take.id, 'recording-session');
+      });
+      return null;
+    }
+    return { id: take.id, createdAt: take.createdAt, durationMs: Math.round(ms), opening: false };
+  }
+
+  /**
+   * The takes of `found` still unfinished when re-read just now, and not this tab's: a take saved
+   * since the list was read is never offered.
+   */
+  async function stillUnfinished(
+    found: readonly RecoveredTake[],
+    own: ReadonlySet<string>,
+  ): Promise<RecoveredTake[]> {
+    const kept: RecoveredTake[] = [];
+    for (const t of found) {
+      const now = await deps.getTake(t.id).catch(() => null);
+      if (now?.status === 'recording') kept.push(t);
+    }
+    const active = host.activeTakeId();
+    return kept.filter((t) => t.id !== active && !own.has(t.id));
+  }
+
+  /** This tab's take id, when there is one, added to `own`. */
+  function noteOwn(own: Set<string>) {
+    const id = host.activeTakeId();
+    if (id !== null) own.add(id);
+  }
+
   async function runScan(): Promise<void> {
     if (host.handedOver()) return;
+    // This tab's take as seen before and after the list is read: one saved in between shows as
+    // `recording` in the list, but is never offered.
+    const own = new Set<string>();
+    noteOwn(own);
     const takes = await deps.listTakes();
+    noteOwn(own);
     const known = new Set(takes.map((t) => t.id));
 
     const raws = await deps.listRaw().catch(() => [] as string[]);
@@ -128,28 +198,12 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
       });
     }
 
-    const found: RecoveredTake[] = [];
+    const candidates: RecoveredTake[] = [];
     for (const take of takes) {
-      if (take.status !== 'recording' || take.id === host.activeTakeId()) continue;
-      let samples: number;
-      try {
-        samples = await deps.rawSampleCount(take.id);
-      } catch {
-        // Unreadable now: left for the next start.
-        continue;
-      }
-      const seconds = take.sampleRate > 0 ? samples / take.sampleRate : 0;
-      if (!(seconds * 1000 >= MIN_TAKE_MS)) {
-        await quietly(async () => {
-          // Re-read: only a take still unfinished is deleted.
-          const now = await deps.getTake(take.id);
-          if (now?.status === 'recording') await host.deleteTake(take.id, 'recording-session');
-        });
-        continue;
-      }
-      const durationMs = Math.round(seconds * 1000);
-      found.push({ id: take.id, createdAt: take.createdAt, durationMs, opening: false });
+      const offer = await consider(take, own);
+      if (offer) candidates.push(offer);
     }
+    const found = await stillUnfinished(candidates, own);
     if (host.handedOver()) return;
     // An Open or Discard already under way keeps its entry as it is.
     const kept = offered.filter((t) => busy.has(t.id));
@@ -157,6 +211,25 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
       ...found.map((t) => kept.find((k) => k.id === t.id) ?? t),
       ...kept.filter((k) => !found.some((t) => t.id === k.id)),
     ]);
+  }
+
+  async function reoffer(id: string): Promise<void> {
+    // A scan in flight may hold `id` as this tab's own and would publish over this offer: wait.
+    if (scanning) await scanning;
+    if (host.handedOver() || busy.has(id) || offered.some((t) => t.id === id)) return;
+    try {
+      const take = await deps.getTake(id);
+      if (!take) return;
+      const own = new Set<string>();
+      const offer = await consider(take, own);
+      if (!offer) return;
+      const [found] = await stillUnfinished([offer], own);
+      if (!found || host.handedOver() || offered.some((t) => t.id === id)) return;
+      // Oldest first, as the scan offers them.
+      publish([...offered, found].sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+    } catch {
+      // Unreadable now: the next start's scan offers it.
+    }
   }
 
   function scan(): Promise<void> {
@@ -236,11 +309,13 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
     if (busy.has(id) || !offered.some((t) => t.id === id)) return;
     busy.add(id);
     try {
-      await host.deleteTake(id, 'recording-session');
+      // Re-read: a take saved since it was offered (it is no longer unfinished) is never deleted.
+      const now = await deps.getTake(id);
+      if (now?.status === 'recording') await host.deleteTake(id, 'recording-session');
       try {
         deleted?.();
       } catch {
-        // The take is gone all the same.
+        // The banner goes all the same.
       }
       drop(id);
     } catch {
@@ -250,5 +325,5 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
     }
   }
 
-  return { scan, open, discard };
+  return { scan, open, discard, reoffer };
 }

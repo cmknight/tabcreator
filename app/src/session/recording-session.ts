@@ -26,7 +26,8 @@
 // input and the transition queue. `record()` and the save of `stop('user')` run through the
 // queue, so an ended track is handled only between them; an ended track's handling first lets the
 // lifecycle stop and save a take on that input (`mic-lost`), then applies the idle rule for the
-// mic, posting a `stopped-saved` notice instead of `switched` when the take was saved. This store
+// mic, posting a `stopped-saved` notice instead of `switched` when the take was saved, and no
+// notice of its own when the take posted one (a too-short or failed-save notice stays). This store
 // reads and writes the `countIn` pref (the same epic 2 decision as the mic prefs), and resolves
 // the take's length limits (`MAX_TAKE_MS`, `WARN_LEAD_MS`; in dev builds
 // `?maxTakeMs=<n>&warnLeadMs=<n>` override them).
@@ -42,6 +43,12 @@
 // tab's own take; the offered takes are the snapshot's `recovered`, rebuilt by
 // `openRecovered` or deleted by `discardRecovered`. While a take counts in, records or saves,
 // a `beforeunload` guard asks before the page is left.
+//
+// Busy (story 5.2): `isBusy()` is the one answer to "may the page go now?": a take counting in,
+// starting, recording or stopping, a failed stop's after-work (the re-offer), or a recovered
+// take being rebuilt. The `beforeunload` guard and app-reload.ts both read it. After a handover
+// the guard disarms once the handover's save has finished or its deadline
+// (`HANDOVER_WAIT_MS`) has passed: the take is then the other tab's to recover.
 
 import type { LevelsDbfs } from '../audio/level-meter';
 import {
@@ -93,6 +100,11 @@ const DEFAULT_COUNT_IN: CountInPrefs = { on: false, bpm: 100 };
 export const MAX_TAKE_MS = 300_000;
 /** How long before the cap the "30 seconds left" warning shows, ms. */
 export const WARN_LEAD_MS = 30_000;
+/**
+ * How long a handover waits for this store's release (`releaseForHandover`), ms: the instance
+ * lock cuts it off then (instance-lock.ts re-exports it), and the unload guard disarms.
+ */
+export const HANDOVER_WAIT_MS = 3000;
 /** The shortest cap the dev override accepts, ms, so a max-length take is never too short. */
 const DEV_MIN_CAP_MS = 1000;
 
@@ -126,6 +138,14 @@ export type MicNotice =
        */
       kind: 'stopped-saved';
       seq: number;
+    }
+  | {
+      /**
+       * A stopped take could not be saved: it stays unfinished and is offered for recovery (the
+       * recovered-take banner).
+       */
+      kind: 'save-failed';
+      seq: number;
     };
 
 /** The mic fields, plus the fields each input derivation owns (see input-derivation.ts). */
@@ -154,6 +174,12 @@ export interface RecordingSnapshot extends LevelFields, InputQualityFields, Tune
    * next take starts.
    */
   storageFull: boolean;
+  /**
+   * With `storageFull`: true when the take it stopped was saved. Absent or false when nothing
+   * was saved (the save failed, the take was too short, or it could not be created), so the
+   * banner never says "saved" then. Absent until a storage-full stop first sets it.
+   */
+  storageFullSaved?: boolean;
   /** Unfinished takes offered for recovery, oldest first (the Record screen's banners). */
   recovered: readonly RecoveredTake[];
 }
@@ -200,15 +226,18 @@ export interface RecordingSession {
    * Starts a take: while live with no take in progress (and no input transition running), sets
    * `starting`, creates the take and starts the capture, then `recording`. A no-op otherwise.
    * Never rejects: a failure stops the capture, creates no take (unless storage already did)
-   * and shows the error card with its code.
+   * and shows the error card with its code; a `storage-full` instead shows the storage-full
+   * banner and keeps the mic live.
    */
   record(): Promise<void>;
   /**
    * Stops the take while `recording`: sets `stopping`, saves it, patches it `recorded` with
-   * `stopReason`, then navigates to its Tab. A take under `MIN_TAKE_MS` is deleted instead,
-   * with a `too-short` notice and no navigation. During a count-in, cancels it: the clicks are
-   * cancelled, the capture aborted, no take is created and the state returns to `idle`. A no-op
-   * otherwise. Never rejects.
+   * `stopReason`, then navigates to its Tab (not after a handover). A too-short take is deleted
+   * instead, with a `too-short` notice and no navigation; a save that fails posts a
+   * `save-failed` notice, keeps the mic live and offers the take for recovery. While `starting`
+   * the Stop is held and runs once the take records. During a count-in, cancels it: the clicks
+   * are cancelled, the capture aborted, no take is created and the state returns to `idle`. A
+   * no-op otherwise. Never rejects.
    */
   stop(reason: Extract<StopReason, 'user'>): Promise<void>;
   /** Audio-clock time the take has recorded so far, in ms; 0 with no capture running. */
@@ -244,6 +273,12 @@ export interface RecordingSession {
    * before its entry leaves `recovered`.
    */
   discardRecovered(id: string, deleted?: () => void): Promise<void>;
+  /**
+   * Whether leaving or reloading the page now would lose work: a take counting in, starting,
+   * recording or stopping, a failed stop's re-offer still running, or a recovered take being
+   * rebuilt. The `beforeunload` guard and app-reload.ts both ask this.
+   */
+  isBusy(): boolean;
 }
 
 /** The shell functions the store drives; injected so tests can fake audio/ and storage/. */
@@ -383,12 +418,19 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
         if (opened) release(opened);
         micFailed(isAppError(err) ? err.code : 'storage-failed');
       },
+      reoffer: (id) => recovery.reoffer(id),
+      busyChanged: () => syncUnloadGuard(),
     },
     { capMs: maxTakeMs, leadMs: warnLeadMs },
   );
 
-  /** Removes the `beforeunload` guard; set only while a take runs. */
+  /** Removes the `beforeunload` guard; set only while busy. */
   let removeUnloadGuard: (() => void) | null = null;
+  /**
+   * A handover's save has finished or its deadline has passed: the guard stays off (the tab no
+   * longer runs the app; a take still being saved is the other tab's to recover).
+   */
+  let handoverSettled = false;
 
   function notify(next: RecordingSnapshot) {
     snapshot = next;
@@ -396,12 +438,17 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     for (const l of listeners) l();
   }
 
+  /** See `RecordingSession.isBusy`. */
+  function isBusy(): boolean {
+    return take.state() !== 'idle' || take.settling() || snapshot.recovered.some((t) => t.opening);
+  }
+
   /**
-   * The guard is on while the published recording state is not `idle`, or while a recovered
-   * take is being rebuilt (a real-time encode a reload would lose).
+   * The guard is on while the store is busy (`isBusy`; a recovered take's rebuild is a real-time
+   * encode a reload would lose), until a handover has settled.
    */
   function syncUnloadGuard() {
-    const on = snapshot.recording !== 'idle' || snapshot.recovered.some((t) => t.opening);
+    const on = isBusy() && !handoverSettled;
     if (on && !removeUnloadGuard && deps.addUnloadGuard) {
       removeUnloadGuard = deps.addUnloadGuard(guardUnload);
     } else if (!on && removeUnloadGuard) {
@@ -448,6 +495,9 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       nearLimit: take.nearLimit(),
       savedSeq: snapshot.savedSeq,
       storageFull: snapshot.storageFull,
+      ...(snapshot.storageFullSaved !== undefined
+        ? { storageFullSaved: snapshot.storageFullSaved }
+        : {}),
       recovered: snapshot.recovered,
       ...levels.transition(t),
       ...quality.transition(t),
@@ -688,15 +738,16 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
    * A track ended on its own (queued: runs after the transition in progress). When the input
    * is no longer the store's, it is only closed. A take recording on it is first stopped and
    * saved as `mic-lost` (the stop pipeline, before the input is released, with no navigation;
-   * under `MIN_TAKE_MS` it is deleted). Then, when its device is no longer listed and another
-   * remains (an unplug), open the default input and post a `switched` notice (`stopped-saved`
-   * when a take was saved); else (a revoke, the only device gone, or a device that cannot be
-   * resolved) close the input and show the lost card.
+   * too short it is deleted). Then, when its device is no longer listed and another remains (an
+   * unplug), open the default input and post a `switched` notice (`stopped-saved` when a take
+   * was saved; none when the take posted its own, too short or not saved, so that one stays);
+   * else (a revoke, the only device gone, or a device that cannot be resolved) close the input
+   * and show the lost card.
    */
   async function ended(endedInput: OpenedInput) {
     if (!holds(endedInput)) return;
     // Already inside the queue: the take's stop pipeline runs here, not re-enqueued.
-    const saved = await take.inputEnded(endedInput);
+    const outcome = await take.inputEnded(endedInput);
     const endedId = endedDeviceId(endedInput);
     input = null;
     release(endedInput);
@@ -717,17 +768,24 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     }
     if (!keeps(live.opened)) return;
     const now = activeDevice(live.opened, live.devices);
+    // A too-short or failed-save notice from the take is not replaced: it says more.
+    const tookNotice = outcome === 'short' || outcome === 'failed';
     set({
       mic: 'live',
       devices: live.devices,
       activeDeviceId: live.activeDeviceId,
-      notice: saved
-        ? { kind: 'stopped-saved', seq: ++noticeSeq }
+      ...(tookNotice
+        ? {}
         : {
-            kind: 'switched',
-            label: now?.label || live.opened.label || '',
-            seq: ++noticeSeq,
-          },
+            notice:
+              outcome === 'saved'
+                ? { kind: 'stopped-saved', seq: ++noticeSeq }
+                : {
+                    kind: 'switched',
+                    label: now?.label || live.opened.label || '',
+                    seq: ++noticeSeq,
+                  },
+          }),
     });
   }
 
@@ -754,6 +812,11 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     patch({ countIn: next });
   }
 
+  function settleHandover() {
+    handoverSettled = true;
+    syncUnloadGuard();
+  }
+
   function releaseForHandover(): Promise<void> {
     if (handover) return handover;
     // A count-in is cancelled; a recording take is marked stopping now, so the cap or a full
@@ -764,7 +827,11 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       take.state() === 'idle'
         ? Promise.resolve()
         : enqueue(() => take.finishForHandover()).catch(() => {});
+    // The guard disarms when the save finishes, or at the deadline the lock waits for it.
+    const deadline = setTimeout(settleHandover, HANDOVER_WAIT_MS);
     handover = saving.then(() => {
+      clearTimeout(deadline);
+      settleHandover();
       const opened = input;
       input = null;
       if (opened) release(opened);
@@ -829,6 +896,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     scanForRecovery: () => recovery.scan(),
     openRecovered: (id) => recovery.open(id),
     discardRecovered: (id, deleted) => recovery.discard(id, deleted),
+    isBusy,
   };
 }
 

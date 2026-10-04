@@ -252,8 +252,17 @@ describe('Space on Record', () => {
     expect(s.mark).not.toHaveBeenCalled();
   });
 
-  it.each(['starting', 'stopping'] as const)('is ignored while %s', (recording) => {
-    const s = store('live', recording);
+  // Story 5.2 (DS5): was ignored while starting too, so a quick Space-Space left a take running.
+  it('stops while starting (the store holds the Stop until the take records)', () => {
+    const s = store('live', 'starting');
+    s.toggle();
+    expect(s.stop).toHaveBeenCalledWith('user');
+    expect(s.record).not.toHaveBeenCalled();
+    expect(s.mark).not.toHaveBeenCalled();
+  });
+
+  it('is ignored while stopping', () => {
+    const s = store('live', 'stopping');
     s.toggle();
     expect(s.record).not.toHaveBeenCalled();
     expect(s.stop).not.toHaveBeenCalled();
