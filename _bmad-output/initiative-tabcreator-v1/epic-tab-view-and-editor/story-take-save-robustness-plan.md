@@ -3,7 +3,7 @@ title: 'Take-save robustness'
 type: 'bugfix'
 ticket: '2'
 created: '2026-10-04'
-status: 'built'
+status: done
 baseline_revision: 'd777d8089d8859d59261b4d21d4efc12c297a7e4'
 route: 'full'
 route_source: 'auto'
