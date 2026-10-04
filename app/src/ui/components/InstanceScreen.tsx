@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { instanceLock, type InstanceState } from '../../session/instance-lock';
+import { recordingSession, type HandoverTake } from '../../session/recording-session';
 import { strings } from '../strings';
 import buttons from './buttons.module.css';
 import styles from './InstanceScreen.module.css';
@@ -20,11 +21,22 @@ function title(state: InstanceScreenState): string {
   }
 }
 
+/** The lost tab's line on what became of its take (story 5.3); null for no line. */
+function takeLine(take: HandoverTake): string | null {
+  if (take === 'saved') return strings['global.instanceTakeSaved'];
+  if (take === 'failed') return strings['global.instanceTakeNotSaved'];
+  return null;
+}
+
+const readHandoverTake = () => recordingSession.getSnapshot().handoverTake;
+
 /**
  * The full-screen notice in place of the whole app shell while this tab does not run the app
  * (story 3.10, EXPERIENCE.md): "TabCreator is open in another tab" with "Use here" (disabled,
  * with a "Moving TabCreator here…" status line, while handing over), the update-blocked
  * notice, or the unsupported-browser notice. The heading takes focus when the notice appears.
+ * In `lost`, a status line says what became of the take this tab was recording (story 5.3): it
+ * may arrive after the notice, when the handover's save settles late.
  */
 export function InstanceScreen({ state }: { state: InstanceScreenState }) {
   const text = title(state);
@@ -32,6 +44,8 @@ export function InstanceScreen({ state }: { state: InstanceScreenState }) {
   useEffect(() => {
     heading.current?.focus();
   }, [text]);
+  const handoverTake = useSyncExternalStore(recordingSession.subscribe, readHandoverTake);
+  const line = state === 'lost' ? takeLine(handoverTake) : null;
   const handingOver = state === 'handing-over';
   const offersUseHere = state === 'other-tab' || state === 'lost' || handingOver;
   return (
@@ -41,6 +55,11 @@ export function InstanceScreen({ state }: { state: InstanceScreenState }) {
         <h1 ref={heading} className={styles.title} tabIndex={-1}>
           {text}
         </h1>
+        {state === 'lost' && (
+          <p role="status" className={styles.take}>
+            {line ?? ''}
+          </p>
+        )}
         {offersUseHere && (
           <div className={styles.actions}>
             <button

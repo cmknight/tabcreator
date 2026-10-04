@@ -1478,6 +1478,46 @@ describe('handover (releaseForHandover)', () => {
     expect(t.log.at(-1)).toBe('input.close');
   });
 
+  it('handoverTake (story 5.3): null before, saved after a saved handover take', async () => {
+    const t = await recording();
+    expect(t.session.getSnapshot().handoverTake).toBeNull();
+    await t.session.releaseForHandover();
+    expect(t.session.getSnapshot().handoverTake).toBe('saved');
+  });
+
+  it('handoverTake (story 5.3): failed when the instance-lost save rejects', async () => {
+    const t = await recording({
+      writeCompressed: vi.fn(() => Promise.reject(new AppError('instance-taken', 'fenced'))),
+    });
+    await t.session.releaseForHandover();
+    expect(t.session.getSnapshot().handoverTake).toBe('failed');
+  });
+
+  it('handoverTake (story 5.3): a save cut off after the deadline counts as failed once it settles', async () => {
+    const write = deferred<void>();
+    const t = await recording({ writeCompressed: vi.fn(() => write.promise) });
+    const done = t.session.releaseForHandover();
+    await flush();
+    expect(t.session.getSnapshot().handoverTake).toBeNull();
+    // The lock's deadline passed and its fence rejects the write.
+    write.reject(new AppError('instance-taken', 'fenced'));
+    await done;
+    expect(t.session.getSnapshot().handoverTake).toBe('failed');
+  });
+
+  it('handoverTake (story 5.3): null when no take was recording, or a Stop saved it', async () => {
+    const idle = setup();
+    await idle.session.allowMic();
+    await idle.session.releaseForHandover();
+    expect(idle.session.getSnapshot().handoverTake).toBeNull();
+    const t = await recording();
+    const stopped = t.session.stop('user');
+    const done = t.session.releaseForHandover();
+    await stopped;
+    await done;
+    expect(t.session.getSnapshot().handoverTake).toBeNull();
+  });
+
   it('idle: the input is released and the mic back to setup', async () => {
     const t = setup();
     await t.session.allowMic();

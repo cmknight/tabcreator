@@ -2,14 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../src/model/errors';
 import {
   createInstanceLock,
-  delayedRecoveryScan,
   HANDOVER_WAIT_MS,
   INSTANCE_LOCK_NAME,
-  RECOVERY_SCAN_DELAY_MS,
+  RELEASED_FALLBACK_MS,
+  scanWhenReady,
+  STEAL_MARKER_KEY,
   type ChannelLike,
   type InstanceLock,
   type InstanceLockDeps,
   type LocksLike,
+  type MarkerStorage,
 } from '../../src/session/instance-lock';
 import type { ConnectionState } from '../../src/storage/db';
 import { assertWritable, fenceWrites, resetFenceForTests } from '../../src/storage/write-guard';
@@ -139,6 +141,8 @@ function tab(overrides: Partial<InstanceLockDeps> = {}): Tab {
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     onHeld: vi.fn(),
+    storage: undefined,
+    now: () => Date.now(),
     ...overrides,
   };
   const lock = createInstanceLock(deps);
@@ -510,24 +514,6 @@ describe('instance lock', () => {
     expect(t.lock.getSnapshot()).toBe('held');
   });
 
-  it('the recovery scan delay is past the handover window', () => {
-    expect(RECOVERY_SCAN_DELAY_MS).toBe(HANDOVER_WAIT_MS + 500);
-  });
-
-  it('the app-wide onHeld scans once, RECOVERY_SCAN_DELAY_MS after the grant', async () => {
-    const scan = vi.fn();
-    const t = await started({
-      onHeld: delayedRecoveryScan((fn, ms) => setTimeout(fn, ms), scan),
-    });
-    expect(t.lock.getSnapshot()).toBe('held');
-    await vi.advanceTimersByTimeAsync(RECOVERY_SCAN_DELAY_MS - 1);
-    expect(scan).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(scan).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(scan).toHaveBeenCalledTimes(1);
-  });
-
   it('no Web Locks: unsupported, with no channel', async () => {
     const createChannel = vi.fn(bus.create);
     const t = tab({ locks: undefined, createChannel });
@@ -535,5 +521,315 @@ describe('instance lock', () => {
     await settle();
     expect(t.lock.getSnapshot()).toBe('unsupported');
     expect(createChannel).not.toHaveBeenCalled();
+  });
+});
+
+// Story 5.3: a grant by steal waits for the old holder's `released` (or the fallback) before the
+// recovery scan; every other grant is ready at once. Replaces story 3.11's fixed 3.5 s delay
+// test ("the app-wide onHeld scans once, RECOVERY_SCAN_DELAY_MS after the grant").
+
+/** A sessionStorage stand-in shared by the pages of one tab. */
+class FakeStorage implements MarkerStorage {
+  items = new Map<string, string>();
+  getItem(key: string) {
+    return this.items.get(key) ?? null;
+  }
+  setItem(key: string, value: string) {
+    this.items.set(key, value);
+  }
+  removeItem(key: string) {
+    this.items.delete(key);
+  }
+}
+
+/** `onHeld` that records when each grant's `ready` resolved (fake-timer ms after `t0`). */
+function readyLog() {
+  const t0 = Date.now();
+  const readyAt: (number | null)[] = [];
+  const onHeld = vi.fn((ready: Promise<void>) => {
+    const i = readyAt.push(null) - 1;
+    void ready.then(() => (readyAt[i] = Date.now() - t0));
+  });
+  return { onHeld, readyAt };
+}
+
+/** A channel on the bus that logs what it posts. */
+function loggingChannel(posts: unknown[]) {
+  return () => {
+    const channel = bus.create();
+    const post = channel.postMessage;
+    channel.postMessage = (message) => {
+      posts.push(message);
+      post(message);
+    };
+    return channel;
+  };
+}
+
+describe('released and the scan wait (story 5.3)', () => {
+  it('plain start: ready at once, with no release-query', async () => {
+    const posts: unknown[] = [];
+    const ready = readyLog();
+    await started({ onHeld: ready.onHeld, createChannel: loggingChannel(posts) });
+    expect(ready.readyAt).toEqual([0]);
+    expect(posts).toEqual([]);
+  });
+
+  it('cooperative Use here: ready at once on the grant', async () => {
+    await started();
+    const posts: unknown[] = [];
+    const ready = readyLog();
+    const second = await started({ onHeld: ready.onHeld, createChannel: loggingChannel(posts) });
+    second.lock.useHere();
+    await settle();
+    expect(second.lock.getSnapshot()).toBe('held');
+    expect(ready.readyAt).toEqual([0]);
+    expect(posts).toEqual([{ type: 'release-request' }]);
+  });
+
+  it('the holder posts released once its release sequence ends', async () => {
+    const posts: unknown[] = [];
+    const first = await started({ createChannel: loggingChannel(posts) });
+    const second = await started();
+    second.lock.useHere();
+    await settle();
+    expect(first.lock.getSnapshot()).toBe('lost');
+    expect(posts).toEqual([{ type: 'released', at: Date.now() }]);
+  });
+
+  it('steal: the scan waits for released, posted when the old sequence ends (2.5 s later)', async () => {
+    const posts: unknown[] = [];
+    const first = await started({
+      ignoreReleaseRequests: () => true,
+      releaseForHandover: vi.fn(() => new Promise<void>((r) => setTimeout(r, 2_500))),
+      createChannel: loggingChannel(posts),
+    });
+    const ready = readyLog();
+    const second = await started({ onHeld: ready.onHeld });
+    second.lock.useHere();
+    await vi.advanceTimersByTimeAsync(HANDOVER_WAIT_MS);
+    // The release request was ignored: stolen at 3 s.
+    expect(locks.requests.at(-1)).toEqual({ steal: true });
+    expect(second.lock.getSnapshot()).toBe('held');
+    expect(first.deps.releaseForHandover).toHaveBeenCalledTimes(1);
+    expect(ready.readyAt).toEqual([null]);
+    await vi.advanceTimersByTimeAsync(2_499);
+    expect(ready.readyAt).toEqual([null]);
+    expect(posts).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(first.lock.getSnapshot()).toBe('lost');
+    expect(posts).toEqual([{ type: 'released', at: Date.now() }]);
+    expect(ready.readyAt).toEqual([HANDOVER_WAIT_MS + 2_500]);
+  });
+
+  it('steal: the stealer posts release-query; a tab whose sequence is done answers it', async () => {
+    const first = await started({ ignoreReleaseRequests: () => true });
+    const posts: unknown[] = [];
+    const ready = readyLog();
+    const second = await started({ onHeld: ready.onHeld, createChannel: loggingChannel(posts) });
+    second.lock.useHere();
+    await vi.advanceTimersByTimeAsync(HANDOVER_WAIT_MS);
+    expect(posts).toEqual([{ type: 'release-request' }, { type: 'release-query' }]);
+    await settle();
+    expect(first.lock.getSnapshot()).toBe('lost');
+    expect(ready.readyAt).toEqual([HANDOVER_WAIT_MS]);
+    // A query after the sequence has ended is answered at once.
+    const heard = vi.fn();
+    const probe = bus.create();
+    probe.onmessage = heard;
+    probe.postMessage({ type: 'release-query' });
+    await settle();
+    expect(heard).toHaveBeenCalledWith({ data: { type: 'released', at: Date.now() } });
+  });
+
+  it('a tab lost in an earlier handover answers first: its older released is not the one waited for', async () => {
+    // A held, B took over (A lost, released long ago); now C steals from a slow B.
+    const a = await started();
+    const b = await started({
+      ignoreReleaseRequests: () => true,
+      releaseForHandover: vi.fn(() => new Promise<void>((r) => setTimeout(r, 2_000))),
+    });
+    b.lock.useHere();
+    await settle();
+    expect(a.lock.getSnapshot()).toBe('lost');
+    expect(b.lock.getSnapshot()).toBe('held');
+    await vi.advanceTimersByTimeAsync(10_000);
+    const ready = readyLog();
+    const c = await started({ onHeld: ready.onHeld });
+    c.lock.useHere();
+    await vi.advanceTimersByTimeAsync(HANDOVER_WAIT_MS);
+    expect(c.lock.getSnapshot()).toBe('held');
+    // A answers C's query at once, with its old time: not counted.
+    await settle();
+    expect(ready.readyAt).toEqual([null]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(b.lock.getSnapshot()).toBe('lost');
+    expect(ready.readyAt).toEqual([HANDOVER_WAIT_MS + 2_000]);
+  });
+
+  it('a released without a time is ignored', async () => {
+    const deaf = (): ChannelLike => ({ onmessage: null, postMessage() {}, close() {} });
+    await started({ createChannel: deaf });
+    const ready = readyLog();
+    const second = await started({ onHeld: ready.onHeld });
+    second.lock.useHere();
+    await vi.advanceTimersByTimeAsync(HANDOVER_WAIT_MS);
+    bus.create().postMessage({ type: 'released' });
+    await settle();
+    expect(ready.readyAt).toEqual([null]);
+  });
+
+  it('a tab that never held, or holds still, does not answer release-query', async () => {
+    const holder = await started();
+    const waiting = await started();
+    const heard = vi.fn();
+    const probe = bus.create();
+    probe.onmessage = heard;
+    probe.postMessage({ type: 'release-query' });
+    await settle();
+    expect(heard).not.toHaveBeenCalled();
+    expect(holder.lock.getSnapshot()).toBe('held');
+    expect(waiting.lock.getSnapshot()).toBe('other-tab');
+  });
+
+  it('fallback: a steal with no released ever runs the scan at 30 s', async () => {
+    const deaf = (): ChannelLike => ({ onmessage: null, postMessage() {}, close() {} });
+    await started({ createChannel: deaf });
+    const ready = readyLog();
+    const second = await started({ onHeld: ready.onHeld });
+    second.lock.useHere();
+    await vi.advanceTimersByTimeAsync(HANDOVER_WAIT_MS);
+    expect(second.lock.getSnapshot()).toBe('held');
+    await vi.advanceTimersByTimeAsync(RELEASED_FALLBACK_MS - 1);
+    expect(ready.readyAt).toEqual([null]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ready.readyAt).toEqual([HANDOVER_WAIT_MS + RELEASED_FALLBACK_MS]);
+  });
+
+  it('steal then reload: the reloaded page queries, hears released and scans; no 30 s wait', async () => {
+    const storage = new FakeStorage();
+    const first = await started({ storage });
+    const second = await started({ ignoreReleaseRequests: () => true });
+    second.lock.useHere();
+    await settle();
+    // The cooperative handover fenced the first; the second ignores release requests.
+    expect(first.lock.getSnapshot()).toBe('lost');
+    first.lock.useHere();
+    await vi.advanceTimersByTimeAsync(HANDOVER_WAIT_MS);
+    expect(first.deps.reload).toHaveBeenCalledTimes(1);
+    expect(storage.getItem(STEAL_MARKER_KEY)).toBe(String(Date.now()));
+    await settle();
+    expect(second.lock.getSnapshot()).toBe('lost');
+
+    // The reloaded page: same sessionStorage, a new instance.
+    first.lock.dispose();
+    await vi.advanceTimersByTimeAsync(200);
+    const posts: unknown[] = [];
+    const ready = readyLog();
+    const reloaded = await started({
+      storage,
+      onHeld: ready.onHeld,
+      createChannel: loggingChannel(posts),
+    });
+    expect(reloaded.lock.getSnapshot()).toBe('held');
+    expect(posts).toEqual([{ type: 'release-query' }]);
+    expect(ready.readyAt).toEqual([0]);
+    // The marker is read once.
+    expect(storage.getItem(STEAL_MARKER_KEY)).toBeNull();
+  });
+
+  it('steal then reload: with no answer the reloaded page waits what is left of 30 s', async () => {
+    const storage = new FakeStorage();
+    storage.setItem(STEAL_MARKER_KEY, String(Date.now() - 10_000));
+    const ready = readyLog();
+    await started({ storage, onHeld: ready.onHeld });
+    await vi.advanceTimersByTimeAsync(RELEASED_FALLBACK_MS - 10_000 - 1);
+    expect(ready.readyAt).toEqual([null]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ready.readyAt).toEqual([RELEASED_FALLBACK_MS - 10_000]);
+  });
+
+  it('a stale marker, an unreadable one or a throwing sessionStorage: no wait', async () => {
+    const stale = new FakeStorage();
+    stale.setItem(STEAL_MARKER_KEY, String(Date.now() - RELEASED_FALLBACK_MS));
+    const a = readyLog();
+    await started({ storage: stale, onHeld: a.onHeld });
+    expect(a.readyAt).toEqual([0]);
+    expect(stale.getItem(STEAL_MARKER_KEY)).toBeNull();
+
+    locks = new FakeLocks();
+    const junk = new FakeStorage();
+    junk.setItem(STEAL_MARKER_KEY, 'x');
+    const b = readyLog();
+    await started({ storage: junk, onHeld: b.onHeld });
+    expect(b.readyAt).toEqual([0]);
+
+    locks = new FakeLocks();
+    const throwing: MarkerStorage = {
+      getItem: () => {
+        throw new DOMException('denied', 'SecurityError');
+      },
+      setItem: () => {
+        throw new DOMException('denied', 'SecurityError');
+      },
+      removeItem: () => {},
+    };
+    const c = readyLog();
+    await started({ storage: throwing, onHeld: c.onHeld });
+    expect(c.readyAt).toEqual([0]);
+  });
+
+  it('a reloaded page that is not granted the lock drops the steal marker', async () => {
+    await started();
+    const storage = new FakeStorage();
+    storage.setItem(STEAL_MARKER_KEY, String(Date.now()));
+    const t = await started({ storage });
+    expect(t.lock.getSnapshot()).toBe('other-tab');
+    expect(storage.getItem(STEAL_MARKER_KEY)).toBeNull();
+  });
+
+  it('steal then reload with a throwing sessionStorage: the reload still happens', async () => {
+    const throwing: MarkerStorage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new DOMException('full', 'QuotaExceededError');
+      },
+      removeItem: () => {},
+    };
+    const first = await started({ storage: throwing });
+    const second = await started({ ignoreReleaseRequests: () => true });
+    second.lock.useHere();
+    await settle();
+    first.lock.useHere();
+    await vi.advanceTimersByTimeAsync(HANDOVER_WAIT_MS);
+    expect(first.deps.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('a cooperative take-back that reloads leaves no marker', async () => {
+    const storage = new FakeStorage();
+    const first = await started({ storage });
+    const second = await started();
+    second.lock.useHere();
+    await settle();
+    first.lock.useHere();
+    await settle();
+    expect(first.deps.reload).toHaveBeenCalledTimes(1);
+    expect(storage.items.size).toBe(0);
+  });
+
+  it('the app-wide onHeld (scanWhenReady) scans once, when ready resolves', async () => {
+    const scan = vi.fn();
+    let release!: () => void;
+    const ready = new Promise<void>((r) => (release = r));
+    scanWhenReady(scan)(ready);
+    await settle();
+    expect(scan).not.toHaveBeenCalled();
+    release();
+    await settle();
+    expect(scan).toHaveBeenCalledTimes(1);
+    // Wired through a lock: a plain start scans at once.
+    const atStart = vi.fn();
+    await started({ onHeld: scanWhenReady(atStart) });
+    expect(atStart).toHaveBeenCalledTimes(1);
   });
 });

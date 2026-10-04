@@ -58,6 +58,11 @@ export const strings = {
   'global.instanceUseHere': 'Use here',
   /** The notice's status line while Use here moves the app to this tab. */
   'global.instanceMovingHere': 'Moving TabCreator here…',
+  /** The lost tab's line when its take was saved as the app moved away (story 5.3). */
+  'global.instanceTakeSaved': "Your recording was saved — it's in the Library in the other tab",
+  /** The lost tab's line when that save failed (story 5.3): the other tab offers recovery. */
+  'global.instanceTakeNotSaved':
+    "Your recording wasn't saved here — the other tab will offer to recover it",
   /** The full-screen notice while a database upgrade waits (EXPERIENCE.md Update blocked). */
   'global.instanceUpgradeBlocked': 'Close other TabCreator tabs to finish updating',
   /** The full-screen notice without the browser APIs the app needs (EXPERIENCE.md). */

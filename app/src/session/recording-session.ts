@@ -182,7 +182,17 @@ export interface RecordingSnapshot extends LevelFields, InputQualityFields, Tune
   storageFullSaved?: boolean;
   /** Unfinished takes offered for recovery, oldest first (the Record screen's banners). */
   recovered: readonly RecoveredTake[];
+  /**
+   * What the handover's save did with the take that was recording (story 5.3), for the lost
+   * tab's notice: `saved`, or `failed` (left `recording` for the other tab's recovery; a save cut
+   * off by the deadline or the write fence counts once it settles). Null before a handover, when
+   * no take was recording, and while the save runs.
+   */
+  handoverTake: HandoverTake;
 }
+
+/** See `RecordingSnapshot.handoverTake`. */
+export type HandoverTake = 'saved' | 'failed' | null;
 
 export interface RecordingSession {
   subscribe(listener: () => void): () => void;
@@ -381,6 +391,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     savedSeq: 0,
     storageFull: false,
     recovered: [],
+    handoverTake: null,
     ...levels.transition(idle),
     ...quality.transition(idle),
     ...tuning.transition(idle),
@@ -499,6 +510,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
         ? { storageFullSaved: snapshot.storageFullSaved }
         : {}),
       recovered: snapshot.recovered,
+      handoverTake: snapshot.handoverTake,
       ...levels.transition(t),
       ...quality.transition(t),
       ...tuning.transition(t),
@@ -515,21 +527,21 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
    * await) when none runs. Settles as `task` does, once the next transition has started (or
    * the queue is idle), so a caller that awaits it sees the queue as it now is.
    */
-  function enqueue(task: () => Promise<void>): Promise<void> {
-    return new Promise((resolve, reject) => {
+  function enqueue<T>(task: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
       queue.push(() => {
         // Started synchronously (not deferred), so a transition's first notify lands within the
         // call; a synchronous throw still takes the rejection path and advances the queue.
-        let started: Promise<void>;
+        let started: Promise<T>;
         try {
           started = task();
         } catch (err) {
           started = Promise.reject(err);
         }
         started.then(
-          () => {
+          (value) => {
             advance();
-            resolve();
+            resolve(value);
           },
           (err: unknown) => {
             advance();
@@ -823,10 +835,16 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     // disk does not queue a save of its own first.
     take.beginHandover();
     // Idle: nothing to wait for (an allow waiting on a permission prompt must not hold it up).
+    // Its outcome is published for the lost tab's notice once it settles (story 5.3).
     const saving =
       take.state() === 'idle'
         ? Promise.resolve()
-        : enqueue(() => take.finishForHandover()).catch(() => {});
+        : enqueue(() => take.finishForHandover()).then(
+            (outcome) => {
+              if (outcome === 'saved' || outcome === 'failed') patch({ handoverTake: outcome });
+            },
+            () => patch({ handoverTake: 'failed' }),
+          );
     // The guard disarms when the save finishes, or at the deadline the lock waits for it.
     const deadline = setTimeout(settleHandover, HANDOVER_WAIT_MS);
     handover = saving.then(() => {

@@ -28,6 +28,7 @@ const BASE: RecordingSnapshot = {
   savedSeq: 0,
   storageFull: false,
   recovered: [],
+  handoverTake: null,
 };
 
 /** 21:14 local time. */

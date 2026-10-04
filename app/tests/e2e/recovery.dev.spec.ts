@@ -4,10 +4,10 @@ import { expectNoSeriousAxe, FIXTURE, goLive } from './mic-helpers';
 
 // Runs in the `dev` project only (story 3.11, US-3.2): a take whose page reloads mid-recording
 // is offered back on Record ("An unfinished take from <time> was recovered (m:ss)") once the
-// instance lock is held and the handover window has passed; Open rebuilds its audio from the raw
-// file in real time, Discard deletes it. The fake mic (US-0.4) plays c_major_scale_pos1.
+// instance lock is held (story 5.3: at once on a plain start); Open rebuilds its audio from the
+// raw file in real time, Discard deletes it. The fake mic (US-0.4) plays c_major_scale_pos1.
 
-/** The scan starts 3.5 s after the lock is granted (HANDOVER_WAIT_MS + 500). */
+/** How long to wait for the banner: the scan runs as soon as the reloaded page holds the lock. */
 const SCAN_WAIT_MS = 10_000;
 const BANNER_TEXT =
   /^An unfinished take from (1[0-2]|[1-9]):[0-5]\d (am|pm) was recovered \((\d+):(\d\d)\)$/;

@@ -22,6 +22,12 @@
   font: var(--font-heading);
 }
 
+/* The lost tab's line on its take (story 5.3); empty until the handover's save settles. */
+.take {
+  min-height: 1.5em;
+  margin: var(--space-3) 0 0;
+}
+
 .actions {
   margin-top: var(--space-6);
 }

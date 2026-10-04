@@ -15,9 +15,18 @@
 // and the fence, and its take stays `recording` for recovery (story 3.11). The database's
 // `blocked` shows `upgrade-blocked`.
 //
-// Every grant (the start's, or Use here's without a reload) calls `onHeld`. The app-wide lock
-// runs the recovery scan (story 3.11) `RECOVERY_SCAN_DELAY_MS` later: after a steal, the old tab
-// may still be saving its take within the handover window, and that take must not be offered.
+// Every grant this tab runs the app under (the start's, or Use here's without a reload) calls
+// `onHeld(ready)`; the app-wide lock runs the recovery scan (story 3.11) once `ready` resolves.
+// Only a steal can leave an old holder still saving its take (a cooperative grant comes after
+// the holder's sequence has fenced its writes; a start's `ifAvailable` grant means no one held
+// the lock), so only then does `ready` wait (story 5.3): the stealing tab posts `release-query`,
+// and `ready` resolves when a `released` message arrives, or after `RELEASED_FALLBACK_MS` (a
+// crashed or frozen old holder). A tab posts `released` (with the time its release sequence
+// ended) when that sequence ends, and answers a `release-query` with it once the sequence is
+// done; a tab that never held the lock, or holds it still, stays quiet. A waiter counts only a
+// `released` that ended at or after its steal, so a tab lost in an earlier handover cannot end it. A fenced tab that steals reloads: it leaves a sessionStorage
+// marker, and the reloaded page's start grant waits the same way (for what is left of the
+// fallback).
 
 import { engineClient } from '../engine/engine-client';
 import { db, type ConnectionState } from '../storage/db';
@@ -29,16 +38,19 @@ export const INSTANCE_LOCK_NAME = 'tabcreator-instance';
  * the recording store, whose unload guard disarms at the same deadline.
  */
 export { HANDOVER_WAIT_MS };
-/** How long after a grant the recovery scan starts, ms: past the old holder's handover window. */
-export const RECOVERY_SCAN_DELAY_MS = HANDOVER_WAIT_MS + 500;
+/**
+ * How long a grant by steal waits for the old holder's `released` before the recovery scan runs
+ * anyway, ms: far past the old holder's own `HANDOVER_WAIT_MS`, for a background tab whose
+ * timers are throttled, or a crashed or frozen one that never answers.
+ */
+export const RELEASED_FALLBACK_MS = 30_000;
+/** The sessionStorage key carrying a steal across the reload of a fenced tab (`takeOver`). */
+export const STEAL_MARKER_KEY = 'tabcreator.instance.stolenAt';
 
-/** The app-wide `onHeld`: runs `scan` `RECOVERY_SCAN_DELAY_MS` after each grant. */
-export function delayedRecoveryScan(
-  setTimer: (fn: () => void, ms: number) => unknown,
-  scan: () => unknown,
-): () => void {
-  return () => {
-    setTimer(() => void scan(), RECOVERY_SCAN_DELAY_MS);
+/** The app-wide `onHeld`: runs `scan` once the grant's `ready` resolves. */
+export function scanWhenReady(scan: () => unknown): (ready: Promise<void>) => void {
+  return (ready) => {
+    void ready.then(() => scan());
   };
 }
 
@@ -54,6 +66,25 @@ export type InstanceState =
 /** The message "Use here" posts to the holder. */
 export interface ReleaseRequest {
   type: 'release-request';
+}
+
+/** Posted by a tab whose release sequence has ended, and in answer to a `ReleaseQuery`. */
+export interface ReleasedMessage {
+  type: 'released';
+  /** When the sender's release sequence ended (`now()`, ms): a waiter ignores an older one. */
+  at: number;
+}
+
+/** Posted by a tab granted the lock by steal: asks the old holder to say when it is done. */
+export interface ReleaseQuery {
+  type: 'release-query';
+}
+
+/** The part of `sessionStorage` used here (the steal marker). */
+export interface MarkerStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 }
 
 /** The part of `navigator.locks` used here, so tests can fake it. */
@@ -88,8 +119,20 @@ export interface InstanceLockDeps {
   reload: () => void;
   setTimeout: (fn: () => void, ms: number) => unknown;
   clearTimeout: (handle: unknown) => void;
-  /** Called on every grant this tab runs the app under (the start's, or Use here's). */
-  onHeld: () => void;
+  /**
+   * Called on every grant this tab runs the app under (the start's, or Use here's). `ready`
+   * resolves once no old holder can still be saving: at once, or (after a steal) on its
+   * `released` message or after `RELEASED_FALLBACK_MS`. It never rejects.
+   */
+  onHeld: (ready: Promise<void>) => void;
+  /** `sessionStorage`, for the steal marker; undefined (or throwing) means no marker. */
+  storage: MarkerStorage | undefined;
+  /** Wall-clock time, ms (`Date.now`), for the steal marker's age. */
+  now: () => number;
+  /** Dev only: true while this tab ignores `release-request` (forcing the steal path). */
+  ignoreReleaseRequests?: () => boolean;
+  /** Dev only: notes `released` posted or heard, for the e2e tests. */
+  trace?: (event: 'released-posted' | 'released-heard') => void;
 }
 
 export interface InstanceLock {
@@ -103,10 +146,14 @@ export interface InstanceLock {
   dispose(): void;
 }
 
-const isReleaseRequest = (data: unknown): data is ReleaseRequest =>
-  typeof data === 'object' &&
-  data !== null &&
-  (data as { type?: unknown }).type === 'release-request';
+type Message = ReleaseRequest | ReleasedMessage | ReleaseQuery;
+
+const messageType = (data: unknown): Message['type'] | undefined => {
+  const type = typeof data === 'object' && data !== null ? (data as { type?: unknown }).type : null;
+  return type === 'release-request' || type === 'released' || type === 'release-query'
+    ? type
+    : undefined;
+};
 
 export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
   let state: InstanceState = 'acquiring';
@@ -121,6 +168,13 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
   let releasing = false;
   /** Writes are fenced: a fenced tab cannot unfence, so it reloads to take the app back. */
   let fenced = false;
+  /** When this tab's release sequence ended (it answers a `release-query`); null before. */
+  let releasedAt: number | null = null;
+  /**
+   * Grants waiting for an old holder's `released`, by their steal time: a `released` from a tab
+   * that lost the lock before then (an earlier handover) does not count.
+   */
+  const releaseWaiters = new Map<() => void, number>();
 
   function set(next: InstanceState) {
     if (next === state) return;
@@ -128,13 +182,69 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
     for (const l of [...listeners]) l();
   }
 
+  function post(message: Message) {
+    try {
+      channel?.postMessage(message);
+    } catch {
+      // A closed channel: nothing to tell.
+    }
+  }
+
+  /**
+   * Resolves on the next `released` message whose sequence ended at or after `since` (the steal),
+   * or after `ms`; posts `release-query` first, so an old holder that has already finished
+   * answers.
+   */
+  function waitForRelease(since: number, ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const done = () => {
+        releaseWaiters.delete(done);
+        deps.clearTimeout(timer);
+        resolve();
+      };
+      const timer = deps.setTimeout(done, Math.max(0, ms));
+      releaseWaiters.set(done, since);
+      post({ type: 'release-query' });
+    });
+  }
+
+  /**
+   * The steal marker, read and removed: its steal time and remaining wait, ms; null when there
+   * is none fresh.
+   */
+  function takeStealMarker(): { since: number; left: number } | null {
+    try {
+      const value = deps.storage?.getItem(STEAL_MARKER_KEY) ?? null;
+      if (value === null) return null;
+      deps.storage?.removeItem(STEAL_MARKER_KEY);
+      const since = Number(value);
+      const age = deps.now() - since;
+      return Number.isFinite(age) && age >= 0 && age < RELEASED_FALLBACK_MS
+        ? { since, left: RELEASED_FALLBACK_MS - age }
+        : null;
+    } catch {
+      // No sessionStorage: no wait.
+      return null;
+    }
+  }
+
+  /** Leaves the steal marker for the page this tab reloads into; best-effort. */
+  function leaveStealMarker() {
+    try {
+      deps.storage?.setItem(STEAL_MARKER_KEY, String(deps.now()));
+    } catch {
+      // No sessionStorage: the reloaded page scans at once.
+    }
+  }
+
   /** The lock is granted: hold it until the release sequence lets it go. */
-  function hold(): Promise<void> {
+  function hold(ready: Promise<void>): Promise<void> {
     holding = true;
     releasing = false;
+    releasedAt = null;
     set('held');
     try {
-      deps.onHeld();
+      deps.onHeld(ready);
     } catch {
       // The app runs regardless (the recovery scan waits for the next start).
     }
@@ -176,6 +286,9 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
     const release = releaseHeld;
     releaseHeld = null;
     release?.();
+    releasedAt = deps.now();
+    post({ type: 'released', at: releasedAt });
+    deps.trace?.('released-posted');
     set('lost');
   }
 
@@ -208,7 +321,23 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
   }
 
   function onMessage(event: { data: unknown }) {
-    if (isReleaseRequest(event.data) && holding) void releaseSequence();
+    switch (messageType(event.data)) {
+      case 'release-request':
+        if (holding && !deps.ignoreReleaseRequests?.()) void releaseSequence();
+        break;
+      case 'release-query':
+        // A sequence still running posts `released` when it ends.
+        if (releasedAt !== null) post({ type: 'released', at: releasedAt });
+        break;
+      case 'released': {
+        const at = (event.data as { at?: unknown }).at;
+        if (typeof at !== 'number') break;
+        const ready = [...releaseWaiters].filter(([, since]) => at >= since);
+        if (ready.length > 0) deps.trace?.('released-heard');
+        for (const [done] of ready) done();
+        break;
+      }
+    }
   }
 
   function onConnection(next: ConnectionState) {
@@ -241,10 +370,16 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
       { ifAvailable: true },
       (lock) => {
         if (!lock) {
+          // A reloaded page that did not get the lock drops its marker: it never waits now.
+          takeStealMarker();
           set('other-tab');
           return;
         }
-        return hold();
+        // A page reloaded right after stealing the lock waits as the steal's grant would have.
+        const marker = takeStealMarker();
+        return hold(
+          marker === null ? Promise.resolve() : waitForRelease(marker.since, marker.left),
+        );
       },
       (err) => {
         // A SecurityError means this document may never use Web Locks (an opaque origin, a
@@ -256,9 +391,16 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
     );
   }
 
-  /** Granted after "Use here": run the app, or reload when this tab's writes are fenced. */
-  function takeOver(): Promise<void> | void {
-    if (!fenced) return hold();
+  /**
+   * Granted after "Use here": run the app, or reload when this tab's writes are fenced. A grant
+   * by `steal` waits for the old holder's `released` before it is ready; a fenced tab carries
+   * that wait across its reload in the steal marker.
+   */
+  function takeOver(stolen: boolean): Promise<void> | void {
+    if (!fenced) {
+      return hold(stolen ? waitForRelease(deps.now(), RELEASED_FALLBACK_MS) : Promise.resolve());
+    }
+    if (stolen) leaveStealMarker();
     // Released before the reload, so the new page's first request gets it.
     queueMicrotask(deps.reload);
   }
@@ -267,7 +409,7 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
     if (state !== 'other-tab' && state !== 'lost') return;
     const before = state;
     set('handing-over');
-    channel?.postMessage({ type: 'release-request' } satisfies ReleaseRequest);
+    post({ type: 'release-request' });
     const abort = new AbortController();
     let done = false;
     const timer = deps.setTimeout(() => {
@@ -276,7 +418,7 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
       abort.abort();
       request(
         { steal: true },
-        () => takeOver(),
+        () => takeOver(true),
         () => {
           // Not granted: back to the notice this tab showed, so Use here works again.
           if (state === 'handing-over') set(before);
@@ -287,7 +429,7 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
       if (done) return;
       done = true;
       deps.clearTimeout(timer);
-      return takeOver();
+      return takeOver(false);
     });
   }
 
@@ -308,6 +450,11 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
   };
 }
 
+/** Dev only: the e2e hooks' state (`window.__instanceTest`). */
+let devIgnoreReleaseRequests = false;
+let devConnectionListener: ((state: ConnectionState) => void) | null = null;
+const devEvents: InstanceTestEvent[] = [];
+
 /** The app-wide lock; `main.tsx` starts it before the first render. */
 export const instanceLock: InstanceLock = createInstanceLock({
   locks: typeof navigator !== 'undefined' ? navigator.locks : undefined,
@@ -316,16 +463,69 @@ export const instanceLock: InstanceLock = createInstanceLock({
   cancelAll: () => engineClient.cancelAll(),
   closeDb: () => db.close(),
   fenceWrites: () => db.fenceWrites(),
-  onConnectionState: (listener) => db.onConnectionState(listener),
+  onConnectionState: (listener) => {
+    if (import.meta.env.DEV) devConnectionListener = listener;
+    return db.onConnectionState(listener);
+  },
   reload: () => location.reload(),
   setTimeout: (fn, ms) => setTimeout(fn, ms),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   // The scan is a no-op once the store has been handed over (this tab lost the lock meanwhile).
-  onHeld: delayedRecoveryScan(
-    (fn, ms) => setTimeout(fn, ms),
-    () => recordingSession.scanForRecovery(),
-  ),
+  onHeld: scanWhenReady(() => {
+    if (import.meta.env.DEV) devEvents.push({ event: 'scan', at: Date.now() });
+    return recordingSession.scanForRecovery();
+  }),
+  storage: (() => {
+    try {
+      return typeof sessionStorage !== 'undefined' ? sessionStorage : undefined;
+    } catch {
+      // A document denied storage access: no marker.
+      return undefined;
+    }
+  })(),
+  now: () => Date.now(),
+  // Production builds replace the conditions with `false`, so the hooks tree-shake out.
+  ...(import.meta.env.DEV
+    ? {
+        ignoreReleaseRequests: () => devIgnoreReleaseRequests,
+        trace: (event: InstanceTestEvent['event']) => devEvents.push({ event, at: Date.now() }),
+      }
+    : {}),
 });
+
+/** Dev only: one event noted for the e2e tests, with its wall-clock time. */
+export interface InstanceTestEvent {
+  event: 'released-posted' | 'released-heard' | 'scan';
+  at: number;
+}
+
+/** Dev only: the e2e hooks on `window.__instanceTest` (absent from production builds). */
+export interface InstanceTestHooks {
+  /** From now on this tab ignores `release-request`, so "Use here" elsewhere has to steal. */
+  ignoreReleaseRequests(): void;
+  /** Reports a database connection state to the lock, as `db.ts` would (`blocked`, `open`). */
+  reportConnectionState(state: ConnectionState): void;
+  /** The `released` messages posted and heard, and the recovery scans run, in order. */
+  events(): InstanceTestEvent[];
+}
+
+declare global {
+  interface Window {
+    __instanceTest?: InstanceTestHooks;
+  }
+}
+
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  window.__instanceTest = {
+    ignoreReleaseRequests() {
+      devIgnoreReleaseRequests = true;
+    },
+    reportConnectionState(state) {
+      devConnectionListener?.(state);
+    },
+    events: () => [...devEvents],
+  };
+}
 
 // Dev only. main.tsx imports this module, so Vite turns an edit here or in anything it imports
 // into a full reload already; this is the backstop should a hot update ever re-run it in place.

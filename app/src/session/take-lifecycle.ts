@@ -228,8 +228,12 @@ export interface TakeLifecycle {
   inputEnded(opened: OpenedInput): Promise<TakeOutcome>;
   /** A handover starts: a count-in is cancelled and a recording take marked `stopping`. */
   beginHandover(): void;
-  /** The handover's save (queued): a recording or stopping take is saved as `instance-lost`. */
-  finishForHandover(): Promise<void>;
+  /**
+   * The handover's save (queued): a recording or stopping take is saved as `instance-lost`.
+   * Resolves as what became of it (`none`: no take was recording; a save cut off by the
+   * handover's deadline or the write fence settles as `failed`).
+   */
+  finishForHandover(): Promise<TakeOutcome>;
   /** Audio-clock time the take has recorded so far, in ms; 0 with no capture running. */
   readElapsedMs(): number;
   /** The count-in's beat as shown, counting down from 4; null when no count-in runs. */
@@ -892,14 +896,15 @@ export function createTakeLifecycle(
     }
   }
 
-  async function finishForHandover() {
+  async function finishForHandover(): Promise<TakeOutcome> {
     // Queued after a take being created (`starting`) or saved by a Stop: the first now records,
     // the second has gone.
     if (active && (machine.state === 'recording' || machine.state === 'stopping')) {
       stopWatchingLimits(active);
       transition('stopping');
-      await finishTake('instance-lost');
+      return finishTake('instance-lost');
     }
+    return 'none';
   }
 
   return {

@@ -64,6 +64,7 @@ function setup(
   let published: readonly RecoveredTake[] = [];
   let activeTakeId = options.activeTakeId ?? null;
   let recording = options.recording ?? false;
+  let handedOver = false;
   const extOf = (blob: Blob) =>
     blob.type === 'audio/wav' ? 'wav' : blob.type.startsWith('audio/ogg') ? 'ogg' : 'webm';
   const deps: RecoveryDeps = {
@@ -102,7 +103,7 @@ function setup(
   const host: RecoveryHost = {
     activeTakeId: () => activeTakeId,
     isRecording: () => recording,
-    handedOver: () => false,
+    handedOver: () => handedOver,
     publish: vi.fn((list: readonly RecoveredTake[]) => {
       published = list;
     }),
@@ -136,6 +137,7 @@ function setup(
     published: () => published,
     setActive: (id: string | null) => (activeTakeId = id),
     setRecording: (on: boolean) => (recording = on),
+    handOver: () => (handedOver = true),
   };
 }
 
@@ -409,6 +411,133 @@ describe('Open', () => {
     await expect(t.recovery.open('a')).resolves.toBeUndefined();
     expect(t.published()).toEqual([expect.objectContaining({ id: 'a', opening: false })]);
     expect(t.host.patchTake).not.toHaveBeenCalled();
+  });
+});
+
+describe('Open and a handover (story 5.3)', () => {
+  async function offered(world: Partial<World>) {
+    const t = setup(world);
+    await t.recovery.scan();
+    return t;
+  }
+
+  it('a handover during the encode: nothing written, no navigation, the take stays recording', async () => {
+    const t = await offered({
+      takes: new Map([['a', take('a')]]),
+      raw: new Map([['a', seconds(1)]]),
+    });
+    const encoding = deferred<Blob>();
+    vi.mocked(t.deps.encodePcm).mockReturnValueOnce(encoding.promise);
+    const opening = t.recovery.open('a');
+    await vi.waitFor(() => expect(t.deps.encodePcm).toHaveBeenCalled());
+    t.handOver();
+    encoding.resolve(new Blob(['opus'], { type: 'audio/webm;codecs=opus' }));
+    await opening;
+    expect(t.host.writeCompressed).not.toHaveBeenCalled();
+    expect(t.host.patchTake).not.toHaveBeenCalled();
+    expect(t.host.navigate).not.toHaveBeenCalled();
+    expect(t.takes.get('a')?.status).toBe('recording');
+  });
+
+  it('a handover after any read stops the rebuild before it writes', async () => {
+    // Each read of the rebuild, by call: getTake 2 is the re-read just before the save, and
+    // readCompressed 2 the "meanwhile" check after the encode.
+    const steps = [
+      ['getTake', 1],
+      ['readRaw', 1],
+      ['readCompressed', 1],
+      ['readCompressed', 2],
+      ['getTake', 2],
+    ] as const;
+    for (const [step, nth] of steps) {
+      const t = await offered({
+        takes: new Map([['a', take('a')]]),
+        raw: new Map([['a', seconds(1)]]),
+      });
+      const real = vi.mocked(t.deps[step]).getMockImplementation() as (
+        id: string,
+      ) => Promise<unknown>;
+      let calls = 0;
+      vi.mocked(t.deps[step]).mockImplementation(async (id: string) => {
+        const value = await real(id);
+        if (++calls === nth) t.handOver();
+        return value as never;
+      });
+      await t.recovery.open('a');
+      expect(calls, `${step} ${nth}`).toBeGreaterThanOrEqual(nth);
+      expect(t.host.writeCompressed, `${step} ${nth}`).not.toHaveBeenCalled();
+      expect(t.host.patchTake, `${step} ${nth}`).not.toHaveBeenCalled();
+      expect(t.host.navigate, `${step} ${nth}`).not.toHaveBeenCalled();
+      expect(t.takes.get('a')?.status).toBe('recording');
+    }
+  });
+
+  it('a handover during the save: no patch, no navigation, nothing more read or published', async () => {
+    const t = await offered({
+      takes: new Map([['a', take('a')]]),
+      raw: new Map([['a', seconds(1)]]),
+    });
+    vi.mocked(t.deps.getTake).mockClear();
+    let getTakesAtReject = -1;
+    vi.mocked(t.host.writeCompressed).mockImplementationOnce(async () => {
+      t.handOver();
+      getTakesAtReject = vi.mocked(t.deps.getTake).mock.calls.length;
+      throw new AppError('instance-taken', 'fenced');
+    });
+    await t.recovery.open('a');
+    expect(t.host.patchTake).not.toHaveBeenCalled();
+    expect(t.host.navigate).not.toHaveBeenCalled();
+    // The catch returns at once: no re-read, and the entry stays as it was.
+    expect(vi.mocked(t.deps.getTake).mock.calls.length).toBe(getTakesAtReject);
+    expect(t.published()).toEqual([expect.objectContaining({ id: 'a', opening: true })]);
+
+    // The write succeeded but the steal landed during it (the fence comes later): no patch.
+    const w = await offered({
+      takes: new Map([['c', take('c')]]),
+      raw: new Map([['c', seconds(1)]]),
+    });
+    const write = vi.mocked(w.host.writeCompressed).getMockImplementation()!;
+    vi.mocked(w.host.writeCompressed).mockImplementationOnce(async (...args) => {
+      await write(...args);
+      w.handOver();
+    });
+    await w.recovery.open('c');
+    expect(w.host.writeCompressed).toHaveBeenCalledTimes(1);
+    expect(w.host.patchTake).not.toHaveBeenCalled();
+    expect(w.host.navigate).not.toHaveBeenCalled();
+    expect(w.takes.get('c')?.status).toBe('recording');
+
+    // The patch committed just before the handover was seen: still no navigation.
+    const u = await offered({
+      takes: new Map([['b', take('b')]]),
+      raw: new Map([['b', seconds(1)]]),
+    });
+    const patch = vi.mocked(u.host.patchTake).getMockImplementation()!;
+    vi.mocked(u.host.patchTake).mockImplementationOnce(async (...args) => {
+      await patch(...args);
+      u.handOver();
+    });
+    await u.recovery.open('b');
+    expect(u.takes.get('b')?.status).toBe('recorded');
+    expect(u.host.navigate).not.toHaveBeenCalled();
+  });
+
+  it('a take saved during the encode: nothing written, its entry dropped', async () => {
+    const t = await offered({
+      takes: new Map([['a', take('a')]]),
+      raw: new Map([['a', seconds(1)]]),
+    });
+    vi.mocked(t.deps.encodePcm).mockImplementationOnce(async () => {
+      // Another tab's late instance-lost save lands meanwhile (no compressed copy here).
+      t.takes.set('a', take('a', { status: 'recorded', stopReason: 'instance-lost' }));
+      return new Blob(['opus'], { type: 'audio/webm;codecs=opus' });
+    });
+    await t.recovery.open('a');
+    expect(t.host.writeCompressed).not.toHaveBeenCalled();
+    expect(t.host.patchTake).not.toHaveBeenCalled();
+    expect(t.host.navigate).not.toHaveBeenCalled();
+    expect(t.takes.get('a')?.stopReason).toBe('instance-lost');
+    expect(t.published()).toEqual([]);
   });
 });
 

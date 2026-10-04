@@ -1,7 +1,13 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { instanceLock } from '../../src/session/instance-lock';
+import {
+  recordingSession,
+  type HandoverTake,
+  type RecordingSnapshot,
+} from '../../src/session/recording-session';
 import { InstanceScreen } from '../../src/ui/components/InstanceScreen';
+import { strings } from '../../src/ui/strings';
 
 // Story 3.10: the full-screen instance notices.
 
@@ -43,5 +49,63 @@ describe('instance screen', () => {
       screen.getByRole('heading', { name: 'TabCreator needs a recent desktop Chrome' }),
     ).toBeTruthy();
     expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  describe("the lost tab's take line (story 5.3)", () => {
+    /** Fakes the recording store's `handoverTake`; returns a setter that notifies. */
+    function fakeHandoverTake(initial: HandoverTake) {
+      let value = initial;
+      let listeners: Array<() => void> = [];
+      const real = recordingSession.getSnapshot();
+      vi.spyOn(recordingSession, 'getSnapshot').mockImplementation((): RecordingSnapshot => ({
+        ...real,
+        handoverTake: value,
+      }));
+      vi.spyOn(recordingSession, 'subscribe').mockImplementation((listener) => {
+        listeners.push(listener);
+        return () => {
+          listeners = listeners.filter((l) => l !== listener);
+        };
+      });
+      return (next: HandoverTake) => {
+        value = next;
+        act(() => listeners.forEach((l) => l()));
+      };
+    }
+
+    it('saved: "Your recording was saved — it\'s in the Library in the other tab"', () => {
+      fakeHandoverTake('saved');
+      render(<InstanceScreen state="lost" />);
+      expect(screen.getByText(strings['global.instanceTakeSaved'])).toBeTruthy();
+      expect(
+        screen.getByText("Your recording was saved — it's in the Library in the other tab"),
+      ).toBeTruthy();
+    });
+
+    it('failed: "wasn\'t saved here", arriving when the late save settles', () => {
+      const set = fakeHandoverTake(null);
+      render(<InstanceScreen state="lost" />);
+      expect(screen.queryByText(strings['global.instanceTakeNotSaved'])).toBeNull();
+      set('failed');
+      expect(
+        screen.getByText(
+          "Your recording wasn't saved here — the other tab will offer to recover it",
+        ),
+      ).toBeTruthy();
+      // Announced: the line sits in a status region of its own.
+      expect(screen.getByText(strings['global.instanceTakeNotSaved']).getAttribute('role')).toBe(
+        'status',
+      );
+    });
+
+    it('no take, or not lost: no line', () => {
+      fakeHandoverTake(null);
+      render(<InstanceScreen state="lost" />);
+      expect(screen.queryByText(strings['global.instanceTakeSaved'])).toBeNull();
+      cleanup();
+      fakeHandoverTake('saved');
+      render(<InstanceScreen state="other-tab" />);
+      expect(screen.queryByText(strings['global.instanceTakeSaved'])).toBeNull();
+    });
   });
 });

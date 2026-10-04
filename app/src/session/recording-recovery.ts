@@ -17,6 +17,10 @@
 // take list is read, and re-reads each take just before offering it, so a take saved in between
 // is never offered. `reoffer(id)` is the scan for one take, run when this tab's own save of it
 // failed: it is offered again in the same session (or, too short, deleted).
+//
+// A handover cancels Open (story 5.3): the rebuild re-checks `handedOver()` after each await and
+// re-reads the take just before its save, so after a handover it writes nothing and never
+// navigates; the take stays `recording` for the new holder's scan.
 
 import type { Take } from '../model/types';
 import type { CompressedFile } from '../storage/audio-store';
@@ -243,17 +247,25 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
     return scanning;
   }
 
+  /**
+   * Rebuilds take `id` and saves it `recorded`. Stops, writing nothing more and not navigating,
+   * as soon as the store is handed over (story 5.3): checked after every await and just before
+   * the save, so the take stays `recording` for the new holder's scan.
+   */
   async function rebuild(id: string): Promise<void> {
     const take = await deps.getTake(id);
+    if (host.handedOver()) return;
     if (!take || take.status !== 'recording') {
       drop(id);
       return;
     }
     const samples = await deps.readRaw(id);
+    if (host.handedOver()) return;
     const durationMs = Math.round((samples.length / take.sampleRate) * 1000);
     let audioMime: string;
     let blob: Blob | null = null;
     const existing = await deps.readCompressed(id);
+    if (host.handedOver()) return;
     if (existing) {
       // Never overwritten, and no second format (writeCompressed deletes the others).
       audioMime = existing.type;
@@ -264,14 +276,24 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
       } catch {
         encoded = deps.encodeWav(samples, take.sampleRate);
       }
+      if (host.handedOver()) return;
       // The encode runs in real time: check again that nothing was saved meanwhile.
       const meanwhile = await deps.readCompressed(id);
+      if (host.handedOver()) return;
       if (meanwhile) {
         audioMime = meanwhile.type;
       } else {
         blob = encoded;
         audioMime = encoded.type;
       }
+    }
+    // Re-read just before the save: a take saved meanwhile (by this tab, or by a tab that held
+    // the lock until now) is never patched over.
+    const now = await deps.getTake(id);
+    if (host.handedOver()) return;
+    if (now?.status !== 'recording') {
+      drop(id);
+      return;
     }
     const clips = createClipCounter();
     clips.addSamples(samples);
@@ -281,9 +303,16 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
       durationMs,
       stopReason: 'recovered',
       clipped: clips.clipped,
+      // A steal during the write (the fence may come up to 3 s later): the take is not patched.
+      afterWrite: async () => {
+        if (host.handedOver()) throw new Error('Handed over during the recovery save');
+      },
     });
+    // A handover during the save: the fence rejected what came after it, and nothing navigates.
+    if (host.handedOver()) return;
     drop(id);
     if (!host.isRecording()) host.navigate(id);
+    return;
   }
 
   async function open(id: string): Promise<void> {
@@ -291,8 +320,11 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
     busy.add(id);
     setOpening(id, true);
     try {
+      // Stopped for a handover: the entry stays as it is (the store is handed over).
       await rebuild(id);
     } catch {
+      // Handed over: nothing more is read or published.
+      if (host.handedOver()) return;
       // The banner comes back with its actions, unless the take is no longer unfinished.
       const still = await deps.getTake(id).then(
         (take) => take?.status === 'recording',

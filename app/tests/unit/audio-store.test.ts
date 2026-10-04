@@ -264,3 +264,81 @@ describe('listCompressed', () => {
     expect(await createAudioStore({ root: sizedRoot({}) }).listCompressed()).toEqual([]);
   });
 });
+
+/** A fake OPFS root with a writable `audio/` directory that logs every file operation. */
+function writableAudioRoot(files: string[], hooks: { onWrite?: () => void; onClose?: () => void }) {
+  const log: string[] = [];
+  const present = new Set(files);
+  const notFound = () => new DOMException('not found', 'NotFoundError');
+  const audio = {
+    async getFileHandle(name: string, options?: { create?: boolean }) {
+      if (!present.has(name)) {
+        if (!options?.create) throw notFound();
+        present.add(name);
+        log.push(`create ${name}`);
+      }
+      return {
+        async createWritable() {
+          return {
+            async write() {
+              log.push(`write ${name}`);
+              hooks.onWrite?.();
+            },
+            async close() {
+              log.push(`close ${name}`);
+              hooks.onClose?.();
+            },
+            async abort() {
+              log.push(`abort ${name}`);
+            },
+          };
+        },
+      };
+    },
+    async removeEntry(name: string) {
+      if (!present.delete(name)) throw notFound();
+      log.push(`remove ${name}`);
+    },
+  };
+  const root = {
+    async getDirectoryHandle(name: string) {
+      if (name !== 'audio') throw notFound();
+      return audio;
+    },
+  };
+  return {
+    log,
+    present,
+    root: () => Promise.resolve(root as unknown as FileSystemDirectoryHandle),
+  };
+}
+
+describe('writeCompressed and the write fence (story 5.3)', () => {
+  it('commits, then removes the copies saved under other formats', async () => {
+    const fake = writableAudioRoot(['t1.wav'], {});
+    const store = createAudioStore({ root: fake.root });
+    await store.writeCompressed('t1', new Blob([], { type: 'audio/mp4' }));
+    expect(fake.log).toEqual(['create t1.m4a', 'write t1.m4a', 'close t1.m4a', 'remove t1.wav']);
+  });
+
+  it('fenced while the blob is written: aborted, not committed, no other format removed', async () => {
+    const fake = writableAudioRoot(['t1.wav'], { onWrite: fenceWrites });
+    const store = createAudioStore({ root: fake.root });
+    await expect(
+      store.writeCompressed('t1', new Blob([], { type: 'audio/mp4' })),
+    ).rejects.toMatchObject({ code: 'instance-taken' });
+    // The new file is removed, as on any failed write; the old format's file stays.
+    expect(fake.log).toEqual(['create t1.m4a', 'write t1.m4a', 'abort t1.m4a', 'remove t1.m4a']);
+    expect([...fake.present]).toEqual(['t1.wav']);
+  });
+
+  it('fenced after the commit: no other format is removed', async () => {
+    const fake = writableAudioRoot(['t1.wav', 't1.webm'], { onClose: fenceWrites });
+    const store = createAudioStore({ root: fake.root });
+    await expect(
+      store.writeCompressed('t1', new Blob([], { type: 'audio/mp4' })),
+    ).rejects.toMatchObject({ code: 'instance-taken' });
+    expect(fake.log.filter((l) => l.startsWith('remove'))).toEqual([]);
+    expect(fake.present.has('t1.wav') && fake.present.has('t1.webm')).toBe(true);
+  });
+});

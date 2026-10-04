@@ -52,3 +52,8 @@
   margin: 0 auto;
   padding-inline: var(--space-gutter);
 }
+
+/* The update-blocked banner while a take is busy (story 5.3): above the screen. */
+.upgradeBlocked {
+  margin-top: var(--space-4);
+}

@@ -8,8 +8,11 @@ import {
 } from 'react';
 import styles from './App.module.css';
 import { instanceLock } from './session/instance-lock';
+import { recordingSession } from './session/recording-session';
 import { Announcer } from './ui/a11y/announcer';
 import { ShortcutListener } from './ui/a11y/shortcuts';
+import banner from './ui/components/banner.module.css';
+import { ErrorIcon } from './ui/components/icons';
 import { InstanceScreen } from './ui/components/InstanceScreen';
 import { MicErrorAnnouncer } from './ui/components/MicErrorAnnouncer';
 import { MicNotices } from './ui/components/MicNotices';
@@ -65,29 +68,33 @@ function renderDevPage(hash: string): ReactNode {
 /**
  * The instance gate (story 3.10, spine AD-6): the shell and every screen (all of which may write
  * storage) mount only while this tab holds the instance lock; otherwise the full-screen instance
- * notice replaces them, and nothing while the first request is pending.
+ * notice replaces them, and nothing while the first request is pending. A database upgrade
+ * blocked while the recording store is busy (story 5.3) keeps the shell mounted, with the notice
+ * as a banner, so Stop stays reachable; the full-screen notice follows once the take is saved.
  */
 export function App() {
   const state = useSyncExternalStore(instanceLock.subscribe, instanceLock.getSnapshot);
+  const busy = useSyncExternalStore(recordingSession.subscribe, recordingSession.isBusy);
   if (state === 'acquiring') return null;
+  if (state === 'upgrade-blocked' && busy) return <HeldApp upgradeBlocked />;
   if (state !== 'held') return <InstanceScreen state={state} />;
-  return <HeldApp />;
+  return <HeldApp upgradeBlocked={false} />;
 }
 
-function HeldApp() {
+function HeldApp({ upgradeBlocked }: { upgradeBlocked: boolean }) {
   const hash = useHash();
   const devPage = renderDevPage(hash);
   if (devPage) {
     // Inside the shell, so the test page runs with the announcer and toast host mounted.
     return (
-      <Shell current={null}>
+      <Shell current={null} upgradeBlocked={upgradeBlocked}>
         <Suspense fallback={null}>{devPage}</Suspense>
       </Shell>
     );
   }
   // An unknown hash shows Record while `useRoute` replaces it with #/record.
   return (
-    <Shell current={parseRoute(hash)?.name ?? 'record'}>
+    <Shell current={parseRoute(hash)?.name ?? 'record'} upgradeBlocked={upgradeBlocked}>
       <RoutedScreen />
     </Shell>
   );
@@ -99,9 +106,18 @@ function RoutedScreen() {
 
 /**
  * The app frame: top bar, main content, and the one announcer, shortcut listener and toast host
- * (spine AD-18).
+ * (spine AD-18). `upgradeBlocked`: the update-blocked notice as an alert banner at the top of
+ * main (story 5.3).
  */
-function Shell({ current, children }: { current: Route['name'] | null; children: ReactNode }) {
+function Shell({
+  current,
+  upgradeBlocked,
+  children,
+}: {
+  current: Route['name'] | null;
+  upgradeBlocked: boolean;
+  children: ReactNode;
+}) {
   return (
     <>
       <header className={styles.topBar}>
@@ -126,6 +142,16 @@ function Shell({ current, children }: { current: Route['name'] | null; children:
       </header>
       {/* tabIndex -1: the toast returns focus here when the element it came from is gone. */}
       <main className={styles.main} tabIndex={-1}>
+        {upgradeBlocked && (
+          <div
+            role="alert"
+            className={`${banner.banner} ${banner.error} ${styles.upgradeBlocked}`}
+            data-testid="upgrade-blocked-banner"
+          >
+            <ErrorIcon className={banner.icon} />
+            <p className={banner.text}>{strings['global.instanceUpgradeBlocked']}</p>
+          </div>
+        )}
         {children}
       </main>
       <Announcer />

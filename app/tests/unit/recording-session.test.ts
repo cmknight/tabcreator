@@ -30,6 +30,7 @@ const IDLE = {
   savedSeq: 0,
   storageFull: false,
   recovered: [],
+  handoverTake: null,
 };
 
 /** The prefs' analysis defaults the fakes return; `record()` copies them into the take. */

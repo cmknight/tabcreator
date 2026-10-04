@@ -188,6 +188,9 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
         const writable = await handle.createWritable();
         try {
           await writable.write(blob);
+          // The fence may have been set while the blob was written (story 5.3): a fenced tab
+          // commits nothing, so the new holder's recovery sees the files as they were.
+          assertWritable();
           await writable.close();
         } catch (err) {
           // The swap file is discarded: an existing file keeps its old contents.
@@ -195,9 +198,12 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
           if (!existed) await removeIfPresent(audio, name).catch(() => {});
           throw err;
         }
-        // One compressed file per take: drop any copy saved under another format.
+        // One compressed file per take: drop any copy saved under another format. No other
+        // format's file is removed once writes are fenced.
         for (const f of AUDIO_FORMATS) {
-          if (f.ext !== ext) await removeIfPresent(audio, `${takeId}.${f.ext}`);
+          if (f.ext === ext) continue;
+          assertWritable();
+          await removeIfPresent(audio, `${takeId}.${f.ext}`);
         }
       } catch (err) {
         throw toStorageError(err, 'Write compressed audio');
