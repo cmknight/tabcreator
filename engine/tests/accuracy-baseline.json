@@ -1,37 +1,37 @@
 {
-  "engine_version": "0.4.0",
+  "engine_version": "0.5.0",
   "sets": {
     "clean-gate": {
       "fixtures": 14,
       "counts": {
         "truth": 170,
-        "detected": 163,
-        "tp": 146,
-        "fp": 17,
-        "fn": 24,
+        "detected": 168,
+        "tp": 168,
+        "fp": 0,
+        "fn": 2,
         "octave_errors": 0,
-        "fret_total": 146,
-        "fret_agree": 113
+        "fret_total": 168,
+        "fret_agree": 137
       },
-      "f1": 0.8768768768768769,
+      "f1": 0.9940828402366864,
       "octave_rate": 0.0,
-      "fret_agreement": 0.773972602739726
+      "fret_agreement": 0.8154761904761905
     },
     "noisy-gate": {
       "fixtures": 14,
       "counts": {
         "truth": 170,
-        "detected": 156,
-        "tp": 147,
-        "fp": 9,
-        "fn": 23,
+        "detected": 167,
+        "tp": 167,
+        "fp": 0,
+        "fn": 3,
         "octave_errors": 0,
-        "fret_total": 147,
-        "fret_agree": 114
+        "fret_total": 167,
+        "fret_agree": 136
       },
-      "f1": 0.901840490797546,
+      "f1": 0.9910979228486647,
       "octave_rate": 0.0,
-      "fret_agreement": 0.7755102040816326
+      "fret_agreement": 0.8143712574850299
     },
     "phantom-only": {
       "fixtures": 2,
@@ -53,15 +53,15 @@
       "fixtures": 6,
       "counts": {
         "truth": 250,
-        "detected": 169,
-        "tp": 169,
+        "detected": 195,
+        "tp": 195,
         "fp": 0,
-        "fn": 81,
+        "fn": 55,
         "octave_errors": 0,
-        "fret_total": 169,
-        "fret_agree": 169
+        "fret_total": 195,
+        "fret_agree": 195
       },
-      "f1": 0.8066825775656324,
+      "f1": 0.8764044943820225,
       "octave_rate": 0.0,
       "fret_agreement": 1.0
     }
@@ -72,12 +72,12 @@
       "counts": {
         "truth": 3,
         "detected": 3,
-        "tp": 0,
-        "fp": 3,
-        "fn": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
         "octave_errors": 0,
-        "fret_total": 0,
-        "fret_agree": 0
+        "fret_total": 3,
+        "fret_agree": 3
       }
     },
     "bend_up_noisy": {
@@ -85,21 +85,21 @@
       "counts": {
         "truth": 3,
         "detected": 3,
-        "tp": 0,
-        "fp": 3,
-        "fn": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
         "octave_errors": 0,
-        "fret_total": 0,
-        "fret_agree": 0
+        "fret_total": 3,
+        "fret_agree": 3
       }
     },
     "c_major_scale_pos1": {
       "set": "clean-gate",
       "counts": {
         "truth": 12,
-        "detected": 14,
+        "detected": 12,
         "tp": 12,
-        "fp": 2,
+        "fp": 0,
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 12,
@@ -149,9 +149,9 @@
       "set": "clean-gate",
       "counts": {
         "truth": 8,
-        "detected": 9,
+        "detected": 8,
         "tp": 8,
-        "fp": 1,
+        "fp": 0,
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 8,
@@ -175,9 +175,9 @@
       "set": "clean-gate",
       "counts": {
         "truth": 8,
-        "detected": 10,
+        "detected": 8,
         "tp": 8,
-        "fp": 2,
+        "fp": 0,
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 8,
@@ -201,9 +201,9 @@
       "set": "clean-gate",
       "counts": {
         "truth": 6,
-        "detected": 8,
+        "detected": 6,
         "tp": 6,
-        "fp": 2,
+        "fp": 0,
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 6,
@@ -259,7 +259,7 @@
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 17,
-        "fret_agree": 0
+        "fret_agree": 2
       }
     },
     "legato_slurs_noisy": {
@@ -272,16 +272,16 @@
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 17,
-        "fret_agree": 0
+        "fret_agree": 2
       }
     },
     "level_too_hot": {
       "set": "clean-gate",
       "counts": {
         "truth": 8,
-        "detected": 12,
+        "detected": 8,
         "tp": 8,
-        "fp": 4,
+        "fp": 0,
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 8,
@@ -292,9 +292,9 @@
       "set": "noisy-gate",
       "counts": {
         "truth": 8,
-        "detected": 11,
+        "detected": 8,
         "tp": 8,
-        "fp": 3,
+        "fp": 0,
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 8,
@@ -396,17 +396,30 @@
       "set": "clean-gate",
       "counts": {
         "truth": 64,
-        "detected": 46,
-        "tp": 46,
+        "detected": 62,
+        "tp": 62,
         "fp": 0,
-        "fn": 18,
+        "fn": 2,
         "octave_errors": 0,
-        "fret_total": 46,
-        "fret_agree": 46
+        "fret_total": 62,
+        "fret_agree": 62
       }
     },
     "repeated_notes_16th_120bpm_noisy": {
       "set": "noisy-gate",
+      "counts": {
+        "truth": 64,
+        "detected": 61,
+        "tp": 61,
+        "fp": 0,
+        "fn": 3,
+        "octave_errors": 0,
+        "fret_total": 61,
+        "fret_agree": 61
+      }
+    },
+    "repeated_notes_16th_160bpm": {
+      "set": "reported",
       "counts": {
         "truth": 64,
         "detected": 47,
@@ -418,56 +431,43 @@
         "fret_agree": 47
       }
     },
-    "repeated_notes_16th_160bpm": {
-      "set": "reported",
-      "counts": {
-        "truth": 64,
-        "detected": 34,
-        "tp": 34,
-        "fp": 0,
-        "fn": 30,
-        "octave_errors": 0,
-        "fret_total": 34,
-        "fret_agree": 34
-      }
-    },
     "repeated_notes_16th_160bpm_noisy": {
       "set": "reported",
       "counts": {
         "truth": 64,
-        "detected": 35,
-        "tp": 35,
+        "detected": 46,
+        "tp": 46,
         "fp": 0,
-        "fn": 29,
+        "fn": 18,
         "octave_errors": 0,
-        "fret_total": 35,
-        "fret_agree": 35
+        "fret_total": 46,
+        "fret_agree": 46
       }
     },
     "ringing_overlap": {
       "set": "reported",
       "counts": {
         "truth": 12,
-        "detected": 1,
-        "tp": 1,
+        "detected": 2,
+        "tp": 2,
         "fp": 0,
-        "fn": 11,
+        "fn": 10,
         "octave_errors": 0,
-        "fret_total": 1,
-        "fret_agree": 1
+        "fret_total": 2,
+        "fret_agree": 2
       }
     },
     "ringing_overlap_noisy": {
       "set": "reported",
       "counts": {
         "truth": 12,
-        "detected": 1,
-        "tp": 1,
+        "detected": 2,
+        "tp": 2,
         "fp": 0,
-        "fn": 11,
+        "fn": 10,
         "octave_errors": 0,
-        "fret_total": 1,
-        "fret_agree": 1
+        "fret_total": 2,
+        "fret_agree": 2
       }
     },
     "silence_60s": {
@@ -488,12 +488,12 @@
       "counts": {
         "truth": 3,
         "detected": 3,
-        "tp": 0,
-        "fp": 3,
-        "fn": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
         "octave_errors": 0,
-        "fret_total": 0,
-        "fret_agree": 0
+        "fret_total": 3,
+        "fret_agree": 1
       }
     },
     "slide_up_noisy": {
@@ -501,12 +501,12 @@
       "counts": {
         "truth": 3,
         "detected": 3,
-        "tp": 0,
-        "fp": 3,
-        "fn": 3,
+        "tp": 3,
+        "fp": 0,
+        "fn": 0,
         "octave_errors": 0,
-        "fret_total": 0,
-        "fret_agree": 0
+        "fret_total": 3,
+        "fret_agree": 1
       }
     },
     "vibrato": {
@@ -519,7 +519,7 @@
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 3,
-        "fret_agree": 1
+        "fret_agree": 3
       }
     },
     "vibrato_noisy": {
@@ -532,7 +532,7 @@
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 3,
-        "fret_agree": 1
+        "fret_agree": 3
       }
     }
   }

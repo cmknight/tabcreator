@@ -40,19 +40,24 @@ impl Set {
         }
     }
 
-    /// The minimum F1 this set must reach, for the gate sets.
+    /// The minimum F1 this set must reach, for the gate sets; for `real`, the reference F1
+    /// (US-8.4: reported, never gated).
     pub fn f1_threshold(self) -> Option<f64> {
         match self {
             Set::CleanGate => Some(0.95),
-            Set::NoisyGate => Some(0.90),
+            Set::NoisyGate | Set::Real => Some(0.90),
             _ => None,
         }
     }
 }
 
-/// Maximum octave-error rate, and minimum fret agreement, for the gate sets.
+/// Maximum octave-error rate, and minimum fret agreement, for the gate sets (and `real` from
+/// [`REAL_GATE_MIN_TAKES`] takes).
 pub const OCTAVE_MAX: f64 = 0.02;
 pub const FRET_MIN: f64 = 0.80;
+/// `testdata/real` is gated (octave errors and fret agreement) only once it holds this many
+/// takes (US-8.4); until then its thresholds are reported.
+pub const REAL_GATE_MIN_TAKES: usize = 20;
 
 /// The fixtures with no notes, scored by phantom count.
 pub const PHANTOM_ONLY: [&str; 2] = ["silence_60s", "noise_room_-50dbfs"];
@@ -82,11 +87,97 @@ pub struct FixtureRow {
     pub analyze_ms: f64,
 }
 
+/// A threshold as the report shows it: `0.95` or `2%`.
+fn show(threshold: f64, percent: bool) -> String {
+    if percent {
+        // Fixed precision, trailing zeros trimmed: 0.07 shows as 7%, not 7.000000000000001%.
+        let p = format!("{:.4}", threshold * 100.0);
+        format!("{}%", p.trim_end_matches('0').trim_end_matches('.'))
+    } else {
+        format!("{threshold:.2}")
+    }
+}
+
+/// Which way a threshold bounds its metric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Bound {
+    /// The value must be at least the threshold.
+    AtLeast,
+    /// The value must be at most the threshold.
+    AtMost,
+}
+
 /// One threshold check beside a pooled row; `met` is false when there is no data to judge.
+/// A `gated` check that is not met fails the harness (see [`threshold_failures`]); the others
+/// are only reported.
 #[derive(Debug, Clone, Serialize)]
 pub struct ThresholdCheck {
     pub label: String,
+    /// The metric's name in failure messages: `F1`, `octave errors` or `fret agreement`.
+    pub metric: &'static str,
+    pub value: Option<f64>,
+    pub threshold: f64,
+    pub bound: Bound,
+    /// Shown as a percentage (octave errors, fret agreement) rather than a ratio (F1).
+    pub percent: bool,
     pub met: bool,
+    pub gated: bool,
+}
+
+impl ThresholdCheck {
+    /// `short` names the metric in the report's label (`F1 ≥ 0.95`, `octave ≤ 2%`).
+    fn new(
+        (metric, short): (&'static str, &str),
+        value: Option<f64>,
+        threshold: f64,
+        bound: Bound,
+        percent: bool,
+        gated: bool,
+    ) -> Self {
+        let sign = match bound {
+            Bound::AtLeast => "≥",
+            Bound::AtMost => "≤",
+        };
+        let met = value.is_some_and(|v| match bound {
+            Bound::AtLeast => v >= threshold,
+            Bound::AtMost => v <= threshold,
+        });
+        Self {
+            label: format!("{short} {sign} {}", show(threshold, percent)),
+            metric,
+            value,
+            threshold,
+            bound,
+            percent,
+            met,
+            gated,
+        }
+    }
+
+    /// The failure message for set `set` when this gated check is not met: it names the set,
+    /// the metric, the value and the threshold.
+    pub fn failure(&self, set: Set) -> Option<String> {
+        if !self.gated || self.met {
+            return None;
+        }
+        let threshold = show(self.threshold, self.percent);
+        let need = match self.bound {
+            Bound::AtLeast => "at least",
+            Bound::AtMost => "at most",
+        };
+        let value = self.value.map_or("n/a (nothing to score)".to_owned(), |v| {
+            if self.percent {
+                percent(Some(v))
+            } else {
+                ratio(Some(v))
+            }
+        });
+        Some(format!(
+            "{} {}: {value}, threshold {need} {threshold}",
+            set.title(),
+            self.metric
+        ))
+    }
 }
 
 /// A set's pooled numbers (serialisable for the baseline JSON in a later entry).
@@ -110,18 +201,36 @@ pub fn pool(set: Set, rows: &[FixtureRow]) -> PooledRow {
     let fret_agreement = counts.fret_agreement();
     let mut thresholds = Vec::new();
     if let Some(min) = set.f1_threshold() {
-        thresholds.push(ThresholdCheck {
-            label: format!("F1 ≥ {min:.2}"),
-            met: f1.is_some_and(|v| v >= min),
-        });
-        thresholds.push(ThresholdCheck {
-            label: format!("octave ≤ {}%", OCTAVE_MAX * 100.0),
-            met: octave_rate.is_some_and(|v| v <= OCTAVE_MAX),
-        });
-        thresholds.push(ThresholdCheck {
-            label: format!("fret ≥ {}%", FRET_MIN * 100.0),
-            met: fret_agreement.is_some_and(|v| v >= FRET_MIN),
-        });
+        // The gate sets are gated on all three; `real` on octave errors and fret agreement once
+        // it holds REAL_GATE_MIN_TAKES takes, and its F1 is a reference only (US-8.4).
+        let (f1_gated, others_gated) = match set {
+            Set::Real => (false, members.len() >= REAL_GATE_MIN_TAKES),
+            _ => (true, true),
+        };
+        thresholds.push(ThresholdCheck::new(
+            ("F1", "F1"),
+            f1,
+            min,
+            Bound::AtLeast,
+            false,
+            f1_gated,
+        ));
+        thresholds.push(ThresholdCheck::new(
+            ("octave errors", "octave"),
+            octave_rate,
+            OCTAVE_MAX,
+            Bound::AtMost,
+            true,
+            others_gated,
+        ));
+        thresholds.push(ThresholdCheck::new(
+            ("fret agreement", "fret"),
+            fret_agreement,
+            FRET_MIN,
+            Bound::AtLeast,
+            true,
+            others_gated,
+        ));
     }
     PooledRow {
         set,
@@ -132,6 +241,21 @@ pub fn pool(set: Set, rows: &[FixtureRow]) -> PooledRow {
         fret_agreement,
         thresholds,
     }
+}
+
+/// Every gated threshold not met, over every set, each naming the set, the metric, the value and
+/// the threshold; empty when all are met.
+pub fn threshold_failures(rows: &[FixtureRow]) -> Vec<String> {
+    Set::ALL
+        .into_iter()
+        .flat_map(|set| {
+            pool(set, rows)
+                .thresholds
+                .iter()
+                .filter_map(|t| t.failure(set))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn ratio(v: Option<f64>) -> String {
@@ -148,7 +272,14 @@ fn thresholds_cell(p: &PooledRow) -> String {
     }
     p.thresholds
         .iter()
-        .map(|t| format!("{}: {}", t.label, if t.met { "met" } else { "not met" }))
+        .map(|t| {
+            format!(
+                "{}: {}{}",
+                t.label,
+                if t.met { "met" } else { "not met" },
+                if t.gated { "" } else { " (reported)" }
+            )
+        })
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -216,7 +347,9 @@ pub fn render(info: &RunInfo, rows: &[FixtureRow]) -> String {
     );
     let _ = writeln!(
         out,
-        "- Thresholds are shown, not enforced. Matching: same MIDI, onset within 50 ms; \
+        "- Thresholds are enforced on clean-gate and noisy-gate (and on real's octave errors and \
+         fret agreement from {REAL_GATE_MIN_TAKES} takes): the harness fails when one is not \
+         met; those marked (reported) are not. Matching: same MIDI, onset within 50 ms; \
          ground-truth notes below E2 (MIDI 40) are not scored.\n"
     );
 
@@ -382,6 +515,15 @@ mod tests {
     }
 
     #[test]
+    fn thresholds_show_without_float_artefacts() {
+        assert_eq!(show(0.07, true), "7%");
+        assert_eq!(show(0.02, true), "2%");
+        assert_eq!(show(0.8, true), "80%");
+        assert_eq!(show(0.125, true), "12.5%");
+        assert_eq!(show(0.95, false), "0.95");
+    }
+
+    #[test]
     fn empty_gate_set_is_not_met() {
         let p = pool(Set::CleanGate, &[]);
         assert!(p.thresholds.iter().all(|t| !t.met));
@@ -471,6 +613,14 @@ mod tests {
         assert!(
             out.contains(
                 "| real (reported; gates from 20 takes) | 1 | 5 | 5 | 3 | 2 | 2 | 0.600 |"
+            ),
+            "{out}"
+        );
+        // Under 20 takes every real threshold is reported, not gated.
+        assert!(
+            out.contains(
+                "F1 ≥ 0.90: not met (reported); octave ≤ 2%: met (reported); \
+                 fret ≥ 80%: not met (reported) |"
             ),
             "{out}"
         );

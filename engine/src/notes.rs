@@ -1,11 +1,13 @@
 //! Note building (US-4.4): turns onsets and the pitch track into timed, pitched notes with a
 //! confidence, and measures the tuning offset and below-range notes behind the CAP-27 warnings.
 //!
-//! Octave correction (US-4.4) is applied to low-confidence notes only. Ring-over removal and glide
-//! confidence capping (entry 9) are not done here yet.
+//! Clean-up (US-4.4, CAP-28): ring-over removal drops a ringing string re-emerging as a
+//! pitch-change note; a note over a glide (bend, slide) takes its starting pitch with its
+//! confidence capped, so it is flagged low-confidence; octave correction is applied to
+//! low-confidence notes only.
 
 use crate::Params;
-use crate::onset::Onsets;
+use crate::onset::{OnsetSource, Onsets};
 use crate::preprocess::Preprocessed;
 use crate::pyin::{self, PitchTrack};
 use serde::{Serialize, Serializer};
@@ -29,6 +31,9 @@ const OCTAVE_FIX_MIN_DISTANCE: i32 = 10;
 const OCTAVE_FIX_MAX_RESIDUAL: i32 = 5;
 /// Confidence multiplier for a corrected note.
 const OCTAVE_FIX_CONFIDENCE_FACTOR: f64 = 0.8;
+/// Glides (US-4.4, FR-25): a note over a glide has its confidence capped at `c` plus this, so it
+/// stays under the low-confidence flag at `c` + 0.15.
+const GLIDE_CONFIDENCE_MARGIN: f64 = 0.1;
 
 /// One detected note (`DetectedNote` in `app/src/model/types.ts`). Times are ms from the
 /// untrimmed take start (AD-7).
@@ -122,7 +127,7 @@ pub fn build_notes(
     let at = |frame: usize| pyin::frame_time_ms(signal.offset_ms, frame);
     let highest = HIGHEST_OPEN_MIDI + i32::try_from(params.max_fret).unwrap_or(i32::MAX - 64);
 
-    let mut notes = Vec::new();
+    let mut notes: Vec<DetectedNote> = Vec::new();
     let mut below_range_notes = 0u32;
     for (k, onset) in onsets.onsets.iter().enumerate() {
         let start = onset.frame;
@@ -149,13 +154,40 @@ pub fn build_notes(
             continue;
         }
 
-        let mut midis: Vec<f64> = (start + ATTACK_FRAMES..end)
-            .filter(|&i| is_voiced(pitch, i))
-            .map(|i| midi_of(f64::from(pitch.f0_hz[i])))
-            .collect();
-        let Some(midi) = median(&mut midis) else {
+        let midi_over = |frames: std::ops::Range<usize>| {
+            let mut midis: Vec<f64> = frames
+                .filter(|&i| is_voiced(pitch, i))
+                .map(|i| midi_of(f64::from(pitch.f0_hz[i])))
+                .collect();
+            median(&mut midis)
+        };
+        let Some(mut midi) = midi_over(start + ATTACK_FRAMES..end) else {
             continue;
         };
+        // Glide (US-4.4): the first glide span reaching past the note's attack (a widened tail
+        // of the previous note's glide that ends within the attack does not count) gives the
+        // note its starting pitch: the median over its voiced frames after the attack and
+        // before the glide starts; with none there (the glide starts within the attack or
+        // before the onset), the median over its voiced frames from the onset to the glide
+        // start; with none there either, its first voiced frame.
+        let glide = onsets
+            .glides
+            .iter()
+            .find(|&&(gs, ge)| gs < end && ge >= start + ATTACK_FRAMES);
+        if let Some(&(glide_start, _)) = glide {
+            let before = glide_start.min(end);
+            let first_voiced = || {
+                (start..end)
+                    .find(|&i| is_voiced(pitch, i))
+                    .map(|i| midi_of(f64::from(pitch.f0_hz[i])))
+            };
+            if let Some(starting) = midi_over(start + ATTACK_FRAMES..before)
+                .or_else(|| midi_over(start..before))
+                .or_else(first_voiced)
+            {
+                midi = starting;
+            }
+        }
         let midi = midi.round() as i32;
 
         let len = (end - start) as f64;
@@ -164,7 +196,10 @@ pub fn build_notes(
             .sum::<f64>()
             / len;
         let voiced_fraction = (start..end).filter(|&i| is_voiced(pitch, i)).count() as f64 / len;
-        let confidence = mean_prob * voiced_fraction;
+        let mut confidence = mean_prob * voiced_fraction;
+        if glide.is_some() {
+            confidence = confidence.min(params.confidence_c + GLIDE_CONFIDENCE_MARGIN);
+        }
 
         // `end` may be `n` (one past the last frame): clamp to the last frame's time.
         let (start_ms, end_ms) = (at(start), at(end.min(n - 1)));
@@ -178,6 +213,16 @@ pub fn build_notes(
             continue;
         }
         if confidence < params.confidence_c || midi > highest {
+            continue;
+        }
+        // Ring-over (US-4.4): a note with no spectral-flux onset that repeats the pitch of the
+        // note before the previous kept one is a ringing string re-emerging, not a new note.
+        if onset.source == OnsetSource::PitchChange
+            && notes
+                .len()
+                .checked_sub(2)
+                .is_some_and(|j| notes[j].midi == midi)
+        {
             continue;
         }
         notes.push(DetectedNote {
@@ -310,15 +355,25 @@ mod tests {
         }
 
         fn build(&self, onset_frames: &[usize]) -> AnalysisResult {
+            let onsets: Vec<(usize, OnsetSource)> = onset_frames
+                .iter()
+                .map(|&frame| (frame, OnsetSource::Flux))
+                .collect();
+            self.build_with(&onsets, &[])
+        }
+
+        /// Builds with labelled onsets and glide spans.
+        fn build_with(
+            &self,
+            onsets: &[(usize, OnsetSource)],
+            glides: &[(usize, usize)],
+        ) -> AnalysisResult {
             let onsets = Onsets {
-                onsets: onset_frames
+                onsets: onsets
                     .iter()
-                    .map(|&frame| Onset {
-                        frame,
-                        source: OnsetSource::Flux,
-                    })
+                    .map(|&(frame, source)| Onset { frame, source })
                     .collect(),
-                glides: Vec::new(),
+                glides: glides.to_vec(),
             };
             build_notes(&self.signal, &self.pitch, &onsets, &PARAMS)
         }
@@ -495,6 +550,135 @@ mod tests {
             serde_json::to_string(&r).unwrap(),
             r#"{"notes":[],"tuningOffsetCents":0,"belowRangeNotes":0}"#
         );
+    }
+
+    /// Notes A, B, A' with A' from an onset of `source`.
+    fn ring_over_take(source: OnsetSource) -> AnalysisResult {
+        let mut t = Take::new(150);
+        t.voice(0..50, 48.0, 0.9)
+            .voice(50..100, 52.0, 0.9)
+            .voice(100..150, 48.0, 0.9);
+        t.build_with(
+            &[
+                (0, OnsetSource::Flux),
+                (50, OnsetSource::Flux),
+                (100, source),
+            ],
+            &[],
+        )
+    }
+
+    #[test]
+    fn ring_over_drops_a_pitch_change_note_repeating_the_note_before_the_previous() {
+        let r = ring_over_take(OnsetSource::PitchChange);
+        assert_eq!(midis(&r.notes), vec![48, 52]);
+        // A picked repeat (a flux onset) is a new note and is kept.
+        let r = ring_over_take(OnsetSource::Flux);
+        assert_eq!(midis(&r.notes), vec![48, 52, 48]);
+    }
+
+    #[test]
+    fn ring_over_keeps_a_pitch_change_note_with_a_new_pitch_or_too_few_notes_before() {
+        // A, B, C from a pitch change: C repeats nothing.
+        let mut t = Take::new(150);
+        t.voice(0..50, 48.0, 0.9)
+            .voice(50..100, 52.0, 0.9)
+            .voice(100..150, 55.0, 0.9);
+        let r = t.build_with(
+            &[
+                (0, OnsetSource::Flux),
+                (50, OnsetSource::Flux),
+                (100, OnsetSource::PitchChange),
+            ],
+            &[],
+        );
+        assert_eq!(midis(&r.notes), vec![48, 52, 55]);
+        // A, A' from a pitch change: no note before the previous one.
+        let mut t = Take::new(100);
+        t.voice(0..50, 48.0, 0.9).voice(50..100, 48.0, 0.9);
+        let r = t.build_with(
+            &[(0, OnsetSource::Flux), (50, OnsetSource::PitchChange)],
+            &[],
+        );
+        assert_eq!(midis(&r.notes), vec![48, 48]);
+    }
+
+    #[test]
+    fn a_note_over_a_glide_takes_its_starting_pitch_with_capped_confidence() {
+        // A bend from 62 to 64: frames 10..30 at 62, a glide over 30..40, then 64 to frame 100.
+        let mut t = Take::new(100);
+        t.voice(10..30, 62.0, 0.95);
+        for (k, i) in (30..40).enumerate() {
+            t.voice(i..i + 1, 62.0 + 0.2 * k as f64, 0.95);
+        }
+        t.voice(40..100, 64.0, 0.95);
+        // Without the glide span the median over the whole note is 64.
+        assert_eq!(t.build(&[10]).notes[0].midi, 64);
+        assert_eq!(t.build(&[10]).notes[0].confidence, 0.95);
+        let r = t.build_with(&[(10, OnsetSource::Flux)], &[(28, 42)]);
+        assert_eq!(r.notes.len(), 1);
+        // The median over frames 12..28 (after the attack, before the glide) is 62.
+        assert_eq!(r.notes[0].midi, 62);
+        // Capped at c + 0.1 = 0.6, under the low-confidence flag at c + 0.15.
+        assert_eq!(r.notes[0].confidence, 0.6);
+    }
+
+    #[test]
+    fn glide_cap_never_raises_confidence_and_a_glide_elsewhere_is_ignored() {
+        let mut t = Take::new(200);
+        t.voice(10..100, 60.0, 0.55).voice(100..200, 67.0, 0.9);
+        // 0.55 is under the cap 0.6: unchanged. The glide over 150..170 lies in the second
+        // note only.
+        let r = t.build_with(
+            &[(10, OnsetSource::Flux), (100, OnsetSource::Flux)],
+            &[(150, 170)],
+        );
+        assert_eq!(r.notes[0].confidence, 0.55);
+        assert_eq!(r.notes[1].confidence, 0.6);
+        assert_eq!(midis(&r.notes), vec![60, 67]);
+    }
+
+    #[test]
+    fn a_glide_from_the_pick_takes_the_pitch_before_the_glide() {
+        // A bend from 60 to 62 starting in the attack (glide 11..30): no frame after the attack
+        // lies before it, so the attack frames give the starting pitch, not the span's median
+        // (62); the confidence is still capped.
+        let mut t = Take::new(100);
+        t.voice(10..12, 60.0, 0.9);
+        for (k, i) in (12..30).enumerate() {
+            t.voice(i..i + 1, 60.0 + 2.0 * k as f64 / 18.0, 0.9);
+        }
+        t.voice(30..100, 62.0, 0.9);
+        let r = t.build_with(&[(10, OnsetSource::Flux)], &[(11, 30)]);
+        assert_eq!(r.notes[0].midi, 60);
+        assert_eq!(r.notes[0].confidence, 0.6);
+        // The glide starts at the onset itself: the first voiced frame gives the pitch.
+        let r = t.build_with(&[(10, OnsetSource::Flux)], &[(5, 30)]);
+        assert_eq!(r.notes[0].midi, 60);
+        assert_eq!(r.notes[0].confidence, 0.6);
+    }
+
+    #[test]
+    fn a_glide_tail_crossing_into_the_next_onset_is_ignored() {
+        // The first note's slide (widened span 20..51) ends 1 frame after the next pick at 50,
+        // inside its attack: the picked note is neither re-pitched nor capped.
+        let mut t = Take::new(100);
+        t.voice(10..100, 60.0, 0.9);
+        let onsets = [(10, OnsetSource::Flux), (50, OnsetSource::Flux)];
+        let r = t.build_with(&onsets, &[(20, 51)]);
+        assert_eq!(r.notes[0].confidence, 0.6);
+        assert_eq!(r.notes[1].confidence, 0.9);
+        // A carried-over tail (45..51) does not shadow a real glide inside the second note
+        // (70..80): that one gives the starting pitch and the cap.
+        let mut t = Take::new(100);
+        t.voice(10..70, 60.0, 0.9);
+        for (k, i) in (70..80).enumerate() {
+            t.voice(i..i + 1, 60.0 + 0.2 * k as f64, 0.9);
+        }
+        t.voice(80..100, 62.0, 0.9);
+        let r = t.build_with(&onsets, &[(45, 51), (70, 80)]);
+        assert_eq!(r.notes[1].midi, 60);
+        assert_eq!(r.notes[1].confidence, 0.6);
     }
 
     fn n(start_ms: i64, midi: i32, confidence: f64) -> DetectedNote {

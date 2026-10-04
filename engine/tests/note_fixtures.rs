@@ -1,7 +1,8 @@
 //! US-4.4: note building on the synth fixtures, through `analyze` at sensitivity 0.5 with each
 //! fixture's count-in skip (`tests/accuracy/skip.rs`). Covers the silence and room-noise,
-//! count-in, detuned, drop-D, in-tune and trim rows; a table is printed for every run (see it
-//! with `--nocapture`). All failures are listed together.
+//! count-in, detuned, drop-D, in-tune and trim rows, the octave rows, and the unnotated
+//! techniques (ringing, vibrato, bend and slide, CAP-28); a table is printed for every run (see
+//! it with `--nocapture`). All failures are listed together.
 
 #[path = "accuracy/skip.rs"]
 mod skip;
@@ -31,8 +32,9 @@ struct Result {
     below_range_notes: u32,
 }
 
-/// `c + 0.15` at sensitivity 0.5: notes under it are flagged low-confidence (US-4.4).
-const LOW_CONFIDENCE: f64 = 0.65;
+/// `c + 0.15` at sensitivity 0.5 (`c` = 0.35): notes under it are flagged low-confidence
+/// (US-4.4).
+const LOW_CONFIDENCE: f64 = 0.5;
 
 /// One frame of the pitch track, ms.
 const FRAME_MS: f64 = 256.0 / 22.05;
@@ -190,20 +192,14 @@ fn note_fixtures() {
             ));
         }
     }
-    // The reverse direction is asserted for notes that are not low-confidence (confidence ≥
-    // c + 0.15 = 0.65, US-4.4). Measured: the untrimmed take has two short phantom notes ~58 ms
-    // before real ones (3228 ms, conf 0.5984; 5027 ms, conf 0.625) from early onsets that the
-    // trimmed take does not get; that is onset behaviour, so they are reported, not asserted.
+    // The reverse direction. Until 0.5.0 the untrimmed take had two short phantom notes ~58 ms
+    // before real ones (3228 and 5027 ms) from damping flux peaks; the tuned onset factor `k`
+    // (entry 9) removes them, so every note is asserted.
     for f in full.notes.iter().filter(|f| f.start_ms > 1100) {
         if !trimmed.notes.iter().any(|n| matches(f, n)) {
-            let msg = format!(
+            failures.push(format!(
                 "c_major_scale_pos1: untrimmed {f:?} has no trimmed match within one frame"
-            );
-            if f.confidence >= LOW_CONFIDENCE {
-                failures.push(msg);
-            } else {
-                println!("{msg} (low-confidence; reported, not asserted)");
-            }
+            ));
         }
     }
 
@@ -215,6 +211,7 @@ fn note_fixtures() {
 #[serde(rename_all = "camelCase")]
 struct TruthNote {
     start_ms: f64,
+    end_ms: f64,
     midi: i32,
 }
 
@@ -235,11 +232,9 @@ fn octave_rows() {
         "octave_leaps",
         "octave_leaps_noisy",
     ] {
-        let path = testdata().join(format!("{name}.json"));
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e}"));
-        let answer: Answer = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}"));
+        let answer = read_answer(name);
         let (_, r) = analyze(name, 0.0);
-        let near = |t: &TruthNote, n: &Note| (n.start_ms as f64 - t.start_ms).abs() <= 50.0;
+        let near = starts_near;
         let exact = answer
             .notes
             .iter()
@@ -272,6 +267,101 @@ fn octave_rows() {
                 "{name}: only {exact}/{} leaps survive at their exact MIDI",
                 answer.notes.len()
             ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn read_answer(name: &str) -> Answer {
+    let path = testdata().join(format!("{name}.json"));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{e}"));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// Within the 50 ms onset tolerance of ground-truth note `t`.
+fn starts_near(t: &TruthNote, n: &Note) -> bool {
+    (n.start_ms as f64 - t.start_ms).abs() <= 50.0
+}
+
+/// CAP-28 / US-4.4 technique rows, clean and noisy twins:
+/// - `ringing_overlap`: no duplicate notes — no ground-truth note's pitch is output twice
+///   within its span (onset tolerance before, `endMs` after).
+/// - `vibrato`: one note per ground-truth note, at its MIDI.
+/// - `bend_up`, `slide_up`: each ground-truth note appears at its starting MIDI, flagged
+///   low-confidence (confidence < c + 0.15).
+#[test]
+fn technique_rows() {
+    let mut failures = Vec::new();
+    for name in ["ringing_overlap", "ringing_overlap_noisy"] {
+        let answer = read_answer(name);
+        let (_, r) = analyze(name, 0.0);
+        println!(
+            "{name}: {} notes {:?}",
+            r.notes.len(),
+            r.notes
+                .iter()
+                .map(|n| (n.start_ms, n.midi))
+                .collect::<Vec<_>>()
+        );
+        for t in &answer.notes {
+            let within = r
+                .notes
+                .iter()
+                .filter(|n| {
+                    n.midi == t.midi
+                        && n.start_ms as f64 >= t.start_ms - 50.0
+                        && (n.start_ms as f64) < t.end_ms
+                })
+                .count();
+            if within > 1 {
+                failures.push(format!(
+                    "{name}: MIDI {} output {within} times within the note at {} ms",
+                    t.midi, t.start_ms
+                ));
+            }
+        }
+    }
+    for name in ["vibrato", "vibrato_noisy"] {
+        let answer = read_answer(name);
+        let (_, r) = analyze(name, 0.0);
+        println!("{name}: {:?}", r.notes);
+        if r.notes.len() != answer.notes.len() {
+            failures.push(format!(
+                "{name}: {} notes for {} ground-truth notes",
+                r.notes.len(),
+                answer.notes.len()
+            ));
+        }
+        for t in &answer.notes {
+            if !r
+                .notes
+                .iter()
+                .any(|n| starts_near(t, n) && n.midi == t.midi)
+            {
+                failures.push(format!(
+                    "{name}: no note at {} ms MIDI {}",
+                    t.start_ms, t.midi
+                ));
+            }
+        }
+    }
+    for name in ["bend_up", "bend_up_noisy", "slide_up", "slide_up_noisy"] {
+        let answer = read_answer(name);
+        let (_, r) = analyze(name, 0.0);
+        println!("{name}: {:?}", r.notes);
+        for t in &answer.notes {
+            match r.notes.iter().find(|n| starts_near(t, n)) {
+                None => failures.push(format!("{name}: no note at {} ms", t.start_ms)),
+                Some(n) if n.midi != t.midi => failures.push(format!(
+                    "{name}: note at {} ms is MIDI {}, want the starting {}",
+                    t.start_ms, n.midi, t.midi
+                )),
+                Some(n) if n.confidence >= LOW_CONFIDENCE => failures.push(format!(
+                    "{name}: note at {} ms has confidence {}, want < {LOW_CONFIDENCE}",
+                    t.start_ms, n.confidence
+                )),
+                Some(_) => {}
+            }
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

@@ -5,8 +5,8 @@
 //! `analyze` and `map_frets` are pure functions of their inputs (spine AD-7); JSON strings with
 //! camelCase keys cross the wasm boundary.
 //!
-//! `analyze` builds notes in [`notes`] (no octave correction, ring-over removal or glide
-//! capping yet); `map_frets` is the Viterbi fret mapping in [`fretmap`].
+//! `analyze` builds notes in [`notes`] (with ring-over removal, glide handling and octave
+//! correction); `map_frets` is the Viterbi fret mapping in [`fretmap`].
 
 pub mod fretmap;
 pub mod notes;
@@ -35,11 +35,20 @@ pub struct EngineAnalyzeInput {
 
 /// Every detection tunable, derived from the user's settings in one place (US-4.6). The
 /// pre-processing constants live in [`preprocess`].
+///
+/// `k` and `c` keep US-4.6's slopes but were tuned in entry 9 (AD-7) from US-4.6's starting
+/// intercepts (`k = 2.0 − 1.0·s`, `c = 0.7 − 0.4·s`) to reach the US-8.4 gates. At 0.5:
+/// - `k` 1.5 → 4.0: the flux peak a damped string makes about 70 ms before the next pick was
+///   an onset (and a phantom note) at 1.5; on the synth fixtures `k` must exceed ~3.65 to
+///   suppress those peaks and stay under ~7.16 to keep every gate-set pick.
+/// - `c` 0.5 → 0.35: repeated 16th notes on the open A string (and the first note after a
+///   pitch change) have pYIN voicing probabilities around 0.2 near each re-pick, so their
+///   confidence is 0.40–0.47.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Params {
-    /// Onset threshold factor `k = 2.0 − 1.0·s`.
+    /// Onset threshold factor `k = 4.5 − 1.0·s`.
     pub onset_k: f64,
-    /// Note confidence threshold `c = 0.7 − 0.4·s`.
+    /// Note confidence threshold `c = 0.55 − 0.4·s`.
     pub confidence_c: f64,
     /// Noise gate `g = −40 − 20·s` dBFS.
     pub gate_dbfs: f64,
@@ -58,8 +67,8 @@ impl Params {
             input.sensitivity.clamp(0.0, 1.0)
         };
         Self {
-            onset_k: 2.0 - 1.0 * s,
-            confidence_c: 0.7 - 0.4 * s,
+            onset_k: 4.5 - 1.0 * s,
+            confidence_c: 0.55 - 0.4 * s,
             gate_dbfs: -40.0 - 20.0 * s,
             min_note_ms: input.min_note_ms,
             max_fret: input.max_fret,
@@ -214,7 +223,7 @@ mod tests {
 
     #[test]
     fn version_is_package_version() {
-        assert_eq!(engine_version(), "0.4.0");
+        assert_eq!(engine_version(), "0.5.0");
     }
 
     #[test]
@@ -294,9 +303,9 @@ mod tests {
     #[test]
     fn params_map_sensitivity() {
         for (s, k, c, g) in [
-            (0.0, 2.0, 0.7, -40.0),
-            (0.5, 1.5, 0.5, -50.0),
-            (1.0, 1.0, 0.3, -60.0),
+            (0.0, 4.5, 0.55, -40.0),
+            (0.5, 4.0, 0.35, -50.0),
+            (1.0, 3.5, 0.15, -60.0),
         ] {
             let p = Params::from_settings(&input_with_sensitivity(s));
             assert!((p.onset_k - k).abs() < 1e-12, "s={s}: k={}", p.onset_k);
@@ -333,8 +342,8 @@ mod tests {
 
     #[test]
     fn map_frets_whole_path_and_unplayable() {
-        // After open low E, E4 on the G string fret 9 (0.18 + two skipped strings 0.8) beats
-        // open e (four skipped strings, 1.6).
+        // After open low E, E4 on the G string fret 9 (0.18 + two skipped strings 0.6) beats
+        // open e (four skipped strings, 1.2).
         let notes = r#"[{"midi":40,"startMs":0,"endMs":100},{"midi":64,"startMs":100,"endMs":200},{"midi":30,"startMs":200,"endMs":300}]"#;
         let out = map_frets_core(notes, "[]", 24).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();

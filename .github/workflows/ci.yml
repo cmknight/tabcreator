@@ -84,7 +84,8 @@ jobs:
         working-directory: engine
         run: cargo test --locked
 
-      # US-8.4: the fixture accuracy report (thresholds shown, not enforced), built in release
+      # US-8.4: the fixture accuracy report and its threshold gates (F1, octave errors and fret
+      # agreement on the gate sets; the step fails when one is missed), built in release
       # so its analyze timing is meaningful. Published to the job summary and as an artifact
       # even when a later step fails.
       # Also the gate against main (AD-7, CAP-23): main's committed baseline and output hashes

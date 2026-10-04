@@ -1,7 +1,9 @@
 //! Accuracy harness (US-8.4, CAP-23): runs `analyze` and `map_frets` on every fixture, scores
 //! note F1, octave errors and fret agreement per fixture and pooled per set, and writes
-//! `accuracy-report.md` to `$ACCURACY_REPORT` (default `target/accuracy-report.md`). Thresholds
-//! are reported, never enforced here.
+//! `accuracy-report.md` to `$ACCURACY_REPORT` (default `target/accuracy-report.md`). After the
+//! report is written it fails when a pooled gate set misses a threshold (US-8.4: F1 ≥ 0.95 on
+//! clean-gate and ≥ 0.90 on noisy-gate, octave errors ≤ 2% and fret agreement ≥ 80% on both;
+//! `testdata/real` from 20 takes), naming the set, metric, value and threshold.
 //!
 //! It also checks the committed `tests/accuracy-baseline.json` and `tests/fixture-outputs.json`
 //! against this build (`UPDATE_ACCURACY=1` rewrites them), and, when `ACCURACY_MAIN_BASELINE`
@@ -15,7 +17,7 @@ use accuracy::baseline::{
     first_difference, output_hash, to_file_text,
 };
 use accuracy::metrics::{DetectedNote, Pos, TruthNote, score};
-use accuracy::report::{FixtureRow, RunInfo, Set, classify_synth, render};
+use accuracy::report::{FixtureRow, RunInfo, Set, classify_synth, render, threshold_failures};
 use accuracy::skip::skip_start_ms;
 use accuracy::wav::read_wav;
 use serde::Deserialize;
@@ -272,9 +274,12 @@ fn run_all() -> Run {
     run
 }
 
-/// The self-check of the committed files (or their rewrite, with `update`) and the gate
-/// against `main`: every failure, empty when all pass.
+/// The threshold gate on this run's pooled `rows`, the self-check of the committed files (or
+/// their rewrite, with `update`) and the gate against `main`: every failure, empty when all
+/// pass.
+#[allow(clippy::too_many_arguments)]
 fn gate_failures(
+    rows: &[FixtureRow],
     main_baseline: Option<&AccuracyBaseline>,
     main_outputs: Option<&FixtureOutputs>,
     current_baseline: &AccuracyBaseline,
@@ -283,13 +288,15 @@ fn gate_failures(
     outputs_path: &Path,
     update: bool,
 ) -> Vec<String> {
-    let mut failures: Vec<String> = [
-        check_committed(baseline_path, &to_file_text(current_baseline), update),
-        check_committed(outputs_path, &to_file_text(current_outputs), update),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let mut failures = threshold_failures(rows);
+    failures.extend(
+        [
+            check_committed(baseline_path, &to_file_text(current_baseline), update),
+            check_committed(outputs_path, &to_file_text(current_outputs), update),
+        ]
+        .into_iter()
+        .flatten(),
+    );
     failures.extend(compare(
         main_baseline,
         main_outputs,
@@ -359,6 +366,7 @@ fn accuracy_report() {
     // The report is written first, so CI publishes it even when a check below fails.
     let update = update_requested();
     let failures = gate_failures(
+        rows,
         main_baseline.as_ref(),
         main_outputs.as_ref(),
         &current_baseline,
@@ -411,21 +419,45 @@ fn analyze_is_deterministic() {
     );
 }
 
+/// `failures` without the threshold failures of `rows`, so the meta-tests of the main and
+/// committed-file gates stay about those gates whatever the live run's thresholds show.
+fn without_thresholds(rows: &[FixtureRow], failures: Vec<String>) -> Vec<String> {
+    let thresholds = threshold_failures(rows);
+    failures
+        .into_iter()
+        .filter(|f| !thresholds.contains(f))
+        .collect()
+}
+
 #[test]
 fn gate_fails_on_clean_gate_f1_drop() {
-    let (now_b, now_o) = run_all().files();
+    let run = run_all();
+    let (now_b, now_o) = run.files();
     let (fresh_b, fresh_o) = fresh_files("gate_fails_on_clean_gate_f1_drop", &now_b, &now_o);
     let mut main = now_b.clone();
     let clean = main.sets.get_mut("clean-gate").expect("clean-gate set");
     clean.f1 = Some(clean.f1.expect("clean-gate f1") + 0.02);
-    let failures = gate_failures(Some(&main), None, &now_b, &now_o, &fresh_b, &fresh_o, false);
+    let failures = without_thresholds(
+        &run.rows,
+        gate_failures(
+            &run.rows,
+            Some(&main),
+            None,
+            &now_b,
+            &now_o,
+            &fresh_b,
+            &fresh_o,
+            false,
+        ),
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].starts_with("clean-gate F1:"), "{failures:?}");
 }
 
 #[test]
 fn gate_fails_naming_a_changed_hash_under_the_same_version() {
-    let (now_b, now_o) = run_all().files();
+    let run = run_all();
+    let (now_b, now_o) = run.files();
     let (fresh_b, fresh_o) = fresh_files(
         "gate_fails_naming_a_changed_hash_under_the_same_version",
         &now_b,
@@ -433,14 +465,27 @@ fn gate_fails_naming_a_changed_hash_under_the_same_version() {
     );
     let mut main = now_o.clone();
     *main.fixtures.get_mut("vibrato").expect("vibrato hash") = "0000000000000000".to_owned();
-    let failures = gate_failures(None, Some(&main), &now_b, &now_o, &fresh_b, &fresh_o, false);
+    let failures = without_thresholds(
+        &run.rows,
+        gate_failures(
+            &run.rows,
+            None,
+            Some(&main),
+            &now_b,
+            &now_o,
+            &fresh_b,
+            &fresh_o,
+            false,
+        ),
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(failures[0].ends_with(": vibrato"), "{failures:?}");
 }
 
 #[test]
 fn missing_committed_file_fails_without_update() {
-    let (now_b, now_o) = run_all().files();
+    let run = run_all();
+    let (now_b, now_o) = run.files();
     let (_, fresh_o) = fresh_files(
         "missing_committed_file_fails_without_update",
         &now_b,
@@ -448,10 +493,116 @@ fn missing_committed_file_fails_without_update() {
     );
     let missing = std::env::temp_dir().join("accuracy-no-such-baseline.json");
     let _ = std::fs::remove_file(&missing);
-    let failures = gate_failures(None, None, &now_b, &now_o, &missing, &fresh_o, false);
+    let failures = without_thresholds(
+        &run.rows,
+        gate_failures(
+            &run.rows, None, None, &now_b, &now_o, &missing, &fresh_o, false,
+        ),
+    );
     assert_eq!(failures.len(), 1, "{failures:?}");
     assert!(
         failures[0].contains("accuracy-no-such-baseline.json: cannot read the committed file"),
+        "{failures:?}"
+    );
+}
+
+/// A synthetic fixture row for the threshold-gate tests.
+fn gate_row(name: &str, set: Set, tp: usize, fp: usize, octave: usize, fret: usize) -> FixtureRow {
+    FixtureRow {
+        name: name.to_owned(),
+        set,
+        counts: accuracy::metrics::Counts {
+            truth: 100,
+            detected: tp + fp,
+            tp,
+            fp,
+            fn_: 100 - tp,
+            octave_errors: octave,
+            fret_total: tp,
+            fret_agree: fret,
+        },
+        analyze_ms: 0.0,
+    }
+}
+
+/// Runs `gate_failures` on synthetic `rows` alone: their own baseline and outputs are the
+/// "committed" files and there is no main copy, so only the threshold gate can fail.
+fn threshold_gate(test: &str, rows: Vec<FixtureRow>) -> Vec<String> {
+    let hashes = rows
+        .iter()
+        .map(|r| (r.name.clone(), "0".repeat(16)))
+        .collect();
+    let run = Run {
+        rows,
+        hashes,
+        real_folder: None,
+    };
+    let (b, o) = run.files();
+    let (fresh_b, fresh_o) = fresh_files(test, &b, &o);
+    gate_failures(&run.rows, None, None, &b, &o, &fresh_b, &fresh_o, false)
+}
+
+#[test]
+fn threshold_gate_fails_naming_set_metric_value_and_threshold() {
+    let failures = threshold_gate(
+        "threshold_gate_fails_naming_set_metric_value_and_threshold",
+        vec![
+            // F1 2·90 / (180 + 10 + 10) = 0.900 < 0.95; octave and fret met.
+            gate_row("a", Set::CleanGate, 90, 10, 0, 90),
+            // F1 1.000 ≥ 0.90; octave 3/100 > 2%; fret 79/100 < 80%.
+            gate_row("a_noisy", Set::NoisyGate, 100, 0, 3, 79),
+            // Reported and phantom-only rows never gate.
+            gate_row("fast", Set::Reported, 10, 50, 40, 0),
+        ],
+    );
+    assert_eq!(
+        failures,
+        [
+            "clean-gate F1: 0.900, threshold at least 0.95",
+            "noisy-gate octave errors: 3.0%, threshold at most 2%",
+            "noisy-gate fret agreement: 79.0%, threshold at least 80%",
+        ],
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn threshold_gate_passes_when_every_threshold_is_met() {
+    let failures = threshold_gate(
+        "threshold_gate_passes_when_every_threshold_is_met",
+        vec![
+            gate_row("a", Set::CleanGate, 95, 5, 0, 80),
+            gate_row("a_noisy", Set::NoisyGate, 90, 10, 2, 72),
+        ],
+    );
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[test]
+fn real_takes_gate_octave_and_fret_only_from_20_takes() {
+    let met = [
+        gate_row("a", Set::CleanGate, 100, 0, 0, 100),
+        gate_row("a_noisy", Set::NoisyGate, 100, 0, 0, 100),
+    ];
+    // Every real take misses all three thresholds: F1 0.5, octave 10%, fret 0%.
+    let real =
+        |n: usize| (0..n).map(|i| gate_row(&format!("take_{i:02}"), Set::Real, 50, 50, 10, 0));
+    let failures = threshold_gate(
+        "real_takes_gate_19",
+        met.iter().cloned().chain(real(19)).collect(),
+    );
+    assert!(failures.is_empty(), "{failures:?}");
+    let failures = threshold_gate(
+        "real_takes_gate_20",
+        met.iter().cloned().chain(real(20)).collect(),
+    );
+    let title = Set::Real.title();
+    assert_eq!(
+        failures,
+        [
+            format!("{title} octave errors: 10.0%, threshold at most 2%"),
+            format!("{title} fret agreement: 0.0%, threshold at least 80%"),
+        ],
         "{failures:?}"
     );
 }

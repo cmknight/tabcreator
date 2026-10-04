@@ -14,3 +14,9 @@
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-platform-baseline/story-refactor-sweep-plan.md`
   summary: A failing GitHub API call in the deploy job's head-of-main check fails the deploy instead of skipping it — owner US-8.1.
   evidence: .github/workflows/ci.yml deploy job runs gh api repos/{repo}/commits/main without a fallback.
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-detection-engine/story-unnotated-techniques-and-the-accuracy-gates-plan.md`
+  summary: The app's `lowConfidence` (US-4.4: confidence < c + 0.15) must use the engine's retuned c = 0.55 − 0.4·s (engine 0.5.0), not US-4.6's c = 0.7 − 0.4·s — owner US-4.5 (epic Tab view and editor).
+  evidence: Story 4.9 retuned Params::from_settings; app/src/model/types.ts carries lowConfidence with nothing tying it to the engine's c. Better still, have the engine emit the flag or c.
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-detection-engine/story-unnotated-techniques-and-the-accuracy-gates-plan.md`
+  summary: TabCreator-User-Stories.md US-4.6 (k, c formulas) and US-5.1 (FretWeights defaults) state the pre-tuning values — owner: product owner (spec text).
+  evidence: Engine 0.5.0 uses k = 4.5 − 1.0·s, c = 0.55 − 0.4·s, FretWeights 0.15/1.0/0.3 (epic Notes Decision, 2026-10-03).

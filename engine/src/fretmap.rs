@@ -21,11 +21,16 @@ pub struct FretWeights {
 }
 
 impl Default for FretWeights {
+    /// Tuned from US-5.1's starting point (0.3, 1.0, 0.4) in entry 9 so that the full pipeline
+    /// agrees with the ground-truth string and fret on ≥ 80% of matched notes in both gate sets
+    /// (US-8.4): 81.5% clean, 81.4% noisy at 0.5.0, against 79.2% and 79.0% with the starting
+    /// weights. A lighter shift and skip let a phrase stay on one string at a fretted position
+    /// (legato_slurs, vibrato) instead of dropping to open strings.
     fn default() -> Self {
         Self {
-            w_shift: 0.3,
+            w_shift: 0.15,
             w_jump: 1.0,
-            w_skip: 0.4,
+            w_skip: 0.3,
         }
     }
 }
@@ -222,6 +227,31 @@ mod tests {
         map_positions(notes, locks, 24, &FretWeights::default()).unwrap()
     }
 
+    /// US-5.1's starting weights, for the tests of the cost formula and of the search, which do
+    /// not depend on the tuned defaults.
+    const W_US: FretWeights = FretWeights {
+        w_shift: 0.3,
+        w_jump: 1.0,
+        w_skip: 0.4,
+    };
+
+    fn map_with(notes: &[FretNote], locks: &[FretLock], w: &FretWeights) -> Vec<Option<Position>> {
+        map_positions(notes, locks, 24, w).unwrap()
+    }
+
+    #[test]
+    fn default_weights_are_the_tuned_ones() {
+        // Tuned in entry 9 for ≥ 80% fret agreement on the gate sets (US-8.4).
+        assert_eq!(
+            FretWeights::default(),
+            FretWeights {
+                w_shift: 0.15,
+                w_jump: 1.0,
+                w_skip: 0.3,
+            }
+        );
+    }
+
     #[test]
     fn candidates_at_max_fret_12_and_24() {
         // E4 (64): open e, B string 5, G 9, D 14, A 19, low E 24.
@@ -246,7 +276,7 @@ mod tests {
     #[test]
     fn costs_follow_the_formula() {
         assert!((unary_cost(pos(1, 15)) - (0.3 + 0.9)).abs() < 1e-12);
-        let w = FretWeights::default();
+        let w = W_US;
         // d = 5: 0.3·5 + 1.0·2, plus one skipped string 0.4.
         let t = transition_cost(pos(1, 2), pos(3, 7), 0.0, &w);
         assert!((t - (1.5 + 2.0 + 0.4)).abs() < 1e-12);
@@ -266,7 +296,7 @@ mod tests {
         // Alone, G3 is the open G string.
         assert_eq!(map(&notes[3..], &[]), vec![Some(pos(3, 0))]);
         // After D3 locked at low E fret 10, across the two nulls, it stays in position on the
-        // A string fret 10 (0.2) rather than skipping two strings to open G (0.8).
+        // A string fret 10 (0.2) rather than skipping two strings to open G (0.6).
         let out = map(&notes, &[lock(0, 6, 10)]);
         assert_eq!(out, vec![Some(pos(6, 10)), None, None, Some(pos(5, 10))]);
     }
@@ -274,25 +304,30 @@ mod tests {
     #[test]
     fn gap_is_measured_from_the_previous_mapped_note() {
         // The null note ends 50 ms before C4, but the mapped note before it ends 550 ms before,
-        // so the shift is halved and C4 takes B string fret 1 (see the gap-halving test).
+        // so the shift is halved and C4 takes B string fret 1 (see the gap-halving test, whose
+        // US-5.1 weights this uses).
         let notes = [
             note(68, 0.0, 100.0),
             note(30, 100.0, 600.0),
             note(60, 650.0, 800.0),
         ];
-        assert_eq!(map(&notes, &[lock(0, 1, 4)])[2], Some(pos(2, 1)));
+        assert_eq!(
+            map_with(&notes, &[lock(0, 1, 4)], &W_US)[2],
+            Some(pos(2, 1))
+        );
     }
 
     #[test]
     fn ties_go_to_the_lower_fret() {
         // From B on G string fret 4, E4 costs 0.4 both as open e (one skipped string) and as
         // B string fret 5 (unary 0.1 + shift 0.3): the lower fret wins.
+        // (US-5.1's weights.)
         let notes = [note(59, 0.0, 100.0), note(64, 100.0, 200.0)];
-        let w = FretWeights::default();
+        let w = W_US;
         let open = unary_cost(pos(1, 0)) + transition_cost(pos(3, 4), pos(1, 0), 0.0, &w);
         let fifth = unary_cost(pos(2, 5)) + transition_cost(pos(3, 4), pos(2, 5), 0.0, &w);
         assert!((open - fifth).abs() < COST_EPS);
-        assert_eq!(map(&notes, &[lock(0, 3, 4)])[1], Some(pos(1, 0)));
+        assert_eq!(map_with(&notes, &[lock(0, 3, 4)], &w)[1], Some(pos(1, 0)));
     }
 
     #[test]
@@ -310,8 +345,8 @@ mod tests {
     fn gap_over_500ms_halves_the_shift() {
         // From e string fret 4, C4 (60): with a 400 ms gap the G string fret 5 wins (shift 1,
         // one skipped string: 0.8 vs 0.92 for B string fret 1); with 600 ms the halved shift
-        // makes B string fret 1 (shift 3) cheaper (0.47 vs 0.65).
-        let w = FretWeights::default();
+        // makes B string fret 1 (shift 3) cheaper (0.47 vs 0.65). (US-5.1's weights.)
+        let w = W_US;
         let t400 = transition_cost(pos(1, 4), pos(2, 1), 400.0, &w);
         let t600 = transition_cost(pos(1, 4), pos(2, 1), 600.0, &w);
         assert!((t400 - 0.9).abs() < 1e-12 && (t600 - 0.45).abs() < 1e-12);
@@ -321,7 +356,7 @@ mod tests {
         assert!((at - 0.9).abs() < 1e-12 && (over - 0.45).abs() < 1e-12);
         let with_gap = |gap: f64| {
             let notes = [note(68, 0.0, 100.0), note(60, 100.0 + gap, 300.0 + gap)];
-            map(&notes, &[lock(0, 1, 4)])[1]
+            map_with(&notes, &[lock(0, 1, 4)], &w)[1]
         };
         assert_eq!(with_gap(400.0), Some(pos(3, 5)));
         assert_eq!(with_gap(600.0), Some(pos(2, 1)));
