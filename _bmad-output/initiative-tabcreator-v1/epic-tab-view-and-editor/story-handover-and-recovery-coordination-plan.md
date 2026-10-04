@@ -3,7 +3,7 @@ title: 'Handover and recovery coordination'
 type: 'bugfix'
 ticket: '3'
 created: '2026-10-04'
-status: 'built'
+status: done
 baseline_revision: '8e07b3515c817f16364da1b53481212cb665f6d9'
 route: 'full'
 route_source: 'auto'
