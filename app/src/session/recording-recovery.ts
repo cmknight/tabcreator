@@ -3,21 +3,19 @@
 //
 // `scan()` runs once the instance lock is held (instance-lock.ts's `onHeld`, after the handover
 // window): it removes, best-effort and silently, raw and compressed files whose take does not
-// exist and unfinished takes (`status === 'recording'`) with under `MIN_RECOVERED_MS` of raw audio;
+// exist and unfinished takes (`status === 'recording'`) with under `MIN_TAKE_MS` of raw audio;
 // every other unfinished take is offered, oldest first. This tab's own take is never touched.
 //
 // `open(id)` rebuilds an offered take: compressed audio already saved is kept (never
 // overwritten), else the raw file is re-encoded (falling back to WAV); then the take is patched
 // `recorded` with `stopReason: 'recovered'` and its Tab opened. The raw file stays for analysis.
+// The minimum, the clip count and the save step are shared with recording (take-save.ts).
 // `discard(id)` deletes the take and its files.
 
-import { CLIP_LEVEL } from '../model/level-warnings';
 import type { Take } from '../model/types';
 import type { CompressedFile } from '../storage/audio-store';
 import type { TakePatch } from '../storage/db';
-
-/** The shortest unfinished take offered, ms (spine AD-9); a shorter one is deleted. */
-const MIN_RECOVERED_MS = 500;
+import { createClipCounter, MIN_TAKE_MS, saveTake } from './take-save';
 
 /** An unfinished take offered for recovery. */
 export interface RecoveredTake {
@@ -88,14 +86,6 @@ async function quietly(fn: () => Promise<unknown>): Promise<void> {
   }
 }
 
-/** Whether any of `samples` clipped (|x| ≥ `CLIP_LEVEL`). */
-function anyClipped(samples: Float32Array): boolean {
-  for (let i = 0; i < samples.length; i++) {
-    if (Math.abs(samples[i]!) >= CLIP_LEVEL) return true;
-  }
-  return false;
-}
-
 export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost): RecordingRecovery {
   let offered: readonly RecoveredTake[] = [];
   let scanning: Promise<void> | null = null;
@@ -149,7 +139,7 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
         continue;
       }
       const seconds = take.sampleRate > 0 ? samples / take.sampleRate : 0;
-      if (!(seconds * 1000 >= MIN_RECOVERED_MS)) {
+      if (!(seconds * 1000 >= MIN_TAKE_MS)) {
         await quietly(async () => {
           // Re-read: only a take still unfinished is deleted.
           const now = await deps.getTake(take.id);
@@ -189,37 +179,36 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
     const samples = await deps.readRaw(id);
     const durationMs = Math.round((samples.length / take.sampleRate) * 1000);
     let audioMime: string;
+    let blob: Blob | null = null;
     const existing = await deps.readCompressed(id);
     if (existing) {
       // Never overwritten, and no second format (writeCompressed deletes the others).
       audioMime = existing.type;
     } else {
-      let blob: Blob;
+      let encoded: Blob;
       try {
-        blob = await deps.encodePcm(samples, take.sampleRate);
+        encoded = await deps.encodePcm(samples, take.sampleRate);
       } catch {
-        blob = deps.encodeWav(samples, take.sampleRate);
+        encoded = deps.encodeWav(samples, take.sampleRate);
       }
       // The encode runs in real time: check again that nothing was saved meanwhile.
       const meanwhile = await deps.readCompressed(id);
       if (meanwhile) {
         audioMime = meanwhile.type;
       } else {
-        await host.writeCompressed(id, blob);
-        audioMime = blob.type;
+        blob = encoded;
+        audioMime = encoded.type;
       }
     }
-    await host.patchTake(
-      id,
-      {
-        status: 'recorded',
-        stopReason: 'recovered',
-        durationMs,
-        audioMime,
-        clipped: anyClipped(samples),
-      },
-      'recording-session',
-    );
+    const clips = createClipCounter();
+    clips.addSamples(samples);
+    await saveTake(host, id, {
+      blob,
+      audioMime,
+      durationMs,
+      stopReason: 'recovered',
+      clipped: clips.clipped,
+    });
     drop(id);
     if (!host.isRecording()) host.navigate(id);
   }

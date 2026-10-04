@@ -2,8 +2,10 @@
 // compressed copy from its raw file. `encodePcm` plays the samples through an AudioContext at
 // their own rate into a MediaStreamDestination recorded by MediaRecorder (Opus, 96 kbps, as a
 // live take), so it runs in real time. `encodeWav` is recovery's fallback when that fails: a
-// pure 16-bit PCM WAV encoder.
+// pure 16-bit PCM WAV encoder. `encodePcm` rejects only with an `AppError` (spine AD-10):
+// `storage-failed` for its own failures, any other `AppError` passed through as it is.
 
+import { AppError, isAppError } from '../model/errors';
 import { RECORDING_BITS_PER_SECOND, RECORDING_MIME } from './recorder';
 
 /** The WAV fallback's MIME type; `model/audio-format.ts` lists it. */
@@ -19,13 +21,34 @@ const LEAD_S = 0.1;
 /** How long the recorder keeps running after playback ends, ms. */
 const TAIL_MS = 250;
 
+/** An encode failure as the `storage-failed` AppError, keeping its message and cause. */
+function encodeFailed(message: string, cause?: unknown): AppError {
+  return new AppError('storage-failed', message, cause === undefined ? undefined : { cause });
+}
+
+/** `err` as an AppError: itself when it is one, else `storage-failed` with its message. */
+function asEncodeError(err: unknown): AppError {
+  if (isAppError(err)) return err;
+  return encodeFailed(err instanceof Error ? err.message : 'The encode failed', err);
+}
+
 /**
  * Encodes mono `samples` at `sampleRate` as `RECORDING_MIME` (96 kbps) through MediaRecorder,
- * in real time. Resolves with a Blob of that type; rejects when the context does not run, the
- * recorder fails or yields nothing, or the encode overruns the audio's length.
+ * in real time. Resolves with a Blob of that type; rejects with an `AppError`: `storage-failed` when
+ * there is nothing to encode, the context does not run, the recorder fails or yields nothing, or
+ * the encode overruns the audio's length (any other failure too); an `AppError` thrown inside is
+ * passed through with its own code.
  */
 export async function encodePcm(samples: Float32Array, sampleRate: number): Promise<Blob> {
-  if (samples.length === 0) throw new Error('Nothing to encode');
+  try {
+    return await encode(samples, sampleRate);
+  } catch (err) {
+    throw asEncodeError(err);
+  }
+}
+
+async function encode(samples: Float32Array, sampleRate: number): Promise<Blob> {
+  if (samples.length === 0) throw encodeFailed('Nothing to encode');
   const ctx = new AudioContext({ sampleRate });
   let source: AudioBufferSourceNode | undefined;
   let destination: MediaStreamAudioDestinationNode | undefined;
@@ -41,7 +64,7 @@ export async function encodePcm(samples: Float32Array, sampleRate: number): Prom
       clearTimeout(timer);
     }
     if ((ctx.state as AudioContextState) !== 'running') {
-      throw new Error(`The audio context is ${ctx.state}`);
+      throw encodeFailed(`The audio context is ${ctx.state}`);
     }
     const buffer = ctx.createBuffer(1, samples.length, sampleRate);
     buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
@@ -65,12 +88,12 @@ export async function encodePcm(samples: Float32Array, sampleRate: number): Prom
       let failed = false;
       const timer = setTimeout(() => {
         failed = true;
-        reject(new Error('The encode did not finish in time'));
+        reject(encodeFailed('The encode did not finish in time'));
       }, lengthMs + ENCODE_SLACK_MS);
       recorder.onerror = () => {
         failed = true;
         clearTimeout(timer);
-        reject(new Error('MediaRecorder failed'));
+        reject(encodeFailed('MediaRecorder failed'));
       };
       recorder.onstop = () => {
         clearTimeout(timer);
@@ -89,10 +112,10 @@ export async function encodePcm(samples: Float32Array, sampleRate: number): Prom
       } catch (err) {
         clearTimeout(timer);
         failed = true;
-        reject(err);
+        reject(asEncodeError(err));
       }
     });
-    if (parts.length === 0) throw new Error('MediaRecorder produced no data');
+    if (parts.length === 0) throw encodeFailed('MediaRecorder produced no data');
     return new Blob(parts, { type: RECORDING_MIME });
   } finally {
     // Torn down on success and failure alike: nothing keeps running after the encode settles.

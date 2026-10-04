@@ -19,43 +19,17 @@
 // Decision (epic 2, 2026-10-02): this store writes `micGranted` and `micDeviceId` through
 // storage/prefs.ts, although AD-3 names settings-session as the prefs store.
 //
-// Recording (story 3.4, spine AD-9, AD-14, AD-15): `record()` creates the take at the click
-// and starts the live input's capture; raw chunks are appended through the raw writer in order,
-// those that arrive before the take and writer exist held and appended first. `stop('user')`
-// stops the capture, saves the compressed copy, closes the raw writer, patches the take
-// `recorded`, then navigates to its Tab. Both run through the transition queue, so an ended
-// track is handled only between them.
-//
-// Failure stops (story 3.9, CAP-25, CAP-26): when the track of the input a take records ends
-// (unplug or revoke), its queued handling first runs the stop pipeline with `stopReason:
-// 'mic-lost'` (no navigation), then applies the idle rule for the mic; an unplug with another
-// input left posts a `stopped-saved` notice instead of `switched`. When a raw append rejects
-// with `storage-full`, nothing more is appended and the take is saved with `stopReason:
-// 'storage-full'`, the mic kept live and the snapshot's `storageFull` on (the Record banner)
-// until the next take starts; when that save fails too, the take stays `recording` with its
-// raw chunks for recovery, with no error card.
-//
-// Count-in (story 3.6, US-3.3, spine AD-9): with the `countIn` pref on, `record()` enters
-// `count-in`: it reads the click's audio-clock time, schedules four clicks on the input's clock
-// (audio/metronome.ts, speakers only) and starts the capture to open exactly on beat five. The
-// take is created only when the audio clock reaches that time, with `countInBpm`; chunks before
-// it resolves are held as above. During the count-in `stop()` cancels it (clicks cancelled,
-// capture aborted, no take). This store also reads and writes the `countIn` pref (the same
-// epic 2 decision as the mic prefs).
-//
-// Length cap and short takes (story 3.7, CAP-5, CAP-25, spine AD-9): a take is capped at
-// `MAX_TAKE_MS`. Its capture's stop is scheduled when the capture starts, on the audio clock at
-// exactly `startTime + MAX_TAKE_MS`, so no timer can extend it; when that stop completes the
-// store saves the take with `stopReason: 'max-length'` (it stays `recording`, so Stop works,
-// until then). When its audio-clock time reaches `MAX_TAKE_MS − WARN_LEAD_MS` the snapshot's
-// `nearLimit` turns on (one notify; a wall-clock timer that re-reads the audio clock). A take
-// stopped under `MIN_TAKE_MS` is deleted (record and files)
-// with a `too-short` notice and no navigation. Each saved take bumps `savedSeq`, so the shell
-// can announce it. In dev builds `?maxTakeMs=<n>&warnLeadMs=<n>` override the two limits.
-//
-// Clipping (US-1.3, spine AD-14): the capture reports each chunk's clipped samples (|x| at or
-// above the meter's Too loud threshold); the take's total is kept in memory as `clipCount`, and
-// every saved take's stop patch carries `clipped: clipCount > 0`.
+// The take (story 3.4 onwards, spine AD-9, AD-14, AD-15): the take lifecycle module
+// (take-lifecycle.ts) owns the take in progress and the recording state machine, from the start
+// of a take (with or without a count-in) through its chunks, its length limits and its failure
+// stops to its save; the store composes it as it composes recovery, handing it the snapshot, the
+// input and the transition queue. `record()` and the save of `stop('user')` run through the
+// queue, so an ended track is handled only between them; an ended track's handling first lets the
+// lifecycle stop and save a take on that input (`mic-lost`), then applies the idle rule for the
+// mic, posting a `stopped-saved` notice instead of `switched` when the take was saved. This store
+// reads and writes the `countIn` pref (the same epic 2 decision as the mic prefs), and resolves
+// the take's length limits (`MAX_TAKE_MS`, `WARN_LEAD_MS`; in dev builds
+// `?maxTakeMs=<n>&warnLeadMs=<n>` override them).
 //
 // Handover (story 3.10, US-8.5, spine AD-6): `releaseForHandover()` runs when this tab gives the
 // instance lock to another tab. A recording (or stopping) take is stopped and saved through the
@@ -72,7 +46,6 @@
 import type { LevelsDbfs } from '../audio/level-meter';
 import {
   activeDevice,
-  type Capture,
   listMics,
   micPermission,
   onDeviceChange,
@@ -81,14 +54,12 @@ import {
   type MicDevice,
   type MicPermission,
 } from '../audio/mic';
-import { COUNT_IN_BEATS, countInSchedule } from '../audio/metronome';
 import { encodePcm, encodeWavBlob, WAV_MIME } from '../audio/encode';
-import { RECORDING_MIME } from '../audio/recorder';
 import { AppError, isAppError, type AppErrorCode } from '../model/errors';
 import type { AnalysisSettings, StopReason, Take } from '../model/types';
 import { audioStore, type RawWriter } from '../storage/audio-store';
 import { db, type TakePatch } from '../storage/db';
-import { DEFAULT_PREFS, loadPrefs, updatePrefs } from '../storage/prefs';
+import { loadPrefs, updatePrefs } from '../storage/prefs';
 import type { InputTransition, OpenedInput } from './input-derivation';
 import { createInputQualityWatch, type InputQualityFields } from './input-quality-watch';
 import { createLevelWatch, type LevelFields } from './level-watch';
@@ -97,18 +68,16 @@ import {
   type RecoveredTake,
   type RecoveryDeps,
 } from './recording-recovery';
+import { createTakeLifecycle, type RecordingState, type TakeLimits } from './take-lifecycle';
 import { createTunerWatch, type TunerDisplay, type TunerFields } from './tuner-watch';
 
 export { TUNER_POLL_MS } from '../audio/tuner';
 export type { TunerDisplay } from './tuner-watch';
 export type { RecoveredTake } from './recording-recovery';
+export type { RecordingState, TakeLimits } from './take-lifecycle';
+export { takeTitle } from './take-lifecycle';
 
 export type MicState = 'setup' | 'requesting' | 'live' | 'error';
-
-/**
- * Where a take is: none, counting in (no take yet), being created, capturing, or being saved.
- */
-export type RecordingState = 'idle' | 'count-in' | 'starting' | 'recording' | 'stopping';
 
 /** The count-in pref: on or off, and its tempo. */
 export interface CountInPrefs {
@@ -120,24 +89,12 @@ export interface CountInPrefs {
 export const COUNT_IN_BPM_MIN = 40;
 export const COUNT_IN_BPM_MAX = 240;
 const DEFAULT_COUNT_IN: CountInPrefs = { on: false, bpm: 100 };
-/** How long past the expected capture start the audio clock may lag before it counts as stopped. */
-const CLOCK_STALL_MS = 2000;
 /** The longest take, ms (CAP-5): it stops itself here. */
 export const MAX_TAKE_MS = 300_000;
 /** How long before the cap the "30 seconds left" warning shows, ms. */
 export const WARN_LEAD_MS = 30_000;
-/** The shortest take kept, ms (spine AD-9): a shorter one is deleted at stop. */
-const MIN_TAKE_MS = 500;
 /** The shortest cap the dev override accepts, ms, so a max-length take is never too short. */
 const DEV_MIN_CAP_MS = 1000;
-
-/** A take's length limits, ms: the cap and the warning's lead before it. */
-export interface TakeLimits {
-  /** The cap (`MAX_TAKE_MS`). */
-  capMs: number;
-  /** The warning's lead before the cap (`WARN_LEAD_MS`). */
-  leadMs: number;
-}
 
 /**
  * A typed tempo as stored: rounded to a whole BPM and clamped to 40–240; `fallback` when it is
@@ -146,21 +103,6 @@ export interface TakeLimits {
 function clampBpm(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(COUNT_IN_BPM_MAX, Math.max(COUNT_IN_BPM_MIN, Math.round(value)));
-}
-
-/** The dev-only clock hook (story 3.6): the last count-in's times on the audio clock, in s. */
-interface RecordingClock {
-  /** The click's audio-clock time (`t0`). */
-  clickTime: number;
-  /** When the capture opens (beat five). */
-  captureStart: number;
-}
-
-declare global {
-  interface Window {
-    /** Dev builds only (absent from dist): set when a count-in's capture is scheduled. */
-    __recordingClock?: RecordingClock;
-  }
 }
 
 /** A one-off fact for the shell to show; `seq` grows with each new notice. */
@@ -356,7 +298,7 @@ const NO_RECOVERY: RecoveryDeps = {
   readCompressed: () => Promise.resolve(null),
   deleteRaw: () => Promise.resolve(),
   deleteAudio: () => Promise.resolve(),
-  encodePcm: () => Promise.reject(new Error('No encoder')),
+  encodePcm: () => Promise.reject(new AppError('storage-failed', 'No encoder')),
   encodeWav: () => new Blob([], { type: WAV_MIME }),
 };
 
@@ -365,61 +307,6 @@ function guardUnload(event: BeforeUnloadEvent) {
   event.preventDefault();
   // Older browsers ask only when `returnValue` is set.
   event.returnValue = true;
-}
-
-/** A take from `record()` until it is saved, fails or is abandoned. */
-interface ActiveTake {
-  id: string;
-  /** The input it records; an ended track of this input stops and saves it (`mic-lost`). */
-  input: OpenedInput;
-  capture: Capture | null;
-  writer: RawWriter | null;
-  /** Chunks that arrived before the writer existed, in order. */
-  held: Float32Array[];
-  /** The raw appends, chained in order. */
-  appends: Promise<void>;
-  /** Samples appended to the raw file so far. */
-  samples: number;
-  /** Captured samples that clipped (|x| ≥ `CLIP_LEVEL`) so far; saved as `clipped` at stop. */
-  clipCount: number;
-  /** Set when the take is given up; later chunks are dropped. */
-  abandoned: boolean;
-  /** A raw append rejected with `storage-full`: nothing more is appended; it stops and saves. */
-  storageFull: boolean;
-  /** The warning's watch while recording. */
-  limitTimer: ReturnType<typeof setTimeout> | undefined;
-}
-
-/** A count-in in progress: its take (not yet created), beats and cancel. */
-interface CountIn {
-  take: ActiveTake;
-  /** The beats' audio-clock times, s. */
-  beats: readonly number[];
-  cancelled: boolean;
-  /** Cancels the scheduled clicks. */
-  cancelClicks: () => void;
-  /** Ends the wait for the capture start early (a cancel). */
-  wake: () => void;
-  timer: ReturnType<typeof setTimeout> | undefined;
-}
-
-/** Runs `fn`, turning a synchronous throw into a rejection. */
-function attempt<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return fn();
-  } catch (err) {
-    return Promise.reject(err);
-  }
-}
-
-const pad = (n: number) => String(n).padStart(2, '0');
-
-/** `Take YYYY-MM-DD HH:mm` in local time. */
-export function takeTitle(date: Date): string {
-  return (
-    `Take ${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
-    `${pad(date.getHours())}:${pad(date.getMinutes())}`
-  );
 }
 
 /** The stored count-in pref, or the default when prefs are unreadable or lack it. */
@@ -477,16 +364,28 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   let noticeSeq = 0;
   let stopDeviceChange: (() => void) | null = null;
   const listeners = new Set<() => void>();
-  /** The take in progress (counting in, starting, recording or stopping). */
-  let active: ActiveTake | null = null;
-  let recording: RecordingState = 'idle';
-  /** The count-in in progress; set only while `count-in`. */
-  let countIn: CountIn | null = null;
   /** The handover in progress or done (`releaseForHandover`); null before one. */
   let handover: Promise<void> | null = null;
 
-  /** The published take id: none while idle or counting in (no take exists yet). */
-  const takeId = () => (recording === 'count-in' ? null : (active?.id ?? null));
+  /** The take lifecycle (take-lifecycle.ts): the take in progress and the recording state. */
+  const take = createTakeLifecycle(
+    deps,
+    {
+      snapshot: () => snapshot,
+      input: () => input,
+      handedOver: () => handover !== null,
+      patch,
+      enqueue,
+      nextNoticeSeq: () => ++noticeSeq,
+      failInput(err) {
+        const opened = input;
+        input = null;
+        if (opened) release(opened);
+        micFailed(isAppError(err) ? err.code : 'storage-failed');
+      },
+    },
+    { capMs: maxTakeMs, leadMs: warnLeadMs },
+  );
 
   /** Removes the `beforeunload` guard; set only while a take runs. */
   let removeUnloadGuard: (() => void) | null = null;
@@ -543,10 +442,10 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
           ? (next.activeDeviceId ?? null)
           : snapshot.activeDeviceId,
       ...(notice ? { notice } : {}),
-      recording,
-      activeTakeId: takeId(),
+      recording: take.state(),
+      activeTakeId: take.publishedTakeId(),
       countIn: snapshot.countIn,
-      nearLimit: nearLimit(),
+      nearLimit: take.nearLimit(),
       savedSeq: snapshot.savedSeq,
       storageFull: snapshot.storageFull,
       recovered: snapshot.recovered,
@@ -651,7 +550,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   }> {
     const opened = deps.openInput(stream, () => {
       // A count-in on this input ends now, not after the wait for its capture start.
-      if (countIn?.take.input === opened) cancelCountIn();
+      take.inputEnding(opened);
       // The queue has already advanced past a failed handling; nothing is left to do with it.
       enqueue(() => ended(opened)).catch(() => {});
     });
@@ -758,7 +657,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       handover ||
       snapshot.mic !== 'live' ||
       running ||
-      recording !== 'idle' ||
+      take.state() !== 'idle' ||
       deviceId === snapshot.activeDeviceId
     ) {
       return Promise.resolve();
@@ -796,18 +695,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
    */
   async function ended(endedInput: OpenedInput) {
     if (!holds(endedInput)) return;
-    let saved = false;
-    const take = active;
-    if (take?.input === endedInput) {
-      if (recording === 'recording' || recording === 'stopping') {
-        // Already inside the queue: the pipeline runs here, not re-enqueued.
-        stopWatchingLimits(take);
-        setRecording('stopping');
-        saved = (await finishTake('mic-lost')) === 'saved';
-      } else {
-        abandon(take);
-      }
-    }
+    // Already inside the queue: the take's stop pipeline runs here, not re-enqueued.
+    const saved = await take.inputEnded(endedInput);
     const endedId = endedDeviceId(endedInput);
     input = null;
     release(endedInput);
@@ -842,362 +731,15 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     });
   }
 
-  /** The published `nearLimit`: kept while the take records or stops, else off. */
-  const nearLimit = () =>
-    (recording === 'recording' || recording === 'stopping') && snapshot.nearLimit;
-
-  /** Publishes the recording state and the active take id; notifies only on a change. */
-  function setRecording(next: RecordingState, extra: Partial<RecordingSnapshot> = {}) {
-    recording = next;
-    patch({ recording, activeTakeId: takeId(), nearLimit: nearLimit(), ...extra });
-  }
-
-  /**
-   * While the take records: turns `nearLimit` on when its audio-clock time reaches
-   * `maxTakeMs − warnLeadMs` (a timer aimed at that time that re-reads the audio clock, so it
-   * never acts early), and saves it as `max-length` when its capture stops itself at the cap.
-   */
-  function watchLimits(take: ActiveTake) {
-    const capture = take.capture;
-    if (!capture) return;
-    const warnAt = maxTakeMs - warnLeadMs;
-    const tick = () => {
-      take.limitTimer = undefined;
-      if (active !== take || take.abandoned || recording !== 'recording') return;
-      const elapsed = capture.elapsedMs();
-      if (elapsed >= warnAt) {
-        if (!snapshot.nearLimit) patch({ nearLimit: true });
-        return;
-      }
-      take.limitTimer = setTimeout(tick, Math.max(1, Math.ceil(warnAt - elapsed)));
-    };
-    tick();
-    void capture.capped.then(() => {
-      // A Stop (or a failure) came first: that path saves (or keeps) the take.
-      if (active !== take || take.abandoned || recording !== 'recording') return;
-      stopWatchingLimits(take);
-      setRecording('stopping');
-      enqueue(() => finishTake('max-length').then(() => {})).catch(() => {});
-    });
-  }
-
-  function stopWatchingLimits(take: ActiveTake) {
-    clearTimeout(take.limitTimer);
-    take.limitTimer = undefined;
-  }
-
-  /** A captured chunk: counted, then appended (or held until the writer exists). */
-  function onChunk(take: ActiveTake, samples: Float32Array, clipped: number) {
-    // A chunk after the take was saved, deleted or given up is dropped.
-    if (take.abandoned || active !== take) return;
-    take.clipCount += clipped;
-    if (take.writer) appendRaw(take, take.writer, samples);
-    else take.held.push(samples);
-  }
-
-  function appendRaw(take: ActiveTake, writer: RawWriter, samples: Float32Array) {
-    take.appends = take.appends
-      .then(async () => {
-        // Once storage is full nothing more is written, so `durationMs` is what reached the file.
-        if (take.storageFull) return;
-        await writer.append(samples);
-        // Counted once written, so `durationMs` never exceeds the raw file.
-        take.samples += samples.length;
-      })
-      .catch((err: unknown) => {
-        if (isAppError(err) && err.code === 'storage-full') onStorageFull(take);
-        // Any other failure: the chain goes on with the next chunk (a residual of story 3.9).
-      });
-  }
-
-  /**
-   * The first `storage-full` append of `take`: no more appends, and the take stops and is saved
-   * as `storage-full` (through the queue). A stop already under way (Stop, the cap, a mic loss)
-   * saves it instead, reading the flag.
-   */
-  function onStorageFull(take: ActiveTake) {
-    if (take.storageFull) return;
-    take.storageFull = true;
-    if (active !== take || take.abandoned || recording !== 'recording') return;
-    stopWatchingLimits(take);
-    setRecording('stopping');
-    enqueue(() => finishTake('storage-full').then(() => {})).catch(() => {});
-  }
-
-  /** Gives the take up (its input is going away): drops the capture, closes the writer. */
-  function abandon(take: ActiveTake) {
-    take.abandoned = true;
-    stopWatchingLimits(take);
-    take.capture?.abort();
-    const writer = take.writer;
-    void take.appends.then(() => writer?.close()).catch(() => {});
-    if (active === take) active = null;
-    setRecording('idle');
-  }
-
-  /**
-   * A record or stop failure: no take in progress, the input closed, and the error card with
-   * the failure's code (the mic's error path).
-   */
-  function failRecording(err: unknown) {
-    if (active) stopWatchingLimits(active);
-    if (countIn) {
-      countIn.cancelClicks();
-      clearTimeout(countIn.timer);
-      countIn = null;
-    }
-    active = null;
-    recording = 'idle';
-    const opened = input;
-    input = null;
-    if (opened) release(opened);
-    micFailed(isAppError(err) ? err.code : 'storage-failed');
-  }
-
   function record(): Promise<void> {
-    if (handover || snapshot.mic !== 'live' || running || recording !== 'idle' || !input) {
+    if (handover || snapshot.mic !== 'live' || running || take.state() !== 'idle' || !input) {
       return Promise.resolve();
     }
-    return enqueue(startTake).catch(() => {});
-  }
-
-  /**
-   * The new take's record (spine AD-14: settings copied from prefs, never linked); `countInBpm`
-   * only when it was recorded with a count-in.
-   */
-  function newTake(id: string, opened: OpenedInput, countInBpm: number | null): Take {
-    let settings: AnalysisSettings;
-    try {
-      settings = { ...deps.loadPrefs().analysisDefaults };
-    } catch {
-      settings = { ...DEFAULT_PREFS.analysisDefaults };
-    }
-    const created = new Date(deps.now());
-    const createdAt = created.toISOString();
-    return {
-      id,
-      title: takeTitle(created),
-      createdAt,
-      status: 'recording',
-      durationMs: 0,
-      sampleRate: opened.analyser.context.sampleRate,
-      tuning: 'EADGBE',
-      micLabel: activeDevice(opened, snapshot.devices)?.label || opened.label,
-      audioMime: null,
-      trimStartMs: 0,
-      trimEndMs: null,
-      ...(countInBpm !== null ? { countInBpm } : {}),
-      settings,
-      analysisVersion: null,
-      updatedAt: createdAt,
-    };
-  }
-
-  async function startTake() {
-    const opened = input;
-    // Re-checked: a transition queued ahead of this one may have changed the input.
-    if (handover || snapshot.mic !== 'live' || recording !== 'idle' || !opened) return;
-    // Cleared for every take, so it never describes an earlier count-in.
-    if (import.meta.env.DEV) delete window.__recordingClock;
-    const take: ActiveTake = {
-      id: deps.newId(),
-      input: opened,
-      capture: null,
-      writer: null,
-      held: [],
-      appends: Promise.resolve(),
-      samples: 0,
-      clipCount: 0,
-      abandoned: false,
-      storageFull: false,
-      limitTimer: undefined,
-    };
-    active = take;
-    const { on, bpm } = snapshot.countIn;
-    if (on) {
-      await countInThenStart(take, opened, bpm);
-      return;
-    }
-    // A new take: the storage-full banner of an earlier one goes.
-    setRecording('starting', { storageFull: false });
-    let captured: PromiseSettledResult<Capture>;
-    let opening: PromiseSettledResult<RawWriter>;
-    try {
-      const record = newTake(take.id, opened, null);
-      // Both at once: the take is created at the click, and the capture's early chunks are held.
-      [captured, opening] = await Promise.allSettled([
-        attempt(() =>
-          opened.capture(
-            (samples, clipped) => onChunk(take, samples, clipped),
-            undefined,
-            maxTakeMs,
-          ),
-        ),
-        attempt(() => deps.createTake(record).then(() => deps.openRawWriter(take.id))),
-      ]);
-    } catch (err) {
-      take.abandoned = true;
-      failRecording(err);
-      return;
-    }
-    if (captured.status === 'rejected' || opening.status === 'rejected') {
-      take.abandoned = true;
-      if (captured.status === 'fulfilled') captured.value.abort();
-      if (opening.status === 'fulfilled') void opening.value.close().catch(() => {});
-      failRecording(
-        captured.status === 'rejected'
-          ? captured.reason
-          : (opening as PromiseRejectedResult).reason,
-      );
-      return;
-    }
-    take.capture = captured.value;
-    begin(take, opening.value);
-  }
-
-  /** The take is created and its writer open: append the held chunks, then `recording`. */
-  function begin(take: ActiveTake, writer: RawWriter) {
-    take.writer = writer;
-    for (const samples of take.held.splice(0)) appendRaw(take, writer, samples);
-    setRecording('recording');
-    watchLimits(take);
-  }
-
-  /**
-   * The count-in, then the take (spine AD-9): the clicks and the capture are scheduled from the
-   * click's audio-clock time; the take is created when the clock reaches the capture start.
-   */
-  async function countInThenStart(take: ActiveTake, opened: OpenedInput, bpm: number) {
-    const ci: CountIn = {
-      take,
-      beats: [],
-      cancelled: false,
-      cancelClicks: () => {},
-      wake: () => {},
-      timer: undefined,
-    };
-    let clickTime: number;
-    let captureStart: number;
-    let capturing: Promise<Capture>;
-    try {
-      clickTime = opened.clock();
-      const schedule = countInSchedule(clickTime, bpm);
-      ci.beats = schedule.beats;
-      captureStart = schedule.captureStart;
-      countIn = ci;
-      setRecording('count-in', { storageFull: false });
-      ci.cancelClicks = opened.clicks(schedule.beats);
-      capturing = opened.capture(
-        (samples, clipped) => onChunk(take, samples, clipped),
-        schedule.captureStart,
-        maxTakeMs,
-      );
-    } catch (err) {
-      take.abandoned = true;
-      failRecording(err);
-      return;
-    }
-    let capture: Capture;
-    try {
-      capture = await capturing;
-    } catch (err) {
-      take.abandoned = true;
-      if (!ci.cancelled) failRecording(err);
-      return;
-    }
-    if (ci.cancelled) {
-      capture.abort();
-      return;
-    }
-    // Opened later than beat five (a slow setup): the bar grid would be off, so no take.
-    if (capture.startTime > captureStart + 0.001) {
-      take.abandoned = true;
-      capture.abort();
-      failRecording(new AppError('mic-failed', 'The capture opened after the count-in'));
-      return;
-    }
-    take.capture = capture;
-    if (import.meta.env.DEV) {
-      window.__recordingClock = { clickTime, captureStart: capture.startTime };
-    }
-    const reached = await untilClock(ci, capture.startTime);
-    // A cancel has already aborted the capture and gone idle.
-    if (ci.cancelled) return;
-    if (!reached) {
-      // The audio clock stopped (a suspended context): the count-in can never finish.
-      take.abandoned = true;
-      capture.abort();
-      failRecording(new AppError('mic-failed', 'The audio clock stopped during the count-in'));
-      return;
-    }
-    countIn = null;
-    setRecording('starting');
-    let writer: RawWriter;
-    try {
-      await deps.createTake(newTake(take.id, opened, bpm));
-      writer = await deps.openRawWriter(take.id);
-    } catch (err) {
-      take.abandoned = true;
-      capture.abort();
-      failRecording(err);
-      return;
-    }
-    begin(take, writer);
-  }
-
-  /**
-   * Resolves true once `ci`'s input's audio clock reaches `time` (s), or at once on a cancel.
-   * The timer is aimed at the time and re-checks the clock, so it never resolves early. Resolves
-   * false when the wall clock passes the expected wait plus `CLOCK_STALL_MS` first (the audio
-   * clock has stopped).
-   */
-  function untilClock(ci: CountIn, time: number): Promise<boolean> {
-    const deadline =
-      deps.now() + Math.max(0, (time - ci.take.input.clock()) * 1000) + CLOCK_STALL_MS;
-    return new Promise((resolve) => {
-      const done = (reached: boolean) => {
-        clearTimeout(ci.timer);
-        ci.timer = undefined;
-        resolve(reached);
-      };
-      ci.wake = () => done(true);
-      const tick = () => {
-        if (ci.cancelled) return done(true);
-        const ms = (time - ci.take.input.clock()) * 1000;
-        if (ms <= 0) return done(true);
-        const left = deadline - deps.now();
-        if (left <= 0) return done(false);
-        ci.timer = setTimeout(tick, Math.max(1, Math.ceil(Math.min(ms, left))));
-      };
-      tick();
-    });
-  }
-
-  /** Cancels the count-in in progress: no clicks, no capture, no take; `idle`. */
-  function cancelCountIn() {
-    const ci = countIn;
-    if (!ci) return;
-    ci.cancelled = true;
-    countIn = null;
-    ci.cancelClicks();
-    ci.take.abandoned = true;
-    ci.take.capture?.abort();
-    if (active === ci.take) active = null;
-    setRecording('idle');
-    ci.wake();
-  }
-
-  function readCountInBeat(): number | null {
-    const ci = countIn;
-    if (!ci || ci.beats.length === 0) return null;
-    const now = ci.take.input.clock();
-    let beat = 0;
-    for (let k = 1; k < ci.beats.length; k++) if (now >= ci.beats[k]!) beat = k;
-    return COUNT_IN_BEATS - beat;
+    return enqueue(() => take.start()).catch(() => {});
   }
 
   function setCountIn(change: Partial<CountInPrefs>) {
-    if (recording !== 'idle') return;
+    if (take.state() !== 'idle') return;
     const current = snapshot.countIn;
     const next: CountInPrefs = {
       on: change.on ?? current.on,
@@ -1212,112 +754,16 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     patch({ countIn: next });
   }
 
-  function stop(reason: Extract<StopReason, 'user'>): Promise<void> {
-    if (recording === 'count-in') {
-      cancelCountIn();
-      return Promise.resolve();
-    }
-    if (recording !== 'recording') return Promise.resolve();
-    if (active) stopWatchingLimits(active);
-    setRecording('stopping');
-    return enqueue(() => finishTake(reason).then(() => {})).catch(() => {});
-  }
-
-  /**
-   * The stop pipeline: stops the capture (already stopped at the cap for `max-length`), then
-   * saves the take, or deletes it when it is under `MIN_TAKE_MS`. A take whose raw appends hit
-   * `storage-full` is saved as `storage-full` whatever `reason` asked. A `user` or `max-length`
-   * save opens its Tab; a failure stop (`mic-lost`, `storage-full`, `instance-lost`) stays on
-   * Record, and when
-   * its save fails the take is left `recording` for recovery with no error card (the
-   * `storage-full` banner still shows). Settles as what became of the take.
-   */
-  async function finishTake(reason: StopReason): Promise<'saved' | 'short' | 'failed' | 'none'> {
-    const take = active;
-    if (!take || take.abandoned || !take.capture || !take.writer) return 'none';
-    const { capture, writer } = take;
-    stopWatchingLimits(take);
-    let stopReason = reason;
-    try {
-      const { parts } = await capture.stop();
-      await take.appends;
-      if (take.storageFull) stopReason = 'storage-full';
-      const durationMs = Math.round((take.samples / capture.sampleRate) * 1000);
-      // A max-length stop is never short; any other stop under 0.5 s keeps nothing (AD-9).
-      if (stopReason !== 'max-length' && durationMs < MIN_TAKE_MS) {
-        try {
-          await writer.close();
-          await deps.deleteTake(take.id, 'recording-session');
-        } catch {
-          // The `recording` record (and its raw file) left behind is the recovery scan's to
-          // remove (story 3.11); the take is discarded all the same.
-        }
-        active = null;
-        // A short take that hit storage-full still raises the banner: the disk is full.
-        setRecording('idle', {
-          notice: { kind: 'too-short', seq: ++noticeSeq },
-          ...(take.storageFull ? { storageFull: true } : {}),
-        });
-        return 'short';
-      }
-      await deps.writeCompressed(take.id, new Blob(parts, { type: RECORDING_MIME }));
-      await writer.close();
-      await deps.patchTake(
-        take.id,
-        {
-          status: 'recorded',
-          durationMs,
-          audioMime: RECORDING_MIME,
-          stopReason,
-          clipped: take.clipCount > 0,
-        },
-        'recording-session',
-      );
-    } catch (err) {
-      take.abandoned = true;
-      capture.abort();
-      // The raw file keeps what was written; recovery (story 3.11) rebuilds the take.
-      void take.appends.then(() => writer.close()).catch(() => {});
-      if (take.storageFull || stopReason === 'mic-lost' || stopReason === 'instance-lost') {
-        // A failure stop: the mic is handled by its own path (kept live, or the idle rule).
-        active = null;
-        setRecording('idle', take.storageFull ? { storageFull: true } : {});
-        return 'failed';
-      }
-      failRecording(err);
-      return 'failed';
-    }
-    active = null;
-    const full = stopReason === 'storage-full';
-    setRecording('idle', {
-      savedSeq: snapshot.savedSeq + 1,
-      ...(full ? { storageFull: true } : {}),
-    });
-    if (stopReason === 'user' || stopReason === 'max-length') deps.navigate(take.id);
-    return 'saved';
-  }
-
   function releaseForHandover(): Promise<void> {
     if (handover) return handover;
-    if (recording === 'count-in') cancelCountIn();
-    // Marked stopping now, so the cap or a full disk does not queue a save of its own first.
-    if (recording === 'recording' && active) {
-      stopWatchingLimits(active);
-      setRecording('stopping');
-    }
+    // A count-in is cancelled; a recording take is marked stopping now, so the cap or a full
+    // disk does not queue a save of its own first.
+    take.beginHandover();
     // Idle: nothing to wait for (an allow waiting on a permission prompt must not hold it up).
     const saving =
-      recording === 'idle'
+      take.state() === 'idle'
         ? Promise.resolve()
-        : enqueue(async () => {
-            // Queued after a take being created (`starting`) or saved by a Stop: the first now
-            // records, the second has gone.
-            if (active && (recording === 'recording' || recording === 'stopping')) {
-              stopWatchingLimits(active);
-              setRecording('stopping');
-              await finishTake('instance-lost');
-            }
-          }).catch(() => {});
+        : enqueue(() => take.finishForHandover()).catch(() => {});
     handover = saving.then(() => {
       const opened = input;
       input = null;
@@ -1328,8 +774,8 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   }
 
   const recovery = createRecordingRecovery(deps.recovery ?? NO_RECOVERY, {
-    activeTakeId: () => active?.id ?? null,
-    isRecording: () => recording !== 'idle',
+    activeTakeId: () => take.activeTakeId(),
+    isRecording: () => take.state() !== 'idle',
     handedOver: () => handover !== null,
     publish: (recovered) => patch({ recovered }),
     writeCompressed: (id, blob) => deps.writeCompressed(id, blob),
@@ -1375,9 +821,9 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     getAnalyser: () => input?.analyser ?? null,
     dismissInputQuality: () => quality.dismiss(),
     record,
-    stop,
-    readElapsedMs: () => active?.capture?.elapsedMs() ?? 0,
-    readCountInBeat,
+    stop: (reason) => take.stop(reason),
+    readElapsedMs: () => take.readElapsedMs(),
+    readCountInBeat: () => take.readCountInBeat(),
     setCountIn,
     releaseForHandover,
     scanForRecovery: () => recovery.scan(),
