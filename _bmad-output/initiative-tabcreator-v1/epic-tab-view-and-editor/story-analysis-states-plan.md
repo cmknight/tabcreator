@@ -3,7 +3,7 @@ title: 'Analysis states'
 type: 'feature'
 ticket: '7'
 created: '2026-10-04'
-status: 'built'
+status: done
 baseline_revision: '737b33aa96648ae9830e0e3d7ebfbed969a4eebd'
 route: 'full'
 route_source: 'auto'
