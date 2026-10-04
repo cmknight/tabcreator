@@ -3,7 +3,7 @@ title: 'Onset detection'
 type: 'feature'
 ticket: '6'
 created: '2026-10-03'
-status: 'built'
+status: done
 baseline_revision: '02cc25b57eac298ecf9452e33a865125baa57353'
 route: 'full'
 route_source: 'auto'
