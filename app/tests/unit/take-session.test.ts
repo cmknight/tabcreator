@@ -896,6 +896,8 @@ describe('take session edits', () => {
       };
     });
     h.deps.now = () => clock;
+    let ids = 0;
+    h.deps.newId = () => `new${++ids}`;
     const session = createTakeSession('t1', h.deps);
     opened.push(session);
     const events: EditEvent[] = [];
@@ -907,6 +909,9 @@ describe('take session edits', () => {
 
   const noteOf = (session: ReturnType<typeof createTakeSession>, id: string) =>
     session.getSnapshot().tab!.notes.find((n) => n.id === id)!;
+  /** The ids in played order. */
+  const noteLabelsOrder = (session: ReturnType<typeof createTakeSession>) =>
+    [...session.getSnapshot().tab!.notes].sort((x, y) => x.startMs - y.startMs).map((n) => n.id);
 
   const opened: ReturnType<typeof createTakeSession>[] = [];
   afterEach(async () => {
@@ -1292,6 +1297,324 @@ describe('take session edits', () => {
     session.typeDigit(2);
     await tick(0);
     expect(noteOf(session, 'b').fret).toBe(2);
+  });
+
+  // Story "String moves, delete, insert and confirm".
+  describe('string moves, delete, insert and confirm', () => {
+    // A G-string note at fret 7 (D4, midi 62), flagged, in phrase 1 in place of b.
+    const G7: Note = { ...note('g', 300, 3, 7), lowConfidence: true };
+    const TABG: Tab = { ...TAB5, notes: [NOTES[0]!, G7, ...NOTES.slice(2)] };
+
+    it('↑ moves the selected note to the next thinner string at the same pitch, locked, re-fitted', async () => {
+      const { h, session, events } = await open(TABG);
+      session.select('g');
+      await session.moveStringBy(-1);
+      expect(noteOf(session, 'g')).toEqual({
+        ...G7,
+        string: 2,
+        fret: 3,
+        locked: true,
+        lowConfidence: false,
+      });
+      expect(h.deps.mapFrets).toHaveBeenCalledTimes(1);
+      expect(noteOf(session, 'a')).toMatchObject({ string: 6, fret: 24 }); // phrase re-fitted
+      expect(noteOf(session, 'd')).toBe(NOTES[3]);
+      expect(events).toEqual([
+        { kind: 'edit', label: { kind: 'moveString', string: 2, fret: 3 }, string: 2, fret: 3 },
+      ]);
+      expect(session.canUndo()).toBe(true);
+      await session.moveStringBy(1); // ↓ back to the G string
+      expect(noteOf(session, 'g')).toMatchObject({ string: 3, fret: 7, midi: 62 });
+    });
+
+    it('↓ skips strings that cannot play the pitch: none left that way does nothing', async () => {
+      // maxFret 5: D4 on the B string (fret 3) has no thicker string within 5 frets.
+      const B3: Note = { ...note('g', 300, 2, 3), locked: true };
+      const { h, session } = await open(
+        { ...TAB5, notes: [NOTES[0]!, B3, ...NOTES.slice(2)] },
+        { ...ANALYZED, settings: { ...ANALYZED.settings, maxFret: 5 } },
+      );
+      session.select('g');
+      await session.moveStringBy(1);
+      expect(h.deps.mapFrets).not.toHaveBeenCalled();
+      expect(session.canUndo()).toBe(false);
+      await session.moveStringBy(-1); // the high e plays it at fret −2: no
+      expect(session.canUndo()).toBe(false);
+    });
+
+    it('edge: ↑ on the high e does nothing, no step', async () => {
+      const { h, session, events } = await open();
+      session.select('a'); // string 1
+      await session.moveStringBy(-1);
+      expect(h.deps.mapFrets).not.toHaveBeenCalled();
+      expect(session.canUndo()).toBe(false);
+      expect(events).toEqual([]);
+      await session.moveStringBy(1);
+      expect(noteOf(session, 'a')).toMatchObject({ string: 2, fret: 5, midi: 64 });
+    });
+
+    it('moveString to an explicit string (the popover)', async () => {
+      const { session } = await open(TABG);
+      await session.moveString('g', 4);
+      expect(noteOf(session, 'g')).toMatchObject({ string: 4, fret: 12, locked: true });
+    });
+
+    it('delete: removed, startMs recorded, next note selected, neighbours re-fitted, announced', async () => {
+      const { h, session, events } = await open();
+      session.select('b');
+      await session.deleteSelected();
+      const tab = session.getSnapshot().tab!;
+      expect(tab.notes.map((n) => n.id)).toEqual(['a', 'c', 'd', 'e']);
+      expect(tab.deletedStartMs).toEqual([1500, 300]);
+      expect(session.getSnapshot().selectedNoteId).toBe('c');
+      expect(vi.mocked(h.deps.mapFrets).mock.calls[0]![1].notes.map((n) => n.startMs)).toEqual([
+        0, 600,
+      ]);
+      expect(noteOf(session, 'a')).toMatchObject({ string: 6 }); // re-fitted
+      expect(events).toEqual([{ kind: 'edit', label: { kind: 'delete' }, string: 2, fret: 1 }]);
+    });
+
+    it('delete the last note in played order: the previous one is selected', async () => {
+      const { session } = await open();
+      session.select('e');
+      await session.deleteSelected();
+      expect(session.getSnapshot().selectedNoteId).toBe('d');
+    });
+
+    it('undo a delete: the note and deletedStartMs come back, the note selected', async () => {
+      const { session } = await open();
+      session.select('b');
+      await session.deleteSelected();
+      await session.undo();
+      expect(session.getSnapshot().tab!.notes).toEqual(TAB5.notes);
+      expect(session.getSnapshot().tab!.deletedStartMs).toEqual([1500]);
+      expect(session.getSnapshot().selectedNoteId).toBe('b');
+    });
+
+    it('delete the only note: No notes found; undo and redo still work with history', async () => {
+      const only = note('x', 500, 3, 2);
+      const { session } = await open({ ...TAB, notes: [only], deletedStartMs: [] });
+      session.select('x');
+      await session.deleteSelected();
+      expect(session.getSnapshot().tab!.notes).toEqual([]);
+      expect(session.getSnapshot().selectedNoteId).toBeNull();
+      expect(isTabShown(session.getSnapshot())).toBe(false);
+      // No edits apply with no notes; undo does.
+      await session.insert();
+      expect(session.getSnapshot().tab!.notes).toEqual([]);
+      await session.undo();
+      expect(session.getSnapshot().tab!.notes).toEqual([only]);
+      expect(session.getSnapshot().tab!.deletedStartMs).toEqual([]);
+      expect(session.getSnapshot().selectedNoteId).toBe('x');
+      await session.redo();
+      expect(session.getSnapshot().tab!.notes).toEqual([]);
+      expect(session.getSnapshot().tab!.deletedStartMs).toEqual([500]);
+    });
+
+    it('delete with nothing selected does nothing', async () => {
+      const { h, session } = await open();
+      await session.deleteSelected();
+      expect(h.deps.mapFrets).not.toHaveBeenCalled();
+      expect(session.getSnapshot().tab).toEqual(TAB5);
+    });
+
+    it('insert after the selection: midway, its string, fret 0, locked, selected, announced', async () => {
+      const p = { ...note('p', 1000, 3, 4), endMs: 1100 };
+      const q = note('q', 1500, 1, 0);
+      const { session, events } = await open({ ...TAB, notes: [p, q], deletedStartMs: [] });
+      session.select('p');
+      await session.insert();
+      expect(session.getSnapshot().tab!.notes.map((n) => n.id)).toEqual(['p', 'new1', 'q']);
+      expect(noteOf(session, 'new1')).toEqual({
+        id: 'new1',
+        startMs: 1250,
+        endMs: 1350,
+        midi: 55,
+        confidence: 1,
+        string: 3,
+        fret: 0,
+        locked: true,
+        lowConfidence: false,
+      });
+      expect(session.getSnapshot().selectedNoteId).toBe('new1');
+      expect(events).toEqual([{ kind: 'edit', label: { kind: 'insert' }, string: 3, fret: 0 }]);
+      // Undo removes it, and the selection with it.
+      await session.undo();
+      expect(session.getSnapshot().tab!.notes.map((n) => n.id)).toEqual(['p', 'q']);
+      expect(session.getSnapshot().selectedNoteId).toBeNull();
+    });
+
+    it('insert at the end: 250 ms after the last note', async () => {
+      const { session } = await open();
+      session.select('e');
+      await session.insert();
+      expect(noteOf(session, 'new1')).toMatchObject({ startMs: 2550, string: 2 });
+    });
+
+    it('insert with no selection: before the first note, not before the take start', async () => {
+      const first = note('f', 1500, 4, 2);
+      const one = await open({ ...TAB, notes: [first], deletedStartMs: [] });
+      await one.session.insert();
+      expect(noteOf(one.session, 'new1')).toMatchObject({ startMs: 1250, string: 4 });
+      const early = await open({ ...TAB, notes: [note('f', 100, 4, 2)], deletedStartMs: [] });
+      await early.session.insert();
+      expect(noteOf(early.session, 'new1')).toMatchObject({ startMs: 0 });
+    });
+
+    it('insert, then a digit typed before it lands: the new note gets the fret', async () => {
+      const { h, session } = await open();
+      const first = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+      vi.mocked(h.deps.mapFrets).mockReturnValueOnce(first.promise);
+      session.select('e');
+      const inserting = session.insert();
+      session.typeDigit(5);
+      await tick(0);
+      first.resolve([null, null, null]);
+      await inserting;
+      await tick(0);
+      expect(noteOf(session, 'new1')).toMatchObject({ fret: 5, string: 2, midi: 64 });
+      // The digit did not land on the note selected before the insert (only re-fitted).
+      expect(noteOf(session, 'e')).toMatchObject({ locked: false, midi: NOTES[4]!.midi });
+    });
+
+    it('insert, then two digits: one number on the new note', async () => {
+      const { session } = await open();
+      session.select('e');
+      await session.insert();
+      session.typeDigit(1);
+      session.typeDigit(2);
+      await tick(0);
+      expect(noteOf(session, 'new1').fret).toBe(12);
+    });
+
+    it('insert with no selection on a trimmed take: at the trim start, before the first note', async () => {
+      const first = note('f', 100, 4, 2);
+      const { session } = await open(
+        { ...TAB, notes: [first, note('s', 400, 1, 0)], deletedStartMs: [] },
+        { ...ANALYZED, trimStartMs: 60 },
+      );
+      await session.insert();
+      expect(session.getSnapshot().tab!.notes.map((n) => n.id)).toEqual(['new1', 'f', 's']);
+      expect(noteOf(session, 'new1')).toMatchObject({ startMs: 60, string: 4 });
+      expect(noteLabelsOrder(session)).toEqual(['new1', 'f', 's']);
+    });
+
+    it('I, one digit before the insert lands and one after within 400 ms: one fret, one undo step', async () => {
+      const { h, session } = await open();
+      const first = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+      vi.mocked(h.deps.mapFrets).mockReturnValueOnce(first.promise);
+      session.select('e');
+      const inserting = session.insert();
+      session.typeDigit(1);
+      await tick(100);
+      first.resolve([null, null, null]);
+      await inserting;
+      await tick(0);
+      session.typeDigit(2);
+      await tick(0);
+      expect(noteOf(session, 'new1').fret).toBe(12);
+      await session.undo();
+      expect(noteOf(session, 'new1').fret).toBe(0); // back to before the first digit
+      await session.undo();
+      expect(session.getSnapshot().tab!.notes.some((n) => n.id === 'new1')).toBe(false);
+    });
+
+    it('a digit after I goes to a note the player then selected, not the pending insert', async () => {
+      const { h, session } = await open();
+      const first = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+      vi.mocked(h.deps.mapFrets).mockReturnValueOnce(first.promise);
+      session.select('e');
+      const inserting = session.insert();
+      session.select('d');
+      session.typeDigit(7);
+      first.resolve([null, null, null]);
+      await inserting;
+      await tick(0);
+      expect(noteOf(session, 'd').fret).toBe(7);
+      expect(noteOf(session, 'new1').fret).toBe(0);
+    });
+
+    it('a digit aimed at an insert that made no note goes to the selection', async () => {
+      const { h, session } = await open();
+      vi.mocked(h.deps.mapFrets).mockRejectedValueOnce(new AppError('analysis-failed', 'x'));
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      session.select('e');
+      const inserting = session.insert();
+      session.typeDigit(6);
+      await inserting;
+      await tick(0);
+      expect(session.getSnapshot().tab!.notes.some((n) => n.id === 'new1')).toBe(false);
+      expect(noteOf(session, 'e').fret).toBe(6);
+    });
+
+    it('three ↑ queued before any lands move three strings', async () => {
+      // C4 (midi 60) on the low E at fret 20: ↑ goes A 15, D 10, G 5.
+      const z = note('z', 300, 6, 20);
+      const { h, session } = await open({ ...TAB, notes: [z], deletedStartMs: [] });
+      const first = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+      vi.mocked(h.deps.mapFrets).mockReturnValueOnce(first.promise);
+      session.select('z');
+      const moves = [session.moveStringBy(-1), session.moveStringBy(-1), session.moveStringBy(-1)];
+      first.resolve([null]);
+      await Promise.all(moves);
+      expect(noteOf(session, 'z')).toMatchObject({ string: 3, fret: 5, midi: 60 });
+      // Two more: B fret 1, then the high e cannot play it (the edge): it stays.
+      await Promise.all([session.moveStringBy(-1), session.moveStringBy(-1)]);
+      expect(noteOf(session, 'z')).toMatchObject({ string: 2, fret: 1 });
+    });
+
+    it('Delete twice deletes two notes', async () => {
+      const { session } = await open();
+      session.select('b');
+      await Promise.all([session.deleteSelected(), session.deleteSelected()]);
+      expect(session.getSnapshot().tab!.notes.map((n) => n.id)).toEqual(['a', 'd', 'e']);
+      expect(session.getSnapshot().tab!.deletedStartMs).toEqual([1500, 300, 600]);
+      expect(session.getSnapshot().selectedNoteId).toBe('d');
+    });
+
+    it('I twice: two notes in played order after the original', async () => {
+      const p = note('p', 1000, 3, 4);
+      const q = note('q', 1800, 1, 0);
+      const { session } = await open({ ...TAB, notes: [p, q], deletedStartMs: [] });
+      session.select('p');
+      await Promise.all([session.insert(), session.insert()]);
+      expect(noteLabelsOrder(session)).toEqual(['p', 'new1', 'new2', 'q']);
+      expect(noteOf(session, 'new1').startMs).toBe(1400);
+      expect(noteOf(session, 'new2').startMs).toBe(1600);
+      expect(session.getSnapshot().selectedNoteId).toBe('new2');
+    });
+
+    it('Delete then I: inserts after the newly selected note', async () => {
+      const { session } = await open();
+      session.select('b');
+      await Promise.all([session.deleteSelected(), session.insert()]);
+      expect(noteLabelsOrder(session)).toEqual(['a', 'c', 'new1', 'd', 'e']);
+      // c's string as the delete's re-fit left it.
+      expect(noteOf(session, 'new1')).toMatchObject({
+        string: noteOf(session, 'c').string,
+        startMs: 1300,
+      });
+    });
+
+    it('confirm a flagged note: locked, unflagged, re-fitted, announced', async () => {
+      const { h, session, events } = await open();
+      await session.confirm('b');
+      expect(noteOf(session, 'b')).toEqual({ ...NOTES[1], locked: true, lowConfidence: false });
+      expect(session.getSnapshot().tab!.notes.filter((n) => n.lowConfidence)).toHaveLength(0);
+      expect(h.deps.mapFrets).toHaveBeenCalledTimes(1);
+      expect(events).toEqual([{ kind: 'edit', label: { kind: 'confirm' }, string: 2, fret: 1 }]);
+    });
+
+    it('confirm an already confirmed note: no step, no announcement', async () => {
+      const { h, session, events } = await open();
+      await session.confirm('b');
+      events.length = 0;
+      await session.confirm('b');
+      expect(events).toEqual([]);
+      expect(h.deps.mapFrets).toHaveBeenCalledTimes(1);
+      await session.undo();
+      expect(session.canUndo()).toBe(false); // one step only
+    });
   });
 
   it('edits do nothing while the tab is not shown (analysing)', async () => {

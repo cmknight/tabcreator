@@ -24,11 +24,16 @@
 // selection or focus. While playback runs (`playing`), when that note's button is outside the
 // viewport it is scrolled into view, at most once per 500 ms (smoothly, unless reduced motion is asked for). A click on a note also
 // reports it through `onNoteClick` (the screen seeks to it while playing).
+//
+// Story "String moves, delete, insert and confirm": a double-click on a note reports it, with its
+// button, through `onNoteDoubleClick` (the screen opens the edit popover there). While an
+// overlay is open the selection never pulls focus.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { midiName, playedOrder } from '../../model/notes';
 import { layoutTab } from '../../model/tab-render';
 import type { Note } from '../../model/types';
+import { isOverlayOpen, subscribeOverlay } from '../a11y/overlays';
 import { TEXT_FIELD } from '../a11y/selectors';
 import hidden from '../a11y/visually-hidden.module.css';
 import { strings } from '../strings';
@@ -112,6 +117,8 @@ export interface TabAreaProps {
   playing?: boolean;
   /** Called with a note's id when it is clicked, after it is selected. */
   onNoteClick?(noteId: string): void;
+  /** Called with a note's id and its button when it is double-clicked (the edit popover). */
+  onNoteDoubleClick?(noteId: string, button: HTMLButtonElement): void;
 }
 
 /** Whether `el` lies (partly) outside the window's viewport. */
@@ -137,6 +144,7 @@ export function TabArea({
   playingNoteId = null,
   playing = false,
   onNoteClick,
+  onNoteDoubleClick,
 }: TabAreaProps) {
   const areaRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
@@ -190,8 +198,12 @@ export function TabArea({
   /** Set while focus is handed back after a reflow, which must not select the note. */
   const restoring = useRef(false);
   const lastSelected = useRef(selectedNoteId);
+  const overlayOpen = useSyncExternalStore(subscribeOverlay, isOverlayOpen, isOverlayOpen);
 
   useLayoutEffect(() => {
+    // An open overlay (the edit popover) holds focus; a selection moved meanwhile is focused
+    // once it closes (this effect runs again then).
+    if (overlayOpen) return;
     const moved = lastSelected.current !== selectedNoteId;
     lastSelected.current = selectedNoteId;
     const active = document.activeElement;
@@ -224,7 +236,7 @@ export function TabArea({
         restoring.current = false;
       }
     }
-  }, [selectedNoteId, layout]);
+  }, [selectedNoteId, layout, overlayOpen]);
 
   // Keep the playing note in view: scroll at most once per KEEP_IN_VIEW_MS; a note that leaves
   // the view sooner is checked again when that time is up.
@@ -333,6 +345,7 @@ export function TabArea({
                     onSelect(cell.noteId);
                     onNoteClick?.(cell.noteId);
                   }}
+                  onDoubleClick={(e) => onNoteDoubleClick?.(cell.noteId, e.currentTarget)}
                 />
               ))}
             </div>

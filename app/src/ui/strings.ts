@@ -309,6 +309,43 @@ export const strings = {
   'tab.redone': (label: string) => `Redid ${label}`,
   /** Announced assertively when an edit could not be made (the engine failed); nothing changed. */
   'tab.editFailed': "Couldn't change that note — try again",
+  /** The ↑ / ↓ shortcuts' descriptions (EXPERIENCE.md Interaction Primitives). */
+  'tab.shortcutStringUp': 'Move note to the next thinner string, same pitch',
+  'tab.shortcutStringDown': 'Move note to the next thicker string, same pitch',
+  /** The Delete / Backspace shortcut's description. */
+  'tab.shortcutDelete': 'Delete note',
+  /** The `I` shortcut's description. */
+  'tab.shortcutInsert': 'Insert note after selection',
+  /** The Enter shortcut's description. */
+  'tab.shortcutConfirm': 'Confirm selected note (clears flag, locks it)',
+  /** Command names (`CommandLabel`), as undo and redo name them: "Undid Move to string 3". */
+  'tab.commandMoveString': (string: StringNo) => `Move to string ${string}`,
+  'tab.commandDelete': 'Delete note',
+  'tab.commandInsert': 'Insert note',
+  'tab.commandConfirm': 'Confirm note',
+  /** Announced after a string move (EXPERIENCE.md Accessibility floor): "Moved to G string, fret 7". */
+  'tab.editMoved': (string: StringNo, fret: number) =>
+    `Moved to ${TAB_STRING_NAMES[string]} string, fret ${fret}`,
+  /** Announced after a delete. */
+  'tab.editDeleted': 'Note deleted',
+  /** Announced after an insert: "Note inserted on the G string, fret 0". */
+  'tab.editInserted': (string: StringNo, fret: number) =>
+    `Note inserted on the ${TAB_STRING_NAMES[string]} string, fret ${fret}`,
+  /** Announced after a confirm. */
+  'tab.editConfirmed': 'Note confirmed',
+  /** The toolbar's Insert and Delete buttons (EXPERIENCE.md Toolbar). */
+  'tab.insert': 'Insert',
+  'tab.delete': 'Delete',
+  /** The edit popover (EXPERIENCE.md Fret popover): its name, the fret field's label. */
+  'tab.popover': 'Edit note',
+  'tab.popoverFret': 'Fret',
+  /** The fret field's hint: the frets it accepts, "0 to 24". */
+  'tab.popoverFretRange': (maxFret: number) => `0 to ${maxFret}`,
+  /** A position button in the edit popover: "String 3, fret 7". */
+  'tab.popoverPosition': (string: StringNo, fret: number) => `String ${string}, fret ${fret}`,
+  /** The edit popover's position buttons' group name. */
+  'tab.popoverPositions': 'Other strings',
+  'tab.popoverConfirm': 'Confirm',
   'library.title': 'Library',
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */

@@ -34,6 +34,14 @@
 // an entry's `mod` names the modifiers it needs, `'mod'` being ⌘ on a Mac and Ctrl elsewhere.
 // A key pressed with modifiers no matching entry declares is still left to the page, and the
 // guard still applies (Ctrl/⌘+Z in the title field stays native).
+//
+// Story "String moves, delete, insert and confirm": ↑ / ↓ move the selected note to the next
+// thinner / thicker string at the same pitch (from inside the tab area, like ← / →); Delete and
+// Backspace delete it and `I` inserts a note after it (from anywhere on the Tab screen but the
+// toolbar); Enter confirms it (from a note button or elsewhere in the tab area: the guard's
+// Enter exception for note buttons). Undo and redo also work in the No notes found state while
+// there is history. While an overlay is open (`ui/a11y/overlays.ts`) no shortcut runs: the
+// overlay owns the keys, Esc first.
 
 import { useEffect } from 'react';
 import { recordingSession, type RecordingSession } from '../../session/recording-session';
@@ -41,6 +49,7 @@ import type { RecordingSnapshot } from '../../session/recording-types';
 import { activePlayback, type PlaybackController } from '../../session/playback';
 import { activeTakeSession, isTabShown, type TakeSession } from '../../session/take-session';
 import { parseRoute, type Route } from '../router';
+import { isOverlayOpen } from './overlays';
 import { NOTE_BUTTON, TAB_AREA, TEXT_FIELD, TOOLBAR } from './selectors';
 import { strings } from '../strings';
 
@@ -95,7 +104,9 @@ const ENTER_ACTION = `${SPACE_ACTION}, a[href], [role="link"]`;
  * The one exception (story "Playback with a following cursor"): Space on a note button inside
  * the tab area (`[role="application"]`) is not guarded, so the Tab screen's Space (Play / Pause,
  * EXPERIENCE.md Keyboard) runs there. A note is a selection target, already selected when
- * focused, so pressing it would do nothing visible. Enter on a note stays native.
+ * focused, so pressing it would do nothing visible. Enter on a note button is not guarded either
+ * (story "String moves, delete, insert and confirm"): it confirms the note. Enter on any other
+ * button stays native.
  *
  * Whether `key` pressed with focus on `target` must be left to the page: focus is in a text
  * field, or on an element where the key has a native action (Space: a button or checkbox;
@@ -108,7 +119,10 @@ export function guarded(target: EventTarget | null, key: string): boolean {
     if (target.closest(NOTE_BUTTON)) return false;
     return target.closest(SPACE_ACTION) !== null;
   }
-  if (key === 'Enter') return target.closest(ENTER_ACTION) !== null;
+  if (key === 'Enter') {
+    if (target.closest(NOTE_BUTTON)) return false;
+    return target.closest(ENTER_ACTION) !== null;
+  }
   return false;
 }
 
@@ -302,17 +316,51 @@ export function tabPlaybackShortcuts(
   ];
 }
 
-type EditSession = Pick<TakeSession, 'getSnapshot' | 'typeDigit' | 'undo' | 'redo'>;
+type EditSession = Pick<
+  TakeSession,
+  | 'getSnapshot'
+  | 'typeDigit'
+  | 'undo'
+  | 'redo'
+  | 'canUndo'
+  | 'canRedo'
+  | 'moveStringBy'
+  | 'deleteSelected'
+  | 'insert'
+  | 'confirm'
+>;
 
 /**
  * The Tab screen's edit keys, acting on `session()` (the mounted screen's) while its tab is
  * shown: `0`–`9` set the selected note's fret (only with a note selected), Ctrl/⌘+Z undoes,
- * Ctrl/⌘+Shift+Z and Ctrl+Y redo (nothing to undo or redo: nothing happens).
+ * Ctrl/⌘+Shift+Z and Ctrl+Y redo (nothing to undo or redo: nothing happens; with no notes left,
+ * they apply only while there is something to undo or redo). ↑ / ↓ move the selected note to
+ * the next thinner / thicker string (inside the tab area, held down they repeat), Delete and
+ * Backspace delete it, `I` inserts a note after it (or before the first note with none
+ * selected), Enter confirms it (on a note button or elsewhere in the tab area). None of them
+ * applies in the toolbar.
  */
 export function tabEditShortcuts(
   session: () => EditSession | null = activeTakeSession,
 ): Shortcut[] {
   const tabShown = () => isTabShown(session()?.getSnapshot());
+  const selected = () => (session()?.getSnapshot().selectedNoteId ?? null) !== null;
+  /** The No notes found state: analysed, idle, a tab with no notes. */
+  const noNotes = () => {
+    const snap = session()?.getSnapshot();
+    return (
+      !!snap &&
+      !snap.missing &&
+      snap.analysis.kind === 'idle' &&
+      !!snap.take &&
+      snap.tab?.notes.length === 0
+    );
+  };
+  const canUndo = () => tabShown() || (noNotes() && (session()?.canUndo() ?? false));
+  const canRedo = () => tabShown() || (noNotes() && (session()?.canRedo() ?? false));
+  const inArea = (target: EventTarget | null) =>
+    inTabArea(target) && !inToolbar(target) && tabShown() && selected();
+  const onScreen = (target: EventTarget | null) => !inToolbar(target) && tabShown();
   const digits: Shortcut[] = Array.from({ length: 10 }, (_, digit) => ({
     key: String(digit),
     route: 'tab',
@@ -328,7 +376,7 @@ export function tabEditShortcuts(
       mod: 'mod',
       route: 'tab',
       description: strings['tab.shortcutUndo'],
-      when: tabShown,
+      when: canUndo,
       handler: () => void session()?.undo(),
     },
     {
@@ -336,7 +384,7 @@ export function tabEditShortcuts(
       mod: 'mod+shift',
       route: 'tab',
       description: strings['tab.shortcutRedo'],
-      when: tabShown,
+      when: canRedo,
       handler: () => void session()?.redo(),
     },
     {
@@ -344,8 +392,49 @@ export function tabEditShortcuts(
       mod: 'ctrl',
       route: 'tab',
       description: strings['tab.shortcutRedo'],
-      when: tabShown,
+      when: canRedo,
       handler: () => void session()?.redo(),
+    },
+    {
+      key: 'ArrowUp',
+      route: 'tab',
+      description: strings['tab.shortcutStringUp'],
+      when: inArea,
+      repeat: true,
+      handler: () => void session()?.moveStringBy(-1),
+    },
+    {
+      key: 'ArrowDown',
+      route: 'tab',
+      description: strings['tab.shortcutStringDown'],
+      when: inArea,
+      repeat: true,
+      handler: () => void session()?.moveStringBy(1),
+    },
+    ...['Delete', 'Backspace'].map((key): Shortcut => ({
+      key,
+      route: 'tab',
+      description: strings['tab.shortcutDelete'],
+      when: (target) => onScreen(target) && selected(),
+      handler: () => void session()?.deleteSelected(),
+    })),
+    {
+      key: 'i',
+      route: 'tab',
+      description: strings['tab.shortcutInsert'],
+      when: onScreen,
+      handler: () => void session()?.insert(),
+    },
+    {
+      key: 'Enter',
+      route: 'tab',
+      description: strings['tab.shortcutConfirm'],
+      when: inArea,
+      handler: () => {
+        const s = session();
+        const id = s?.getSnapshot().selectedNoteId ?? null;
+        if (s && id !== null) void s.confirm(id);
+      },
     },
   ];
 }
@@ -396,7 +485,7 @@ export function dispatchShortcut(
   shortcuts: readonly Shortcut[] = SHORTCUTS,
   mac: boolean = isMacPlatform(),
 ): boolean {
-  if (event.defaultPrevented) return false;
+  if (event.defaultPrevented || isOverlayOpen()) return false;
   const entry = shortcuts.find(
     (s) =>
       modMatches(s, event, mac) &&

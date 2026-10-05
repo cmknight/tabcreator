@@ -1,8 +1,15 @@
 import { expect, test, type Page } from '@playwright/test';
 import { collectErrors, recordButton, stopButton, timer } from './helpers';
-import { FIXTURE, goLive } from './mic-helpers';
+import { expectNoSeriousAxe, FIXTURE, goLive } from './mic-helpers';
 import { readTab } from './storage-helpers';
-import { makeNotes, noteButton, openSeededTab, tabArea } from './tab-helpers';
+import {
+  focusedNote,
+  makeNotes,
+  noteButton,
+  openSeededTab,
+  selectedNote,
+  tabArea,
+} from './tab-helpers';
 
 // Story "Change a fret and undo it" (spine AD-4): set a fret with a digit, undo and redo it,
 // the debounced save, and the edit-save storage-full banner, in the `dev` project (the fake mic,
@@ -10,6 +17,8 @@ import { makeNotes, noteButton, openSeededTab, tabArea } from './tab-helpers';
 
 interface StoredNote {
   id: string;
+  startMs: number;
+  endMs: number;
   string: number;
   fret: number;
   midi: number;
@@ -174,4 +183,273 @@ test('Ctrl+Z and digits in the title field stay native', async ({ page }) => {
   await expect(noteButton(page, 'note-11')).toHaveAttribute('aria-label', /, fret 7, /);
   await page.waitForTimeout(500);
   expect(await storedTab(page, takeId)).toEqual(edited);
+});
+
+// Story "String moves, delete, insert and confirm": ↑ / ↓, Delete, I and Enter; the edit popover;
+// the toolbar's Insert and Delete.
+
+const OPEN_MIDI: Record<number, number> = { 1: 64, 2: 59, 3: 55, 4: 50, 5: 45, 6: 40 };
+const MAX_FRET = 24;
+
+/** The thinner string ↑ moves a note at `midi` on `string` to (the nearest that plays it), or null. */
+function thinnerString(string: number, midi: number): number | null {
+  for (let s = string - 1; s >= 1; s--) {
+    const fret = midi - OPEN_MIDI[s]!;
+    if (fret >= 0 && fret <= MAX_FRET) return s;
+  }
+  return null;
+}
+
+/** Another string that plays `note`'s pitch (the nearest thicker, else thinner), or null. */
+function otherString(note: StoredNote): number | null {
+  for (const s of [6, 5, 4, 3, 2, 1]
+    .filter((s) => s !== note.string)
+    .sort((a, b) => Math.abs(a - note.string) - Math.abs(b - note.string))) {
+    const fret = note.midi - OPEN_MIDI[s]!;
+    if (fret >= 0 && fret <= MAX_FRET) return s;
+  }
+  return null;
+}
+
+/** The notes in played order. */
+const played = (notes: readonly StoredNote[]) => [...notes].sort((a, b) => a.startMs - b.startMs);
+
+/** The played-order number in a note button's label ("Note 12: …"). */
+async function labelNumber(page: Page, id: string): Promise<number> {
+  const label = (await noteButton(page, id).getAttribute('aria-label')) ?? '';
+  return Number(/^Note (\d+):/.exec(label)?.[1]);
+}
+
+/**
+ * Selects note `id` with the keyboard only: the skip link into the tab area, then ← / → along
+ * played order.
+ */
+async function selectByKeyboard(page: Page, id: string): Promise<void> {
+  const skip = page.getByRole('link', { name: 'Skip to tab' });
+  await skip.focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => focusedNote(page)).not.toBeNull();
+  const from = await labelNumber(page, (await focusedNote(page))!);
+  const to = await labelNumber(page, id);
+  const key = to > from ? 'ArrowRight' : 'ArrowLeft';
+  for (let i = 0; i < Math.abs(to - from); i++) await page.keyboard.press(key);
+  await expect(noteButton(page, id)).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => focusedNote(page)).toBe(id);
+}
+
+/** The stored tab's notes (none when it is not stored). */
+async function storedNotes(page: Page, takeId: string): Promise<StoredNote[]> {
+  return (await readTab<StoredTab>(page, takeId))?.notes ?? [];
+}
+
+test('keyboard only: ↑ / ↓ move strings, Delete / Backspace, I and Enter; all survive a reload', async ({
+  page,
+}) => {
+  const errors = await goLive(page, FIXTURE);
+  const takeId = await recordAndAnalyse(page);
+  const before = played(await storedNotes(page, takeId));
+  expect(before.length).toBeGreaterThanOrEqual(4);
+
+  // ↑: the engine fingers the fixture on the thinnest strings it can, so first raise a note's
+  // fret (a digit) until a thinner string plays it too; then ↑ moves it there, same pitch.
+  const mover = before.find((n) => n.string > 1)!;
+  expect(mover).toBeTruthy();
+  await selectByKeyboard(page, mover.id);
+  await page.keyboard.press('5');
+  const raised = OPEN_MIDI[mover.string]! + 5;
+  await expect.poll(() => storedNote(page, takeId, mover.id)).toMatchObject({ midi: raised });
+  const to = thinnerString(mover.string, raised)!;
+  expect(to).toBeLessThan(mover.string);
+  await page.keyboard.press('ArrowUp');
+  await expect
+    .poll(() => storedNote(page, takeId, mover.id))
+    .toMatchObject({
+      string: to,
+      fret: raised - OPEN_MIDI[to]!,
+      midi: raised,
+      locked: true,
+      lowConfidence: false,
+    });
+  // ↓: back to the string it came from, same pitch.
+  await page.keyboard.press('ArrowDown');
+  await expect
+    .poll(() => storedNote(page, takeId, mover.id))
+    .toMatchObject({ string: mover.string, fret: 5, midi: raised, locked: true });
+
+  // Delete: a middle note (not the mover); the next one is selected.
+  const victim = before.find((n, i) => i > 0 && i < before.length - 1 && n.id !== mover.id)!;
+  const next = before[before.indexOf(victim) + 1]!;
+  await selectByKeyboard(page, victim.id);
+  await page.keyboard.press('Delete');
+  await expect(noteButton(page, victim.id)).toHaveCount(0);
+  await expect.poll(() => selectedNote(page)).toBe(next.id);
+  await expect
+    .poll(async () => {
+      const tab = await readTab<StoredTab>(page, takeId);
+      return {
+        gone: !tab?.notes.some((n) => n.id === victim.id),
+        recorded: tab?.deletedStartMs.includes(victim.startMs),
+      };
+    })
+    .toEqual({ gone: true, recorded: true });
+
+  // Backspace deletes too: another middle note.
+  const left = played(await storedNotes(page, takeId));
+  const second = left.find((n, i) => i > 0 && i < left.length - 1 && n.id !== mover.id)!;
+  await selectByKeyboard(page, second.id);
+  await page.keyboard.press('Backspace');
+  await expect(noteButton(page, second.id)).toHaveCount(0);
+  await expect
+    .poll(async () => {
+      const tab = await readTab<StoredTab>(page, takeId);
+      return {
+        gone: !tab?.notes.some((n) => n.id === second.id),
+        recorded: tab?.deletedStartMs.includes(second.startMs),
+      };
+    })
+    .toEqual({ gone: true, recorded: true });
+
+  // I: after the first note, midway to the second, on its string, fret 0, locked.
+  const now = played(await storedNotes(page, takeId));
+  const [first, after] = [now[0]!, now[1]!];
+  await selectByKeyboard(page, first.id);
+  await page.keyboard.press('i');
+  const ids = new Set(now.map((n) => n.id));
+  await expect
+    .poll(async () => (await storedNotes(page, takeId)).find((n) => !ids.has(n.id)) ?? null)
+    .toMatchObject({
+      startMs: (first.startMs + after.startMs) / 2,
+      string: first.string,
+      fret: 0,
+      midi: OPEN_MIDI[first.string],
+      locked: true,
+      lowConfidence: false,
+    });
+  const inserted = (await storedNotes(page, takeId)).find((n) => !ids.has(n.id))!;
+  await expect(noteButton(page, inserted.id)).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => focusedNote(page)).toBe(inserted.id);
+
+  // Enter on a note: confirmed (locked, not flagged).
+  const unlocked = played(await storedNotes(page, takeId)).find((n) => !n.locked)!;
+  expect(unlocked).toBeTruthy();
+  await selectByKeyboard(page, unlocked.id);
+  await page.keyboard.press('Enter');
+  await expect
+    .poll(() => storedNote(page, takeId, unlocked.id))
+    .toMatchObject({ locked: true, lowConfidence: false });
+
+  const edited = await storedTab(page, takeId);
+  await page.reload();
+  await expect(tabArea(page)).toBeVisible({ timeout: 15_000 });
+  expect(await storedTab(page, takeId)).toEqual(edited);
+  await expect(noteButton(page, victim.id)).toHaveCount(0);
+  await expect(noteButton(page, inserted.id)).toHaveCount(1);
+  await expect(noteButton(page, second.id)).toHaveCount(0);
+  // ↓ took it back to its own string, at the raised fret.
+  await expect(noteButton(page, mover.id)).toHaveAttribute('aria-label', /, fret 5, /);
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('mouse only: the popover moves and confirms; the toolbar inserts and deletes; all survive a reload', async ({
+  page,
+}) => {
+  const errors = await goLive(page, FIXTURE);
+  const takeId = await recordAndAnalyse(page);
+  const before = played(await storedNotes(page, takeId));
+  expect(before.length).toBeGreaterThanOrEqual(4);
+
+  // Double-click: the popover; a position button moves the note, keeping its pitch.
+  const mover = before.find((n) => otherString(n) !== null)!;
+  const to = otherString(mover)!;
+  await noteButton(page, mover.id).dblclick();
+  const dialog = page.getByRole('dialog', { name: 'Edit note' });
+  await expect(dialog).toBeVisible();
+  await dialog
+    .getByRole('button', { name: `String ${to}, fret ${mover.midi - OPEN_MIDI[to]!}` })
+    .click();
+  await expect(dialog).toBeHidden();
+  await expect
+    .poll(() => storedNote(page, takeId, mover.id))
+    .toMatchObject({ string: to, midi: mover.midi, locked: true });
+
+  // Confirm locks another note.
+  const other = played(await storedNotes(page, takeId)).find((n) => !n.locked)!;
+  await noteButton(page, other.id).dblclick();
+  await dialog.getByRole('button', { name: 'Confirm' }).click();
+  await expect(dialog).toBeHidden();
+  await expect
+    .poll(() => storedNote(page, takeId, other.id))
+    .toMatchObject({ locked: true, lowConfidence: false });
+
+  // The toolbar: Insert after a clicked note, then Delete the selected one.
+  const toolbar = page.getByRole('toolbar', { name: 'Tab tools' });
+  const now = played(await storedNotes(page, takeId));
+  const ids = new Set(now.map((n) => n.id));
+  await noteButton(page, now[1]!.id).click();
+  await toolbar.getByRole('button', { name: 'Insert' }).click();
+  await expect
+    .poll(async () => (await storedNotes(page, takeId)).find((n) => !ids.has(n.id)) ?? null)
+    .toMatchObject({ string: now[1]!.string, fret: 0, locked: true });
+  const inserted = (await storedNotes(page, takeId)).find((n) => !ids.has(n.id))!;
+
+  const victim = now[2]!;
+  await noteButton(page, victim.id).click();
+  await toolbar.getByRole('button', { name: 'Delete' }).click();
+  await expect(noteButton(page, victim.id)).toHaveCount(0);
+  await expect
+    .poll(async () => (await readTab<StoredTab>(page, takeId))?.deletedStartMs ?? [])
+    .toContain(victim.startMs);
+
+  const edited = await storedTab(page, takeId);
+  await page.reload();
+  await expect(tabArea(page)).toBeVisible({ timeout: 15_000 });
+  expect(await storedTab(page, takeId)).toEqual(edited);
+  await expect(noteButton(page, inserted.id)).toHaveCount(1);
+  await expect(noteButton(page, victim.id)).toHaveCount(0);
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('the popover traps Tab, Esc closes it back to the note, and axe passes with it open', async ({
+  page,
+}) => {
+  const errors = await goLive(page, FIXTURE);
+  const takeId = await recordAndAnalyse(page);
+  const before = await storedTab(page, takeId);
+  const target = played(before!.notes)[1]!;
+  const note = noteButton(page, target.id);
+  await note.dblclick();
+  const dialog = page.getByRole('dialog', { name: 'Edit note' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('spinbutton', { name: 'Fret' })).toBeFocused();
+  const inside = () => page.evaluate(() => !!document.activeElement?.closest('[role="dialog"]'));
+  for (let i = 0; i < 8; i++) {
+    await page.keyboard.press('Tab');
+    expect(await inside()).toBe(true);
+  }
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press('Shift+Tab');
+    expect(await inside()).toBe(true);
+  }
+  // No Tab-screen shortcut runs under it.
+  await page.keyboard.press('n');
+  await page.keyboard.press('Delete');
+  await expect(note).toHaveCount(1);
+  await expectNoSeriousAxe(page);
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(note).toBeFocused();
+  await page.waitForTimeout(500);
+  expect(await storedTab(page, takeId)).toEqual(before);
+
+  // A fret typed in the popover and Enter sets it.
+  await note.dblclick();
+  const field = dialog.getByRole('spinbutton', { name: 'Fret' });
+  await field.fill('9');
+  await field.press('Enter');
+  await expect(dialog).toBeHidden();
+  await expect
+    .poll(() => storedNote(page, takeId, target.id))
+    .toMatchObject({ fret: 9, locked: true });
+  expect(unexpected(errors)).toEqual([]);
 });

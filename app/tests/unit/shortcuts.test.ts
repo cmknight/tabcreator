@@ -205,17 +205,19 @@ describe('the guard', () => {
     expect(guarded(null, ' ')).toBe(false);
   });
 
-  it('Space on a note button in the tab area is not guarded; Enter there, and other buttons, are', () => {
+  it('Space and Enter on a note button in the tab area are not guarded; other buttons are', () => {
     const area = add('div', { role: 'application', 'aria-label': 'Tab' });
     const noteButton = area.appendChild(document.createElement('button'));
     noteButton.setAttribute('data-note-id', 'n0');
     expect(guarded(noteButton, ' ')).toBe(false);
-    expect(guarded(noteButton, 'Enter')).toBe(true);
+    expect(guarded(noteButton, 'Enter')).toBe(false);
     // A button in the area that is not a note, and a note-like button outside it, stay native.
     const other = area.appendChild(document.createElement('button'));
     expect(guarded(other, ' ')).toBe(true);
+    expect(guarded(other, 'Enter')).toBe(true);
     const outside = add('button', { 'data-note-id': 'n1' });
     expect(guarded(outside, ' ')).toBe(true);
+    expect(guarded(outside, 'Enter')).toBe(true);
     document.body.innerHTML = '';
   });
 });
@@ -422,6 +424,12 @@ describe('the Tab selection shortcuts', () => {
       ['z', 'Undo'],
       ['z', 'Redo'],
       ['y', 'Redo'],
+      ['ArrowUp', 'Move note to the next thinner string, same pitch'],
+      ['ArrowDown', 'Move note to the next thicker string, same pitch'],
+      ['Delete', 'Delete note'],
+      ['Backspace', 'Delete note'],
+      ['i', 'Insert note after selection'],
+      ['Enter', 'Confirm selected note (clears flag, locks it)'],
     ]);
   });
 
@@ -515,6 +523,8 @@ describe('the Tab selection shortcuts', () => {
     expect(SHORTCUTS.filter((s) => s.repeat).map((s) => [s.route, s.key])).toEqual([
       ['tab', 'ArrowLeft'],
       ['tab', 'ArrowRight'],
+      ['tab', 'ArrowUp'],
+      ['tab', 'ArrowDown'],
     ]);
   });
 
@@ -795,6 +805,12 @@ describe('the Tab edit shortcuts', () => {
       typeDigit: vi.fn(),
       undo: vi.fn(() => Promise.resolve()),
       redo: vi.fn(() => Promise.resolve()),
+      canUndo: vi.fn(() => false),
+      canRedo: vi.fn(() => false),
+      moveStringBy: vi.fn(() => Promise.resolve()),
+      deleteSelected: vi.fn(() => Promise.resolve()),
+      insert: vi.fn(() => Promise.resolve()),
+      confirm: vi.fn(() => Promise.resolve()),
     };
   }
 
@@ -915,6 +931,131 @@ describe('the Tab edit shortcuts', () => {
     install(session);
     expect(press(document.body, 'z', { ctrlKey: true }).defaultPrevented).toBe(false);
     expect(session.undo).not.toHaveBeenCalled();
+  });
+
+  it('undo and redo work in the No notes found state only while there is history', () => {
+    const session = fakeSession(null, {
+      tab: { notes: [] },
+      take: {},
+    } as unknown as Partial<TakeSnapshot>);
+    install(session);
+    expect(press(document.body, 'z', { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(press(document.body, 'y', { ctrlKey: true }).defaultPrevented).toBe(false);
+    session.canUndo.mockReturnValue(true);
+    expect(press(document.body, 'z', { ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(session.undo).toHaveBeenCalledTimes(1);
+    expect(press(document.body, 'y', { ctrlKey: true }).defaultPrevented).toBe(false);
+    session.canRedo.mockReturnValue(true);
+    expect(press(document.body, 'y', { ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(press(document.body, 'Z', { ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(
+      true,
+    );
+    expect(session.redo).toHaveBeenCalledTimes(2);
+  });
+
+  // Story "String moves, delete, insert and confirm".
+  /** A note button inside a tab area, focused. */
+  function noteButton(id: string): HTMLButtonElement {
+    const area = add('div', { role: 'application', 'aria-label': 'Tab' });
+    const button = document.createElement('button');
+    button.setAttribute('data-note-id', id);
+    area.append(button);
+    button.focus();
+    return button;
+  }
+
+  it('↑ / ↓ in the tab area move the selected note a string thinner / thicker, repeating', () => {
+    const session = fakeSession('n1');
+    install(session);
+    const button = noteButton('n1');
+    expect(press(button, 'ArrowUp').defaultPrevented).toBe(true);
+    expect(session.moveStringBy).toHaveBeenLastCalledWith(-1);
+    expect(press(button, 'ArrowDown').defaultPrevented).toBe(true);
+    expect(session.moveStringBy).toHaveBeenLastCalledWith(1);
+    press(button, 'ArrowDown', { repeat: true });
+    expect(session.moveStringBy).toHaveBeenCalledTimes(3);
+  });
+
+  it('↑ / ↓ need focus in the tab area (not the toolbar), a shown tab and a selection', () => {
+    const session = fakeSession('n1');
+    install(session);
+    expect(press(document.body, 'ArrowUp').defaultPrevented).toBe(false);
+    const toolbar = add('div', { role: 'toolbar' });
+    const tool = toolbar.appendChild(document.createElement('button'));
+    expect(press(tool, 'ArrowDown').defaultPrevented).toBe(false);
+    remove();
+    const none = fakeSession(null);
+    install(none);
+    expect(press(noteButton('n0'), 'ArrowUp').defaultPrevented).toBe(false);
+    expect(session.moveStringBy).not.toHaveBeenCalled();
+    expect(none.moveStringBy).not.toHaveBeenCalled();
+  });
+
+  it.each(['Delete', 'Backspace'])(
+    '%s deletes the selected note from anywhere but a text field or the toolbar',
+    (key) => {
+      const session = fakeSession('n1');
+      install(session);
+      expect(press(document.body, key).defaultPrevented).toBe(true);
+      expect(press(noteButton('n1'), key).defaultPrevented).toBe(true);
+      expect(session.deleteSelected).toHaveBeenCalledTimes(2);
+      expect(press(add('input'), key).defaultPrevented).toBe(false);
+      const toolbar = add('div', { role: 'toolbar' });
+      expect(
+        press(toolbar.appendChild(document.createElement('button')), key).defaultPrevented,
+      ).toBe(false);
+      expect(session.deleteSelected).toHaveBeenCalledTimes(2);
+      remove();
+      const none = fakeSession(null);
+      install(none);
+      expect(press(document.body, key).defaultPrevented).toBe(false);
+      expect(none.deleteSelected).not.toHaveBeenCalled();
+    },
+  );
+
+  it('I inserts a note (selection or not) while the tab is shown, not in a text field', () => {
+    const session = fakeSession(null);
+    install(session);
+    expect(press(document.body, 'i').defaultPrevented).toBe(true);
+    expect(press(document.body, 'I').defaultPrevented).toBe(true); // Caps Lock
+    expect(press(add('input'), 'i').defaultPrevented).toBe(false);
+    expect(session.insert).toHaveBeenCalledTimes(2);
+    remove();
+    const empty = fakeSession(null, { tab: { notes: [] } } as unknown as Partial<TakeSnapshot>);
+    install(empty);
+    expect(press(document.body, 'i').defaultPrevented).toBe(false);
+    expect(empty.insert).not.toHaveBeenCalled();
+  });
+
+  it('Enter on a note confirms the selected note; Enter on another button stays native', () => {
+    const session = fakeSession('n1');
+    install(session);
+    expect(press(noteButton('n1'), 'Enter').defaultPrevented).toBe(true);
+    expect(session.confirm).toHaveBeenCalledWith('n1');
+    const toolbar = add('div', { role: 'toolbar' });
+    const tool = toolbar.appendChild(document.createElement('button'));
+    expect(press(tool, 'Enter').defaultPrevented).toBe(false);
+    expect(press(add('button'), 'Enter').defaultPrevented).toBe(false);
+    expect(press(document.body, 'Enter').defaultPrevented).toBe(false);
+    expect(session.confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('no shortcut runs while an overlay is open', async () => {
+    const { openOverlay } = await import('../../src/ui/a11y/overlays');
+    const session = fakeSession('n1');
+    install(session);
+    const opener = noteButton('n1');
+    const popover = add('div');
+    popover.appendChild(document.createElement('button'));
+    const release = openOverlay({ element: popover, opener, onDismiss: () => {} });
+    for (const key of ['n', ' ', 'Delete', 'i', '5']) {
+      expect(press(document.body, key).defaultPrevented).toBe(false);
+    }
+    expect(session.deleteSelected).not.toHaveBeenCalled();
+    expect(session.insert).not.toHaveBeenCalled();
+    expect(session.typeDigit).not.toHaveBeenCalled();
+    release();
+    expect(press(document.body, 'Delete').defaultPrevented).toBe(true);
   });
 
   it('the registry still refuses modifier combinations no entry declares', () => {

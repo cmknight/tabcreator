@@ -104,6 +104,11 @@ function mockSession(initial: Snap) {
     redo: vi.fn(() => Promise.resolve()),
     canUndo: () => false,
     canRedo: () => false,
+    moveString: vi.fn(() => Promise.resolve()),
+    moveStringBy: vi.fn(() => Promise.resolve()),
+    deleteSelected: vi.fn(() => Promise.resolve()),
+    insert: vi.fn(() => Promise.resolve()),
+    confirm: vi.fn(() => Promise.resolve()),
     onEditEvent: vi.fn((listener: (event: EditEvent) => void) => {
       editListeners.add(listener);
       return () => {
@@ -407,6 +412,35 @@ describe('Tab screen analysis states', () => {
       ['Undid Set fret 5', 'polite'],
       ['Redid Set fret 12', 'polite'],
       [strings['tab.editFailed'], 'assertive'],
+    ]);
+  });
+
+  it('announces a string move, a delete, an insert and a confirm; undo names them', () => {
+    const { create, edit } = mockSession({
+      take: TAKE,
+      tab: { takeId: 't1', notes: [note(0, 1, 0)], updatedAt: TAKE.updatedAt, deletedStartMs: [] },
+      loading: false,
+      analysis: { kind: 'idle' },
+    });
+    render(<Tab takeId="t1" createSession={create} />);
+    vi.mocked(announce).mockClear();
+    edit({ kind: 'edit', label: { kind: 'moveString', string: 3, fret: 7 }, string: 3, fret: 7 });
+    edit({ kind: 'edit', label: { kind: 'delete' }, string: 2, fret: 1 });
+    edit({ kind: 'edit', label: { kind: 'insert' }, string: 3, fret: 0 });
+    edit({ kind: 'edit', label: { kind: 'confirm' }, string: 2, fret: 1 });
+    edit({ kind: 'undo', label: { kind: 'moveString', string: 3, fret: 7 } });
+    edit({ kind: 'undo', label: { kind: 'delete' } });
+    edit({ kind: 'redo', label: { kind: 'insert' } });
+    edit({ kind: 'redo', label: { kind: 'confirm' } });
+    expect(vi.mocked(announce).mock.calls).toEqual([
+      ['Moved to G string, fret 7', 'polite'],
+      ['Note deleted', 'polite'],
+      ['Note inserted on the G string, fret 0', 'polite'],
+      ['Note confirmed', 'polite'],
+      ['Undid Move to string 3', 'polite'],
+      ['Undid Delete note', 'polite'],
+      ['Redid Insert note', 'polite'],
+      ['Redid Confirm note', 'polite'],
     ]);
   });
 
@@ -781,11 +815,158 @@ describe('Tab screen tab area, header and selection', () => {
     expect(document.activeElement).toBe(noteButton('n20'));
   });
 
-  it('an empty toolbar under the header', () => {
-    const { create } = analysed();
+  it('the toolbar under the header: Insert, and Delete (disabled with nothing selected)', () => {
+    const { create, session, set } = analysed();
     render(<Tab takeId="t1" createSession={create} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Tab tools' });
-    expect(toolbar.children).toHaveLength(0);
+    const names = [...toolbar.querySelectorAll('button')].map((b) => b.textContent);
+    expect(names).toEqual(['Insert', 'Delete']);
+    const insert = screen.getByRole('button', { name: 'Insert' }) as HTMLButtonElement;
+    const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement;
+    expect(insert.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+    expect(insert.disabled).toBe(false);
+    expect(del.disabled).toBe(true);
+    fireEvent.click(insert);
+    expect(session.insert).toHaveBeenCalledTimes(1);
+    set({ selectedNoteId: 'n3' });
+    expect(del.disabled).toBe(false);
+    fireEvent.click(del);
+    expect(session.deleteSelected).toHaveBeenCalledTimes(1);
+  });
+
+  // Story "String moves, delete, insert and confirm": the edit popover.
+  describe('the edit popover', () => {
+    /** Opens the popover on note n11 (D4 on the B string, fret 3) by double-clicking it. */
+    function openOn() {
+      const mock = analysed('n11');
+      render(<Tab takeId="t1" createSession={mock.create} />);
+      const button = noteButton('n11');
+      act(() => button.focus());
+      fireEvent.doubleClick(button);
+      return { ...mock, button };
+    }
+
+    it('a double-click opens a modal "Edit note" dialog with the fret field focused', () => {
+      const { button } = openOn();
+      const dialog = screen.getByRole('dialog', { name: 'Edit note' });
+      expect(dialog.getAttribute('aria-modal')).toBe('true');
+      const field = screen.getByLabelText('Fret') as HTMLInputElement;
+      expect(document.activeElement).toBe(field);
+      expect(field.value).toBe('3');
+      expect(field.max).toBe('24');
+      // The other strings that play D4, then Confirm.
+      expect([...dialog.querySelectorAll('button')].map((b) => b.textContent)).toEqual([
+        'String 3, fret 7',
+        'String 4, fret 12',
+        'String 5, fret 17',
+        'String 6, fret 22',
+        'Confirm',
+      ]);
+      expect(button.isConnected).toBe(true);
+    });
+
+    it('Tab cycles inside; Esc closes with no change and focus goes back to the note', () => {
+      const { session, button } = openOn();
+      const dialog = screen.getByRole('dialog');
+      const confirm = screen.getByRole('button', { name: 'Confirm' });
+      act(() => confirm.focus());
+      fireEvent.keyDown(confirm, { key: 'Tab' });
+      expect(document.activeElement).toBe(screen.getByLabelText('Fret'));
+      fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(dialog.isConnected).toBe(false);
+      expect(document.activeElement).toBe(button);
+      expect(session.setFret).not.toHaveBeenCalled();
+      expect(session.moveString).not.toHaveBeenCalled();
+      expect(session.confirm).not.toHaveBeenCalled();
+    });
+
+    it('a position button moves the note there and closes', () => {
+      const { session, button } = openOn();
+      fireEvent.click(screen.getByRole('button', { name: 'String 3, fret 7' }));
+      expect(session.moveString).toHaveBeenCalledWith('n11', 3);
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(document.activeElement).toBe(button);
+    });
+
+    it('Confirm confirms the note and closes', () => {
+      const { session } = openOn();
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+      expect(session.confirm).toHaveBeenCalledWith('n11');
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('a fret and Enter sets it and closes; out of range or empty does nothing', () => {
+      const { session } = openOn();
+      const field = screen.getByLabelText('Fret') as HTMLInputElement;
+      fireEvent.change(field, { target: { value: '25' } });
+      fireEvent.submit(field.form!);
+      expect(session.setFret).not.toHaveBeenCalled();
+      expect(field.getAttribute('aria-invalid')).toBe('true');
+      fireEvent.change(field, { target: { value: '' } });
+      fireEvent.submit(field.form!);
+      expect(session.setFret).not.toHaveBeenCalled();
+      fireEvent.change(field, { target: { value: '12' } });
+      expect(field.getAttribute('aria-invalid')).toBeNull();
+      fireEvent.submit(field.form!);
+      expect(session.setFret).toHaveBeenCalledWith('n11', 12);
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('a pointer-down outside closes it', () => {
+      openOn();
+      fireEvent.pointerDown(screen.getByRole('heading', { level: 1 }));
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+
+    it('no shortcut runs while it is open', () => {
+      const { session } = openOn();
+      window.location.hash = '#/tab/t1';
+      const field = screen.getByLabelText('Fret');
+      for (const key of ['n', ' ', 'Delete']) {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'target', { value: document.body });
+        expect(dispatchShortcut(event, 'tab')).toBe(false);
+      }
+      expect(session.selectNextFlagged).not.toHaveBeenCalled();
+      expect(session.deleteSelected).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(field);
+      window.location.hash = '';
+    });
+
+    it('a selection moved while it was open gets focus when it closes', () => {
+      const { set } = openOn();
+      set({ selectedNoteId: 'n12' });
+      expect(document.activeElement).toBe(screen.getByLabelText('Fret')); // the popover keeps it
+      fireEvent.keyDown(screen.getByLabelText('Fret'), { key: 'Escape' });
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(document.activeElement).toBe(noteButton('n12'));
+    });
+
+    it('the tab area focuses a selection moved under any overlay once it closes', async () => {
+      const { openOverlay } = await import('../../src/ui/a11y/overlays');
+      const labels = noteLabels(notes);
+      const { rerender } = render(
+        <TabArea notes={notes} labels={labels} selectedNoteId="n1" onSelect={() => {}} />,
+      );
+      const other = document.body.appendChild(document.createElement('button'));
+      const overlay = document.body.appendChild(document.createElement('div'));
+      overlay.appendChild(document.createElement('input'));
+      let release: () => void = () => {};
+      act(() => {
+        release = openOverlay({ element: overlay, opener: other, onDismiss() {} });
+      });
+      rerender(<TabArea notes={notes} labels={labels} selectedNoteId="n5" onSelect={() => {}} />);
+      expect(document.activeElement).toBe(overlay.querySelector('input'));
+      act(() => release());
+      expect(document.activeElement).toBe(noteButton('n5'));
+    });
+
+    it('closes when its note goes away', () => {
+      const { set } = openOn();
+      set({ tab: { ...TAB40, notes: notes.filter((n) => n.id !== 'n11') }, selectedNoteId: null });
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
   });
 
   it('Note list view: a toggle that shows the same labels in played order', () => {
@@ -1201,6 +1382,13 @@ describe('Tab screen flags, warnings and bar lines', () => {
     render(<Tab takeId="t1" createSession={empty.create} settings={settings} />);
     expect(screen.getByRole('toolbar')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Bar lines' })).toBeNull();
+    // No notes: Insert and Delete are there, disabled.
+    expect((screen.getByRole('button', { name: 'Insert' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
   });
 });
 

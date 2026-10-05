@@ -31,3 +31,6 @@
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-change-a-fret-and-undo-it-tracer-plan.md`
   summary: EXPERIENCE.md does not yet carry the edit announcement copy added in story 8.1 ("Fret 5 on the G string", "Undid Set fret 5", "Redid …", "Couldn't change that note — try again") — owner: UX owner.
   evidence: The strings are tab.editFret, tab.undone, tab.redone and tab.editFailed in app/src/ui/strings.ts; EXPERIENCE gives only the string-move example "Moved to G string, fret 7".
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-string-moves-delete-insert-and-confirm-plan.md`
+  summary: EXPERIENCE.md does not yet carry story 8.3's copy — "Note deleted", "Note inserted on the G string, fret 0", "Note confirmed", the undo names ("Move to string 3", "Delete note", "Insert note", "Confirm note"), the popover's "Edit note", position buttons ("String 3, fret 7") and the fret range hint; the Fret popover entry (EXPERIENCE :80) also lacks the string positions and Confirm the user decided on — owner: UX owner.
+  evidence: Strings in app/src/ui/strings.ts; the popover decision is in epic Tab editing's Notes (2026-10-04).

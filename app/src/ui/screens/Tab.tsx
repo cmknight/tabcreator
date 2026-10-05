@@ -26,6 +26,11 @@
 // assertively), and an edit that could not be saved for lack of space shows the storage-full
 // banner (testId `tab-edit-storage-full`) whose Retry saves the kept Tab. The edit keys
 // themselves live in the shortcut registry.
+//
+// Story "String moves, delete, insert and confirm": the toolbar's Insert and Delete buttons
+// (disabled while the tab is not shown; Delete also with nothing selected), the edit popover
+// (components/EditPopover) a double-click on a note opens, and the announcements of a string
+// move, a delete, an insert and a confirm.
 
 import {
   useEffect,
@@ -55,7 +60,8 @@ import { NOTE_BUTTON } from '../a11y/selectors';
 import { focusSelectedNote } from '../a11y/shortcuts';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
-import { BarLinesIcon, ErrorIcon } from '../components/icons';
+import { EditPopover } from '../components/EditPopover';
+import { BarLinesIcon, DeleteIcon, ErrorIcon, InsertIcon } from '../components/icons';
 import { StorageFullBannerView } from '../components/StorageFullBannerView';
 import { PlaybackControls } from '../components/PlaybackControls';
 import { noteLabels, TabArea } from '../components/TabArea';
@@ -160,14 +166,41 @@ function FailureBanner({ code, session }: { code: AppErrorCode; session: TakeSes
 
 /** An edit command's name, as undo and redo announce it ("Set fret 5"). */
 export function commandLabelText(label: CommandLabel): string {
-  return strings['tab.commandSetFret'](label.fret);
+  switch (label.kind) {
+    case 'setFret':
+      return strings['tab.commandSetFret'](label.fret);
+    case 'moveString':
+      return strings['tab.commandMoveString'](label.string);
+    case 'delete':
+      return strings['tab.commandDelete'];
+    case 'insert':
+      return strings['tab.commandInsert'];
+    case 'confirm':
+      return strings['tab.commandConfirm'];
+  }
+}
+
+/** What an edit announces, by its command ("Moved to G string, fret 7"). */
+function editText(event: Extract<EditEvent, { kind: 'edit' }>): string {
+  switch (event.label.kind) {
+    case 'setFret':
+      return strings['tab.editFret'](event.fret, event.string);
+    case 'moveString':
+      return strings['tab.editMoved'](event.string, event.fret);
+    case 'delete':
+      return strings['tab.editDeleted'];
+    case 'insert':
+      return strings['tab.editInserted'](event.string, event.fret);
+    case 'confirm':
+      return strings['tab.editConfirmed'];
+  }
 }
 
 /** What an edit outcome announces, and how. */
 export function editAnnouncement(event: EditEvent): [string, 'polite' | 'assertive'] {
   switch (event.kind) {
     case 'edit':
-      return [strings['tab.editFret'](event.fret, event.string), 'polite'];
+      return [editText(event), 'polite'];
     case 'undo':
       return [strings['tab.undone'](commandLabelText(event.label)), 'polite'];
     case 'redo':
@@ -241,6 +274,8 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
   useMaxLengthToast(missing ? null : take);
   const { barLines } = useSyncExternalStore(settings.subscribePrefs, settings.getSnapshot).prefs;
   const [noteList, setNoteList] = useState(false);
+  /** The note the edit popover is open on, and the button it opened from. */
+  const [popover, setPopover] = useState<{ noteId: string; anchor: HTMLElement } | null>(null);
   /**
    * Warnings dismissed on this visit (never persisted: they return when the take reopens), for
    * the `warnings` they were dismissed on: a re-analysis replaces those, which shows them again.
@@ -409,12 +444,17 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
             onNoteClick={(id) => {
               if (playback.playing) playback.seekToNote(id, false);
             }}
+            onNoteDoubleClick={(id, anchor) => setPopover({ noteId: id, anchor })}
           />
         </div>
       </>
     );
   }
   const showToolbar = !missing && analysis.kind === 'idle' && !!tab && !!take;
+  const popoverNote =
+    showTab && popover ? (tab.notes.find((n) => n.id === popover.noteId) ?? null) : null;
+  // A popover whose note went away (an undo, a re-analysis) stays closed if the note comes back.
+  if (popover !== null && popoverNote === null) setPopover(null);
   const showBarLines = showTab && take?.countInBpm !== undefined;
 
   return (
@@ -465,6 +505,24 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
       />
       {showToolbar && (
         <div className={tabStyles.toolbar} role="toolbar" aria-label={strings['tab.toolbar']}>
+          <button
+            type="button"
+            className={`${buttons.secondary} ${tabStyles.toolButton}`}
+            disabled={!showTab}
+            onClick={() => void session.insert()}
+          >
+            <InsertIcon className={tabStyles.toolIcon} />
+            {strings['tab.insert']}
+          </button>
+          <button
+            type="button"
+            className={`${buttons.secondary} ${tabStyles.toolButton}`}
+            disabled={!showTab || selectedNoteId === null}
+            onClick={() => void session.deleteSelected()}
+          >
+            <DeleteIcon className={tabStyles.toolIcon} />
+            {strings['tab.delete']}
+          </button>
           {showBarLines && (
             <button
               type="button"
@@ -490,6 +548,19 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
       )}
       {showTab && <PlaybackControls playback={playback} />}
       {body}
+      {popover && popoverNote && take && (
+        <EditPopover
+          key={popover.noteId}
+          note={popoverNote}
+          maxFret={take.settings.maxFret}
+          anchor={popover.anchor}
+          onSetFret={(fret) => void session.setFret(popoverNote.id, fret)}
+          onMove={(string) => void session.moveString(popoverNote.id, string)}
+          onConfirm={() => void session.confirm(popoverNote.id)}
+          onClose={() => setPopover(null)}
+          returnFocusTo={() => session.getSnapshot().selectedNoteId ?? popoverNote.id}
+        />
+      )}
     </section>
   );
 }

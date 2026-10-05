@@ -3,12 +3,13 @@ title: 'String moves, delete, insert and confirm'
 type: 'feature'
 ticket: '3'
 created: '2026-10-05'
-status: 'draft'
+status: 'built'
+baseline_revision: '843a06d294e19860d30bb51edf8a0da4290a9f61'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -142,13 +143,13 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `app/src/model/edit-history.ts` (+ `playablePositions`, in it or in `model/notes.ts`) -- the four commands, the shared re-fit and the label union -- the edit set.
-- [ ] `app/src/session/take-session.ts` -- the command entry points, the selection after a command, `newId`, edit events, undo and redo with zero notes -- session wiring.
-- [ ] `app/src/ui/a11y/overlays.ts` -- open, close, trap, restore, `isOverlayOpen`, one level -- AD-18.
-- [ ] `app/src/ui/a11y/shortcuts.ts` -- ↑/↓, Delete/Backspace, I, Enter, the Enter guard exception, the overlay check, the undo `when` -- the registry.
-- [ ] `app/src/ui/components/EditPopover.tsx` (+ CSS), `TabArea.tsx` (double-click, focus-follow check), `Tab.tsx` (toolbar buttons, popover, announcements), `icons.tsx`, `strings.ts`, `session/README.md` -- the mouse paths and copy.
-- [ ] Unit tests: every I/O matrix row at the lowest surface that shows it (model, session, shortcuts, popover and overlay in `tab-screen.test.tsx` or a new `overlays.test.ts`), plus the 50-random-edit property test in `edit-history.test.ts` extended to mix all five commands.
-- [ ] `app/tests/e2e/tab-edit.dev.spec.ts` -- the ACs below.
+- [x] `app/src/model/edit-history.ts` (+ `playablePositions`, in it or in `model/notes.ts`) -- the four commands, the shared re-fit and the label union -- the edit set.
+- [x] `app/src/session/take-session.ts` -- the command entry points, the selection after a command, `newId`, edit events, undo and redo with zero notes -- session wiring.
+- [x] `app/src/ui/a11y/overlays.ts` -- open, close, trap, restore, `isOverlayOpen`, one level -- AD-18.
+- [x] `app/src/ui/a11y/shortcuts.ts` -- ↑/↓, Delete/Backspace, I, Enter, the Enter guard exception, the overlay check, the undo `when` -- the registry.
+- [x] `app/src/ui/components/EditPopover.tsx` (+ CSS), `TabArea.tsx` (double-click, focus-follow check), `Tab.tsx` (toolbar buttons, popover, announcements), `icons.tsx`, `strings.ts`, `session/README.md` -- the mouse paths and copy.
+- [x] Unit tests: every I/O matrix row at the lowest surface that shows it (model, session, shortcuts, popover and overlay in `tab-screen.test.tsx` or a new `overlays.test.ts`), plus the 50-random-edit property test in `edit-history.test.ts` extended to mix all five commands.
+- [x] `app/tests/e2e/tab-edit.dev.spec.ts` -- the ACs below.
 
 **Acceptance Criteria:**
 - Given a `c_major_scale_pos1` take on the Tab screen, when the player uses only the keyboard:
@@ -161,9 +162,58 @@ deferred: []
 
 ## Implementation Notes
 
+- **Take start.** `EditState` gains an optional `takeStartMs` (the session passes `take.trimStartMs`); an insert with no selection never lands before it (default 0).
+- **Shared re-fit.** `refitting(target, label, edit, selectAfter?)` in `model/edit-history.ts` builds every command from a pure edit plus the phrases it re-fits (one `mapFrets` per phrase, results applied in order). `setFret` now uses it too; its behaviour is unchanged.
+- **Announcing a no-op.** A command that changes nothing emits no edit event (confirming a confirmed note), except `setFret`, which keeps 8.1's behaviour of announcing the fret even when it was already set.
+- **Insert then digit.** A digit typed while an insert is queued or in flight applies to the new note's id (`pendingInsertId`), so `I` then `5` sets the new note's fret even before the insert's re-fit returns. The pending first digit survives the insert selecting its note.
+- **Skip unplayable.** In standard tuning the fret falls monotonically from thick to thin strings, so a string between two playable ones is never unplayable; the "skip" path is the generic search over `playablePositions`, and the unit tests cover the edges (none left that way: no step).
+- **Popover fret field.** A value outside 0..maxFret, or not a whole number, is refused (`aria-invalid`), not capped; Enter submits the field's form.
+- **Icons** went into `ui/components/icons.tsx`, where the existing icons live (the Code Map said `ui/icons.tsx`).
+- **e2e ↑.** The engine fingers `c_major_scale_pos1` on the thinnest strings it can, so no note of the recorded take has a thinner playable string. The keyboard AC first types `5` on a note (raising its pitch so a thinner string plays it), then presses ↑ and checks the same `midi` on the thinner string. The mouse AC picks any other playable position from the popover.
+
 ## Plan Change Log
 
+- 2026-10-05, matrix audit (step 3): the "Skip unplayable" row cannot occur in standard tuning. For one pitch the fret falls as strings get thinner (`midi − OPEN_MIDI[s]`), so the strings that play it form an unbroken run, and no string inside the run is unplayable. The skip code stays; the edge test (`↓ … none left that way does nothing`) covers its boundary. KEEP everything else.
+
 ## Review Triage Log
+
+### 2026-10-05 — Review pass
+- verdicts: 34 findings — high 0, medium 3, low 30, false 1, maybe-false 0
+- findings:
+  - `[medium]` `[patch]` (blind) `moveStringBy`, `deleteSelected` and `insert` read the selection when the key is pressed, not when the queued command runs: a held ↑ moves one string, Delete twice deletes one note, I twice inserts in reverse order — the target is now resolved when the command runs.
+  - `[low]` `[reject]` (blind) A no-op `setFret` or `moveString` still calls the engine — 8.1's set-fret behaviour; with targets resolved at run time a move at the edge plans nothing.
+  - `[low]` `[patch]` (blind) Insert with no selection lands after the first note when that note is at or before the take start — a no-selection insert now goes before the first note in array and played order.
+  - `[low]` `[reject]` (blind) Insert after the last note is not clamped to the trim end or audio length — the +250 ms rule is US-6.3's; clamping changes a specified rule.
+  - `[low]` `[reject]` (blind) Midway inserts between equal or close starts, fractional ms, and 100 ms overlapping a close next note — the duration and midpoint are US-6.3's; the engine's notes are monophonic.
+  - `[low]` `[reject]` (blind) An emptied tab can never get notes again except by undo — EXPERIENCE: Insert is disabled in No notes found; undo stays available (user ruling).
+  - `[low]` `[reject]` (blind) Deleting a user-inserted note adds its startMs to deletedStartMs, which may hide a detected note on re-analysis — US-6.3 records every deleted note; 8.6 decides how deletedStartMs is matched (noted under residual risks).
+  - `[low]` `[reject]` (blind) The popover opens only by double-click (no keyboard or touch) — the intent makes the popover the mouse path; the keyboard has ↑/↓, digits and Enter.
+  - `[low]` `[patch]` (blind) The popover is positioned once and drifts on scroll or resize — it now closes on scroll and resize, and a placement test was added.
+  - `[low]` `[patch]` (blind) An invalid fret gives no explanation — the field now has a hint with the allowed range (aria-describedby).
+  - `[low]` `[patch]` (blind) A digit after I goes to the pending insert even if the player moved the selection; a dropped insert loses the digit — grouped with the run-time target fix.
+  - `[low]` `[reject]` (blind) Mixed vocabulary between undo labels, popover buttons and announcements — the new copy goes to the UX check (deferred-work), like 8.1's.
+  - `[low]` `[patch]` (blind) Focus can fall to the body when the popover closes after a reflow re-created its note — the opener is now resolved by note id at close, and a selection change made under the overlay is focused after it closes.
+  - `[low]` `[reject]` (blind) Test gaps (↓ and Backspace e2e, toolbar-delete focus, redo-of-delete selection, background not inert) — ↓ and Backspace added to the keyboard e2e under the intent finding below; the rest are unit-covered or rejected (aria-modal is honoured by screen readers).
+  - `[medium]` `[patch]` (edge) Delete then I (or Delete twice) before the delete lands targets the deleted id — the same root cause as the blind stale-selection finding.
+  - `[medium]` `[patch]` (edge) Holding ↑ queues moves to the same string — the same root cause.
+  - `[low]` `[patch]` (edge) A digit after clicking another note goes to the pending insert — grouped with the run-time target fix.
+  - `[low]` `[patch]` (edge) A digit typed while an insert that does nothing is pending is lost — grouped with the run-time target fix.
+  - `[low]` `[patch]` (edge) Insert with no selection when the first note is at or before the take start — the same as the blind finding.
+  - `[low]` `[reject]` (edge) An insert next to a chord (equal startMs) lands after the whole chord — the engine emits no chords.
+  - `[low]` `[reject]` (edge) An insert after the last note can pass the trim end — the same as the blind finding (US-6.3 rule).
+  - `[low]` `[reject]` (edge) 100 ms overlapping the next note — the same as the blind finding.
+  - `[low]` `[reject]` (edge) Insert disabled with all notes deleted — the same as the blind finding.
+  - `[low]` `[patch]` (edge) Scroll or resize detaches the popover — grouped with the blind finding.
+  - `[low]` `[patch]` (edge) A re-created anchor gives focus to the body on close — grouped.
+  - `[low]` `[patch]` (edge) A selection change under the overlay is never focused after it closes — grouped.
+  - `[low]` `[patch]` (verification-gap) No session test with a non-zero trimStartMs for a no-selection insert — added.
+  - `[low]` `[patch]` (verification-gap) No test of two digits across an insert's landing — added.
+  - `[low]` `[patch]` (verification-gap) Popover placement untested — added (grouped with the popover fix).
+  - `[low]` `[patch]` (intent) Verify's evidence is split: ↓, Backspace and the popover check run outside the c_major e2e — the keyboard e2e now also covers ↓ back and Backspace.
+  - `[low]` `[patch]` (intent) The popover focus and axe e2e runs on a seeded tab, not c_major_scale_pos1 — moved to the recorded fixture.
+  - `[low]` `[reject]` (intent) "N must not select behind a dialog" is asserted only in unit and component tests at that level — the dispatcher's overlay check is unit-tested directly; the e2e asserts that Delete is blocked.
+  - `[low]` `[reject]` (intent) The ↑ pitch guarantee is covered only for a re-fretted note at e2e — the recorded fixture has no note that can move thinner (all on the thinnest playable string); now joined by ↓.
+  - `[false]` `[reject]` (intent) Reading A1 vs A2 for the no-selection insert — the ruling says "(not before the take's start)", which is the clamp (A2) the diff implements.
 
 ## Design Notes
 
@@ -179,3 +229,46 @@ deferred: []
 **Commands:**
 - `cd app && npx -y pnpm@12.6.0 lint && npx -y pnpm@12.6.0 typecheck && npx -y pnpm@12.6.0 format:check && npx -y pnpm@12.6.0 test` -- expected: pass.
 - `cd app && export PATH="$HOME/.cargo/bin:$PATH" && npx -y pnpm@12.6.0 exec playwright test --project=dev tests/e2e/tab-edit.dev.spec.ts tests/e2e/tab-screen.dev.spec.ts tests/e2e/tab-flags.dev.spec.ts tests/e2e/playback.dev.spec.ts` -- expected: pass.
+
+## Auto Run Result
+
+**Status:** built, 2026-10-05.
+
+**Summary:** the rest of the edit set as `edit-history` commands through `takeSession.apply`:
+- move string (↑/↓ and popover positions; pitch kept, unplayable strings skipped, nothing at the edge);
+- delete (Delete/Backspace and the toolbar button; `startMs` recorded in `deletedStartMs`; next, else previous note selected; the former neighbours' phrases re-fitted);
+- insert (I and the toolbar button; midpoint, +250 ms at the end, or 250 ms before the first note but not before the trim start; fret 0, locked, selected, ready to type);
+- confirm (Enter, and the popover's Confirm).
+
+Every queued command resolves its target when it runs. `ui/a11y/overlays.ts` (one level, focus trap and restore, Esc and outside pointer-down) carries the double-click `EditPopover`: fret field with a range hint, other string positions, and Confirm. While an overlay is open, shortcuts and TabArea's focus-follow pause. Undo and redo work in No notes found while there is history.
+
+**Files:**
+- `app/src/model/edit-history.ts`: the label union, `playablePositions`, a shared re-fit, `moveString`, `deleteNote`, `insertNote`, `confirmNote`, `selectAfter`.
+- `app/src/session/take-session.ts`: run-time command builders, `newId`, the selection after a command, events, undo with zero notes.
+- `app/src/ui/a11y/overlays.ts`: new.
+- `app/src/ui/a11y/shortcuts.ts`: ↑/↓, Delete/Backspace, I, Enter (with the note-button guard exception), the overlay pause, undo `when`.
+- `app/src/ui/components/EditPopover.tsx` (+ CSS): new.
+- `app/src/ui/components/TabArea.tsx`: double-click, focus-follow under overlays.
+- `app/src/ui/screens/Tab.tsx` (+ CSS): Insert and Delete buttons, the popover, announcements.
+- `app/src/ui/components/icons.tsx`, `app/src/ui/strings.ts`, `app/src/session/README.md`.
+- Tests: `edit-history` (the property test mixes all five commands), `take-session`, `shortcuts`, `tab-screen`, `overlays`, `edit-popover`; `tests/e2e/tab-edit.dev.spec.ts` (keyboard-only, mouse-only, and popover focus with axe on c_major_scale_pos1).
+
+**Review:** thorough, 34 findings (3 medium, 30 low, 1 false).
+- **Patched:**
+  - 1 medium entry: queued commands use a stale selection (held ↑, Delete ×2, I ×2, Delete then I, digits after I).
+  - Low: insert before a first note at the trim start; popover closes on scroll and resize, with placement tests; a fret range hint; focus restored to a re-created note and to a selection moved under the overlay; trim-start and digits-across-insert session tests; ↓ and Backspace in the keyboard e2e; the popover e2e on the recorded fixture.
+- **Deferred:** none.
+- **Rejected:** with reasons in the triage log.
+
+**Follow-up review: not recommended.** One medium entry was patched; its scenarios are each pinned by a unit test.
+
+**Verification:**
+- lint, typecheck, format:check and test pass (1284).
+- Dev and chromium e2e: 171/171 (the instance "steal mid-take" test passed on rerun).
+- prod-mic: 4/4.
+
+**Residual risks:**
+- A deleted user-inserted note's `startMs` also goes into `deletedStartMs`; 8.6's re-analysis matching decides whether that can hide a detected note.
+- The recorded c_major take yields 4 notes, and the keyboard e2e deletes two of them.
+- The new copy is not yet in EXPERIENCE.md (deferred-work).
+- The "skip unplayable" path cannot occur in standard tuning (Plan Change Log).

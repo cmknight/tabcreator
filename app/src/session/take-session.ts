@@ -26,6 +26,13 @@
 // `visibilitychange` → hidden). A `storage-full` save keeps the Tab in memory and shows
 // `saveFailed` until a later save succeeds. Announceable outcomes go to `onEditEvent` listeners
 // (the screen words them, spine AD-18).
+//
+// Story "String moves, delete, insert and confirm": `moveString` / `moveStringBy` (the next
+// thinner or thicker string that plays the pitch), `deleteSelected`, `insert` (after the
+// selection, or before the first note; the new note's id comes from `newId`) and `confirm` run
+// through `apply` like `setFret`. A command may name the note to select afterwards (a delete:
+// the next note, else the previous; an insert: the new note). Undo and redo also work once the
+// last note is deleted (the screen shows No notes found), while there is history.
 
 import { engineClient } from '../engine/engine-client';
 import { isAppError, type AppErrorCode } from '../model/errors';
@@ -34,6 +41,11 @@ import {
   EMPTY_HISTORY,
   pushStep,
   redoStep,
+  confirmNote,
+  deleteNote,
+  insertNote,
+  moveString as moveStringCommand,
+  playablePositions,
   setFret as setFretCommand,
   tabState,
   undoStep,
@@ -130,6 +142,8 @@ export interface TakeSessionDeps {
   onPageHide(listener: () => void): () => void;
   /** The clock for the two-digit window (default `Date.now`). */
   now?: () => number;
+  /** A new note's id, for an insert (default `crypto.randomUUID`). */
+  newId?: () => string;
 }
 
 export interface TakeSession {
@@ -157,6 +171,25 @@ export interface TakeSession {
    * 400 ms of the first makes a two-digit fret, in the same undo step. Nothing selected: ignored.
    */
   typeDigit(digit: number): void;
+  /**
+   * Moves note `noteId` to `string` at the same pitch, locking it; a string that cannot play it
+   * within the take's highest fret: nothing happens.
+   */
+  moveString(noteId: string, string: StringNo): Promise<void>;
+  /**
+   * ↑ / ↓: moves the selected note to the next thinner (`-1`) or thicker (`1`) string that plays
+   * its pitch, skipping strings that cannot. None that way, or nothing selected: nothing happens.
+   */
+  moveStringBy(direction: -1 | 1): Promise<void>;
+  /** Deletes the selected note; the selection moves to the next note, else the previous. */
+  deleteSelected(): Promise<void>;
+  /**
+   * Inserts a note after the selected one (with nothing selected: before the first note) and
+   * selects it. A digit typed before it lands sets the new note's fret.
+   */
+  insert(): Promise<void>;
+  /** Confirms note `noteId` (locks and unflags it); already confirmed: nothing happens. */
+  confirm(noteId: string): Promise<void>;
   /** Undoes the last step (queued like a command); nothing to undo: nothing happens. */
   undo(): Promise<void>;
   /** Redoes the last undone step (queued like a command); nothing to redo: nothing happens. */
@@ -250,6 +283,9 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   const listeners = new Set<() => void>();
   const editListeners = new Set<(event: EditEvent) => void>();
   const now = deps.now ?? Date.now;
+  const newId = deps.newId ?? (() => crypto.randomUUID());
+  /** The id of an insert queued or in flight, which a digit typed meanwhile applies to. */
+  let pendingInsertId: string | null = null;
   /** Increments on every change to `snapshot.tab`; a re-fit result from an older one is stale. */
   let revision = 0;
   let history: History = EMPTY_HISTORY;
@@ -305,8 +341,14 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     if (focused !== null && !snapshot.tab?.notes.some((n) => n.id === focused)) {
       snapshot = { ...snapshot, lastFocusedNoteId: null };
     }
-    // A digit waiting for its second belongs to the note it was typed on.
-    if (snapshot.selectedNoteId !== wasSelected) pendingDigit = null;
+    // A digit waiting for its second belongs to the note it was typed on (an inserted note's
+    // digit may be typed before the insert selects it).
+    if (
+      snapshot.selectedNoteId !== wasSelected &&
+      snapshot.selectedNoteId !== pendingDigit?.noteId
+    ) {
+      pendingDigit = null;
+    }
     for (const l of [...listeners]) l();
   }
 
@@ -481,6 +523,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   }
 
   function select(noteId: string | null) {
+    // The player chose a note: a digit typed next goes there, not to a pending insert.
+    if (noteId !== pendingInsertId) pendingInsertId = null;
     const next =
       noteId !== null && snapshot.tab?.notes.some((n) => n.id === noteId) ? noteId : null;
     if (next === snapshot.selectedNoteId) return;
@@ -620,11 +664,19 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     return queue;
   }
 
-  /** Whether edits apply now: the take's tab is shown (analysed, idle, not deleted). */
-  function editable(): boolean {
+  /**
+   * Whether undo and redo apply now: the take is analysed and idle, not deleted (its tab may have
+   * no notes left, after deleting the last).
+   */
+  function travelable(): boolean {
     return (
       !snapshot.missing && snapshot.analysis.kind === 'idle' && !!snapshot.tab && !!snapshot.take
     );
+  }
+
+  /** Whether edits apply now: the take's tab is shown (analysed, idle, not deleted, with notes). */
+  function editable(): boolean {
+    return travelable() && isTabShown(snapshot);
   }
 
   async function runCommand(
@@ -635,7 +687,12 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     for (;;) {
       if (at !== epoch || !editable()) return;
       const tab = snapshot.tab!;
-      const state = { ...tabState(tab), maxFret: snapshot.take!.settings.maxFret };
+      const take = snapshot.take!;
+      const state = {
+        ...tabState(tab),
+        maxFret: take.settings.maxFret,
+        takeStartMs: take.trimStartMs,
+      };
       const planned = revision;
       const requests = command.plan(state);
       let results: EngineResult[];
@@ -651,8 +708,12 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       if (revision !== planned) continue; // stale: plan again on the current Tab
       const next = command.reduce(state, results);
       const label = command.label(state);
-      const target = next.notes.find((n) => n.id === command.target);
-      if (next.notes !== tab.notes || next.deletedStartMs !== tab.deletedStartMs) {
+      // A deleted target is announced as it was.
+      const target =
+        next.notes.find((n) => n.id === command.target) ??
+        state.notes.find((n) => n.id === command.target);
+      const changed = next.notes !== tab.notes || next.deletedStartMs !== tab.deletedStartMs;
+      if (changed) {
         history = pushStep(
           history,
           {
@@ -664,23 +725,48 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
           },
           merge.into,
         );
-        publish({ tab: { ...tab, notes: next.notes, deletedStartMs: next.deletedStartMs } });
+        const patch: Partial<TakeSnapshot> = {
+          tab: { ...tab, notes: next.notes, deletedStartMs: next.deletedStartMs },
+        };
+        if (command.selectAfter) patch.selectedNoteId = command.selectAfter(state, next);
+        publish(patch);
         scheduleSave();
       }
-      if (target) emitEdit({ kind: 'edit', label, string: target.string, fret: target.fret });
+      // A set fret is announced even when nothing changed (the fret it already had); the other
+      // commands only when they did something (confirming a confirmed note says nothing).
+      if (target && (changed || label.kind === 'setFret')) {
+        emitEdit({ kind: 'edit', label, string: target.string, fret: target.fret });
+      }
       return;
     }
   }
 
   function apply(command: EditCommand, merge: { key?: string; into?: string } = {}) {
+    return applyLazy(() => command, merge);
+  }
+
+  /**
+   * Queues the command `build` returns when its turn comes (it reads the snapshot then, so a
+   * key pressed several times acts on the state each earlier press left); null: nothing.
+   */
+  function applyLazy(build: () => EditCommand | null, merge: { key?: string; into?: string } = {}) {
     const at = epoch;
-    return enqueue(() => runCommand(command, at, merge));
+    return enqueue(() => {
+      if (at !== epoch || !editable()) return;
+      const command = build();
+      return command ? runCommand(command, at, merge) : undefined;
+    });
+  }
+
+  /** Whether note `id` is in the shown Tab. */
+  function exists(id: string): boolean {
+    return snapshot.tab?.notes.some((n) => n.id === id) ?? false;
   }
 
   function travel(direction: 'undo' | 'redo') {
     pendingDigit = null;
     return enqueue(() => {
-      if (!editable()) return;
+      if (!travelable()) return;
       const moved = direction === 'undo' ? undoStep(history) : redoStep(history);
       if (!moved) return;
       history = moved.history;
@@ -695,18 +781,79 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   }
 
   function typeDigit(digit: number) {
-    const noteId = snapshot.selectedNoteId;
+    const noteId = pendingInsertId ?? snapshot.selectedNoteId;
     if (noteId === null || !Number.isInteger(digit) || digit < 0 || digit > 9) return;
+    const viaInsert = noteId === pendingInsertId;
+    // A digit aimed at a pending insert that made no note goes to the selection instead.
+    const target = () => {
+      if (!viaInsert || exists(noteId)) return noteId;
+      return snapshot.selectedNoteId;
+    };
     const t = now();
     const first = pendingDigit;
     if (first && first.noteId === noteId && t - first.at <= DIGIT_WINDOW_MS) {
       pendingDigit = null;
-      void apply(setFretCommand(noteId, first.digit * 10 + digit), { into: first.key });
+      const fret = first.digit * 10 + digit;
+      void applyLazy(
+        () => {
+          const id = target();
+          return id === null ? null : setFretCommand(id, fret);
+        },
+        { into: first.key },
+      );
       return;
     }
     const key = `digit-${++digitSeq}`;
     pendingDigit = { noteId, digit, at: t, key };
-    void apply(setFretCommand(noteId, digit), { key });
+    void applyLazy(
+      () => {
+        const id = target();
+        return id === null ? null : setFretCommand(id, digit);
+      },
+      { key },
+    );
+  }
+
+  /** The selected note, or null. */
+  function selectedNote() {
+    const id = snapshot.selectedNoteId;
+    return id === null ? null : (snapshot.tab?.notes.find((n) => n.id === id) ?? null);
+  }
+
+  // The selected note is read when the queued command runs, so a held ↑ moves from the string
+  // the previous ↑ landed on, and each Delete or I acts on the selection the one before left.
+  function moveStringBy(direction: -1 | 1): Promise<void> {
+    pendingDigit = null;
+    return applyLazy(() => {
+      const note = selectedNote();
+      const take = snapshot.take;
+      if (!note || !take) return null;
+      const strings = playablePositions(note.midi, take.settings.maxFret).map((p) => p.string);
+      // Thinner strings have lower numbers.
+      const to =
+        direction < 0
+          ? strings.filter((s) => s < note.string).at(-1)
+          : strings.find((s) => s > note.string);
+      return to === undefined ? null : moveStringCommand(note.id, to);
+    });
+  }
+
+  function deleteSelected(): Promise<void> {
+    pendingDigit = null;
+    return applyLazy(() => {
+      const id = snapshot.selectedNoteId;
+      return id === null ? null : deleteNote(id);
+    });
+  }
+
+  function insert(): Promise<void> {
+    pendingDigit = null;
+    if (!editable()) return Promise.resolve();
+    const id = newId();
+    pendingInsertId = id;
+    return applyLazy(() => insertNote(id, snapshot.selectedNoteId)).finally(() => {
+      if (pendingInsertId === id) pendingInsertId = null;
+    });
   }
 
   return {
@@ -735,6 +882,17 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       return apply(setFretCommand(noteId, fret));
     },
     typeDigit,
+    moveString(noteId, string) {
+      pendingDigit = null;
+      return apply(moveStringCommand(noteId, string));
+    },
+    moveStringBy,
+    deleteSelected,
+    insert,
+    confirm(noteId) {
+      pendingDigit = null;
+      return apply(confirmNote(noteId));
+    },
     undo: () => travel('undo'),
     redo: () => travel('redo'),
     canUndo: () => history.undo.length > 0,
