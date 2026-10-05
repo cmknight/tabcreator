@@ -41,3 +41,18 @@ export function PencilIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/** Bar lines: the Tab toolbar's Bar lines toggle (two staff lines crossed by a bar). */
+export function BarLinesIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M3 8h18M3 16h18M12 4v16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

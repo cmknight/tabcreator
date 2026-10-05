@@ -12,6 +12,9 @@
 // survives reflow and re-renders (cleared when that note no longer exists), the rename of the
 // title (this store owns `title`, spine AD-14), and the one "active take session" slot through
 // which the shortcut registry reaches the open Tab screen's session.
+//
+// Story "Flags, warnings and bar lines on screen": Next to check (`selectNextFlagged`), the
+// next low-confidence note in played order, wrapping around.
 
 import { engineClient } from '../engine/engine-client';
 import { isAppError, type AppErrorCode } from '../model/errors';
@@ -90,6 +93,12 @@ export interface TakeSession {
    * steps from `from` (the focused note), or else selects the last.
    */
   selectPrev(from?: string | null): void;
+  /**
+   * Next to check (`N`): selects the next low-confidence note after the selection (or, with
+   * nothing selected, after `from`, the focused note; else from the start), in played order,
+   * wrapping to the first. Does nothing when no note is flagged.
+   */
+  selectNextFlagged(from?: string | null): void;
   /**
    * Renames the take: trimmed, at most `TITLE_MAX` characters (code points). Empty or unchanged writes
    * nothing. The new title shows at once; a failed write puts the old one back.
@@ -323,6 +332,15 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     select(notes[index]!.id);
   }
 
+  function nextFlagged(from?: string | null) {
+    const notes = playedOrder(snapshot.tab?.notes ?? []);
+    if (!notes.some((n) => n.lowConfidence)) return;
+    const current = snapshot.selectedNoteId ?? from ?? null;
+    const at = notes.findIndex((n) => n.id === current);
+    const after = notes.slice(at + 1).find((n) => n.lowConfidence);
+    select((after ?? notes.find((n) => n.lowConfidence)!).id);
+  }
+
   async function rename(raw: string) {
     const take = snapshot.take;
     if (!take || snapshot.missing) return;
@@ -383,6 +401,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     select,
     selectNext: (from) => step(1, from),
     selectPrev: (from) => step(-1, from),
+    selectNextFlagged: nextFlagged,
     rename,
   };
 }

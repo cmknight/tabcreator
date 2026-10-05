@@ -580,6 +580,71 @@ describe('take session selection', () => {
   });
 });
 
+describe('take session next to check', () => {
+  const note = (id: string, startMs: number, lowConfidence: boolean): Note => ({
+    id,
+    startMs,
+    endMs: startMs + 100,
+    midi: 60,
+    confidence: lowConfidence ? 0.2 : 0.9,
+    string: 2,
+    fret: 1,
+    locked: false,
+    lowConfidence,
+  });
+
+  async function open(notes: Note[]) {
+    const h = harness(ANALYZED, { ...TAB, notes });
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    return session;
+  }
+
+  // Stored out of played order; played order a … e, flagged b, d, e.
+  const NOTES = [
+    note('e', 900, true),
+    note('a', 100, false),
+    note('d', 700, true),
+    note('b', 300, true),
+    note('c', 500, false),
+  ];
+
+  it('steps through the flagged notes in played order and wraps to the first', async () => {
+    const session = await open(NOTES);
+    const ids: (string | null)[] = [];
+    for (let i = 0; i < 4; i++) {
+      session.selectNextFlagged();
+      ids.push(session.getSnapshot().selectedNoteId);
+    }
+    expect(ids).toEqual(['b', 'd', 'e', 'b']);
+  });
+
+  it('starts after the selection, else after the focused note, else from the start', async () => {
+    const session = await open(NOTES);
+    session.select('c');
+    session.selectNextFlagged('e'); // the selection wins over the focused note
+    expect(session.getSnapshot().selectedNoteId).toBe('d');
+    session.select(null);
+    session.selectNextFlagged('d'); // nothing selected: after the focused note
+    expect(session.getSnapshot().selectedNoteId).toBe('e');
+    session.select(null);
+    session.selectNextFlagged('gone'); // an unknown note: from the start
+    expect(session.getSnapshot().selectedNoteId).toBe('b');
+  });
+
+  it('a lone flagged note stays selected; none flagged does nothing', async () => {
+    const lone = await open([note('a', 100, false), note('b', 300, true)]);
+    lone.selectNextFlagged();
+    lone.selectNextFlagged();
+    expect(lone.getSnapshot().selectedNoteId).toBe('b');
+    const none = await open([note('a', 100, false), note('b', 300, false)]);
+    none.select('a');
+    none.selectNextFlagged();
+    expect(none.getSnapshot().selectedNoteId).toBe('a');
+  });
+});
+
 describe('take session rename', () => {
   afterEach(() => vi.restoreAllMocks());
 

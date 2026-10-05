@@ -1,0 +1,35 @@
+/* The Tab screen's warning banners (DESIGN.md banner-warning): the shared warning banner
+   (banner.module.css), stacked above the title, each with its link or Dismiss at the end. */
+.warnings {
+  display: grid;
+  gap: var(--space-2);
+  margin-block-end: var(--space-4);
+}
+
+.banner {
+  flex-wrap: wrap;
+}
+
+/* Text colour, not primary: primary falls under 4.5:1 on check-bg in dark. */
+.link {
+  flex: none;
+  color: var(--color-text);
+  font-weight: 500;
+  text-decoration: underline;
+}
+
+/* A text button; plain text colour, as muted text falls under 4.5:1 on check-bg in dark. */
+.dismiss {
+  flex: none;
+  padding: var(--space-1) var(--space-2);
+  background: none;
+  color: var(--color-text);
+  font: var(--font-ui);
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.dismiss:hover {
+  text-decoration: underline;
+}

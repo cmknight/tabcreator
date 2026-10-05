@@ -99,11 +99,23 @@
   text-decoration: underline;
 }
 
-/* The toolbar container; its buttons come with later stories. */
+/* The toolbar (DESIGN.md Toolbar): secondary buttons with an icon and a text label. */
 .toolbar {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.toolButton {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.toolIcon {
+  flex: none;
+  inline-size: 18px;
+  block-size: 18px;
 }
 
 .noteListToggle {

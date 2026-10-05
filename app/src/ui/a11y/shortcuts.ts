@@ -15,6 +15,10 @@
 // `activeTakeSession()` (session/take-session.ts), which the Tab screen sets while mounted. They
 // do nothing while focus is inside a `role="toolbar"`, which owns its arrow keys (ARIA toolbar
 // pattern). The count-in Esc comes first in the list, so it keeps priority.
+//
+// Story "Flags, warnings and bar lines on screen": `N` (Next to check) selects and focuses the
+// next low-confidence note. It follows the arrows' shown-tab rule but works with focus anywhere
+// on the Tab screen, except in a text field (the guard) or the toolbar.
 
 import { useEffect } from 'react';
 import {
@@ -143,7 +147,23 @@ function focusedNoteId(): string | null {
   return document.activeElement?.getAttribute('data-note-id') ?? null;
 }
 
-type SelectionSession = Pick<TakeSession, 'getSnapshot' | 'select' | 'selectNext' | 'selectPrev'>;
+/**
+ * Moves focus onto the selected note's button (Next to check), unless it already has it. A
+ * selection that moved is focused by the tab area too; this also covers one that did not (a
+ * lone flagged note already selected, with focus elsewhere).
+ */
+export function focusSelectedNote(selectedNoteId: string | null): void {
+  if (selectedNoteId === null) return;
+  const button = [
+    ...document.querySelectorAll<HTMLElement>('[role="application"] [data-note-id]'),
+  ].find((el) => el.getAttribute('data-note-id') === selectedNoteId);
+  if (button && document.activeElement !== button) button.focus();
+}
+
+type SelectionSession = Pick<
+  TakeSession,
+  'getSnapshot' | 'select' | 'selectNext' | 'selectPrev' | 'selectNextFlagged'
+>;
 
 /**
  * ← / → (previous / next note) and Esc (clear the selection) on the Tab screen, acting on the
@@ -151,7 +171,8 @@ type SelectionSession = Pick<TakeSession, 'getSnapshot' | 'select' | 'selectNext
  * with notes). "Tab enters the tab area; arrows move within it" (EXPERIENCE.md Tab view): the
  * arrows apply only with focus inside the tab area, and step from the focused note when none is
  * selected. Esc applies while a note is selected, with focus in the tab area or on the body;
- * never with focus in a toolbar.
+ * never with focus in a toolbar. `N` selects and focuses the next note to check (wrapping), from
+ * anywhere on the screen but the toolbar, while at least one note is flagged.
  */
 export function tabSelectionShortcuts(
   session: () => SelectionSession | null = activeTakeSession,
@@ -190,6 +211,24 @@ export function tabSelectionShortcuts(
         (session()?.getSnapshot().selectedNoteId ?? null) !== null,
       handler: () => session()?.select(null),
     },
+    {
+      key: 'n',
+      route: 'tab',
+      description: strings['tab.shortcutNextToCheck'],
+      when: (target) =>
+        !inToolbar(target) &&
+        tabShown() &&
+        (session()
+          ?.getSnapshot()
+          .tab?.notes.some((n) => n.lowConfidence) ??
+          false),
+      handler: () => {
+        const s = session();
+        if (!s) return;
+        s.selectNextFlagged(focusedNoteId());
+        focusSelectedNote(s.getSnapshot().selectedNoteId);
+      },
+    },
   ];
 }
 
@@ -206,6 +245,15 @@ export const SHORTCUTS: readonly Shortcut[] = [
 ];
 
 /**
+ * Whether a shortcut's `key` matches a pressed `KeyboardEvent.key`. Single letters match either
+ * case, so `N` works with Caps Lock on (Shift itself is still refused by the dispatcher).
+ */
+function keyMatches(key: string, pressed: string): boolean {
+  if (key === pressed) return true;
+  return /^[a-z]$/i.test(key) && key.toLowerCase() === pressed.toLowerCase();
+}
+
+/**
  * Runs the shortcut `event` matches on `route` (null: no known route, so only global ones), if
  * any and unless the guard skips it. Returns whether a shortcut matched; its default is then
  * prevented.
@@ -219,7 +267,7 @@ export function dispatchShortcut(
   if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
   const entry = shortcuts.find(
     (s) =>
-      s.key === event.key &&
+      keyMatches(s.key, event.key) &&
       (s.route === 'global' || (route !== null && s.route === route)) &&
       (s.when?.(event.target) ?? true),
   );

@@ -239,6 +239,43 @@ export const strings = {
   'tab.shortcutNextNote': 'Next note',
   /** The Tab screen's Esc shortcut's description in the keyboard shortcuts dialog. */
   'tab.shortcutClearSelection': 'Clear note selection',
+  /** The `N` shortcut's description in the keyboard shortcuts dialog. */
+  'tab.shortcutNextToCheck': 'Next note to check',
+  /** A flagged (low-confidence) note's label: its label, then ", check this note" (US-6.2). */
+  'tab.noteLabelCheck': (label: string) => `${label}, check this note`,
+  /** The status line's note count: "1 note", "42 notes". */
+  'tab.statusNotes': (n: number) => `${n} ${n === 1 ? 'note' : 'notes'}`,
+  /** The status line's flagged count: "0 to check", "3 to check". */
+  'tab.statusToCheck': (k: number) => `${k} to check`,
+  /** The whole status line, as announced when it changes: "42 notes · 3 to check". */
+  'tab.statusLine': (notes: string, toCheck: string) => `${notes} · ${toCheck}`,
+  /** The button at the status line's right end (`N`). */
+  'tab.nextToCheck': 'Next to check',
+  /** Why Next to check is disabled. */
+  'tab.nextToCheckNone': 'No notes to check',
+  /**
+   * The tuning-off warning (EXPERIENCE.md Tuning off): `cents` is the take's tuning offset;
+   * shown rounded and unsigned, flat when negative.
+   */
+  'tab.tuningOff': (cents: number) =>
+    `Your guitar seems about ${Math.round(Math.abs(cents))} cents ${cents < 0 ? 'flat' : 'sharp'} — tune up and record again for accurate tab`,
+  /** The tuning-off warning's link to the Tuner. */
+  'tab.openTuner': 'Open tuner',
+  /** The drop-tuning warning (EXPERIENCE.md Drop tuning). */
+  'tab.dropTuning': 'Looks like drop tuning — not supported in v1',
+  /** The warning when every note is low-confidence (EXPERIENCE.md Every note uncertain). */
+  'tab.allUncertain':
+    'Every note is uncertain — check the input level and room noise, then re-analyse',
+  /** The warning for a take that clipped (EXPERIENCE.md Too loud / too quiet; new copy). */
+  'tab.clipped': 'This take clipped — move back or lower the input and record again',
+  /** The tuning-off warning's Dismiss button's accessible name. */
+  'tab.dismissTuning': 'Dismiss tuning warning',
+  /** The drop-tuning warning's Dismiss button's accessible name. */
+  'tab.dismissDropTuning': 'Dismiss drop tuning warning',
+  /** The toast when a take stopped at the length cap opens (EXPERIENCE.md Recording near limit). */
+  'tab.maxLengthReached': 'Maximum length reached',
+  /** The toolbar's Bar lines toggle (EXPERIENCE.md Toolbar). */
+  'tab.barLines': 'Bar lines',
   'library.title': 'Library',
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */

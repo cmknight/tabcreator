@@ -12,6 +12,8 @@ import { Tab } from '../../src/ui/screens/Tab';
 import { announce } from '../../src/ui/a11y/announcer';
 import { reloadOrExplain } from '../../src/ui/reload-or-explain';
 import { strings } from '../../src/ui/strings';
+import { dismissToast, getToast } from '../../src/ui/toast';
+import type { SettingsSnapshot } from '../../src/session/settings-session';
 
 vi.mock('../../src/ui/a11y/announcer', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/ui/a11y/announcer')>()),
@@ -74,6 +76,7 @@ function mockSession(initial: Snap) {
     }),
     selectNext: vi.fn(),
     selectPrev: vi.fn(),
+    selectNextFlagged: vi.fn(),
     rename: vi.fn(() => Promise.resolve()),
   };
   /** Publishes a new snapshot to the screen. */
@@ -665,5 +668,328 @@ describe('Tab screen tab area, header and selection', () => {
     const ordered = [...notes].sort((a, b) => a.startMs - b.startMs);
     expect(items).toEqual(ordered.map((n) => noteButton(n.id).getAttribute('aria-label')));
     expect(items[11]).toBe('Note 12: B string, fret 3, D4, at 4.25 seconds');
+  });
+});
+
+describe('Tab screen flags, warnings and bar lines', () => {
+  afterEach(() => {
+    dismissToast();
+  });
+
+  const flaggedNotes = (count: number, flagged: readonly number[]) =>
+    Array.from({ length: count }, (_, i) => ({
+      ...note(i, ((i % 6) + 1) as Note['string'], i % 10),
+      lowConfidence: flagged.includes(i),
+    }));
+  const tabOf = (notes: Note[]): TabRecord => ({
+    takeId: 't1',
+    notes,
+    updatedAt: TAKE.updatedAt,
+    deletedStartMs: [],
+  });
+  const open = (take: Take, notes: Note[], selectedNoteId: string | null = null) =>
+    mockSession({
+      take,
+      tab: tabOf(notes),
+      loading: false,
+      analysis: { kind: 'idle' },
+      selectedNoteId,
+    });
+
+  /** A settings store with only prefs, starting with `barLines`. */
+  function fakeSettings(barLines = true) {
+    let snapshot: SettingsSnapshot = {
+      engine: { state: 'loading' },
+      prefs: { barLines },
+    };
+    const listeners = new Set<() => void>();
+    return {
+      subscribePrefs: (l: () => void) => {
+        listeners.add(l);
+        return () => listeners.delete(l);
+      },
+      getSnapshot: () => snapshot,
+      setBarLines: vi.fn((on: boolean) => {
+        snapshot = { ...snapshot, prefs: { ...snapshot.prefs, barLines: on } };
+        listeners.forEach((l) => l());
+      }),
+    };
+  }
+
+  const banners = () =>
+    [...document.querySelectorAll('[data-testid^="tab-warning-"]')].map((b) =>
+      b.getAttribute('data-testid'),
+    );
+
+  it('the status line: "<n> notes · <k> to check" under the toolbar; singular forms', () => {
+    const { create, set } = open(TAKE, flaggedNotes(40, [3, 7, 20]));
+    render(<Tab takeId="t1" createSession={create} />);
+    const line = screen.getByTestId('tab-status-line');
+    expect(line.querySelector('p')!.textContent).toBe('40 notes · 3 to check');
+    expect(screen.getByRole('toolbar').nextElementSibling).toBe(line);
+    set({ tab: tabOf(flaggedNotes(1, [0])) });
+    expect(line.querySelector('p')!.textContent).toBe('1 note · 1 to check');
+    // An update is announced politely through the announcer; the first line is not.
+    expect(announce).toHaveBeenCalledWith('1 note · 1 to check');
+    expect(announce).not.toHaveBeenCalledWith('40 notes · 3 to check');
+    set({ tab: tabOf(flaggedNotes(2, [])) });
+    expect(line.querySelector('p')!.textContent).toBe('2 notes · 0 to check');
+    expect(line.querySelector('[aria-live]')).toBeNull();
+  });
+
+  it('Next to check selects the next flagged note and focuses it; disabled with a reason at 0', () => {
+    const { create, session, set } = open(TAKE, flaggedNotes(10, [4]));
+    vi.mocked(session.selectNextFlagged).mockImplementation(() => session.select('n4'));
+    render(<Tab takeId="t1" createSession={create} />);
+    const next = screen.getByRole('button', { name: 'Next to check' });
+    expect((next as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(next);
+    expect(session.selectNextFlagged).toHaveBeenCalled();
+    expect(document.activeElement?.getAttribute('data-note-id')).toBe('n4');
+    set({ tab: tabOf(flaggedNotes(10, [])) });
+    expect((next as HTMLButtonElement).disabled).toBe(true);
+    const reason = document.getElementById(next.getAttribute('aria-describedby')!);
+    expect(reason?.textContent).toBe('No notes to check');
+    expect(next.parentElement!.getAttribute('title')).toBe('No notes to check');
+  });
+
+  it('Next to check starts after the last focused note, as N does (after Esc cleared it)', () => {
+    const { create, session } = open(TAKE, flaggedNotes(10, [1, 6]));
+    render(<Tab takeId="t1" createSession={create} />);
+    act(() => document.querySelector<HTMLButtonElement>('[data-note-id="n3"]')!.focus());
+    expect(session.getSnapshot().selectedNoteId).toBe('n3');
+    act(() => session.select(null)); // Esc
+    fireEvent.click(screen.getByRole('button', { name: 'Next to check' }));
+    expect(session.selectNextFlagged).toHaveBeenCalledWith('n3');
+  });
+
+  it('a re-analysis that changes the counts is announced when the status line comes back', () => {
+    const { create, set } = open(TAKE, flaggedNotes(10, [1]));
+    render(<Tab takeId="t1" createSession={create} />);
+    set({ analysis: { kind: 'running', progress: 0 } });
+    expect(screen.queryByTestId('tab-status-line')).toBeNull();
+    set({ analysis: { kind: 'idle' }, tab: tabOf(flaggedNotes(8, [1, 2])) });
+    expect(announce).toHaveBeenCalledWith('8 notes · 2 to check');
+    vi.mocked(announce).mockClear();
+    set({ analysis: { kind: 'running', progress: 0 } });
+    set({ analysis: { kind: 'idle' }, tab: tabOf(flaggedNotes(8, [1, 2])) });
+    expect(announce).not.toHaveBeenCalledWith('8 notes · 2 to check'); // unchanged
+  });
+
+  it('a flagged note: check class and ", check this note" in the area and the note list', () => {
+    const { create } = open(TAKE, flaggedNotes(5, [2]));
+    render(<Tab takeId="t1" createSession={create} />);
+    const flagged = document.querySelector('[data-note-id="n2"]')!;
+    const plain = document.querySelector('[data-note-id="n1"]')!;
+    expect(flagged.getAttribute('aria-label')).toMatch(/^Note 3: .*, check this note$/);
+    expect(plain.getAttribute('aria-label')).not.toMatch(/check this note/);
+    expect(flagged.className).not.toBe(plain.className);
+    fireEvent.click(screen.getByRole('button', { name: 'Note list view' }));
+    const items = [...screen.getByTestId('tab-note-list').querySelectorAll('li')];
+    expect(items[2]!.textContent).toBe(flagged.getAttribute('aria-label'));
+  });
+
+  it('a selected flagged note keeps its check class and is pressed', () => {
+    const { create } = open(TAKE, flaggedNotes(5, [2]), 'n2');
+    render(<Tab takeId="t1" createSession={create} />);
+    const el = document.querySelector('[data-note-id="n2"]')!;
+    const plain = document.querySelector('[data-note-id="n1"]')!;
+    expect(el.getAttribute('aria-pressed')).toBe('true');
+    expect(el.className).not.toBe(plain.className);
+  });
+
+  it.each([
+    [-45.4, 'Your guitar seems about 45 cents flat — tune up and record again for accurate tab'],
+    [40, 'Your guitar seems about 40 cents sharp — tune up and record again for accurate tab'],
+  ])('tuning off at %d cents: the banner with an Open tuner link', (cents, text) => {
+    const take = { ...TAKE, warnings: { tuningOffsetCents: cents, belowRangeNotes: 0 } };
+    const { create } = open(take, flaggedNotes(5, []));
+    render(<Tab takeId="t1" createSession={create} />);
+    const b = screen.getByTestId('tab-warning-tuning');
+    expect(b.textContent).toContain(text);
+    expect(screen.getByRole('link', { name: 'Open tuner' }).getAttribute('href')).toBe('#/tuner');
+    expect(announce).toHaveBeenCalledWith(text);
+  });
+
+  it('no tuning banner under 40 cents, nor drop tuning with no notes below range', () => {
+    const take = { ...TAKE, warnings: { tuningOffsetCents: -39.6, belowRangeNotes: 0 } };
+    const { create } = open(take, flaggedNotes(5, []));
+    render(<Tab takeId="t1" createSession={create} />);
+    expect(banners()).toEqual([]);
+  });
+
+  it('all four banners above the title, in order; each announced once', () => {
+    const take = {
+      ...TAKE,
+      clipped: true,
+      warnings: { tuningOffsetCents: 50, belowRangeNotes: 2 },
+    };
+    const { create, set } = open(take, flaggedNotes(3, [0, 1, 2]));
+    render(<Tab takeId="t1" createSession={create} />);
+    expect(banners()).toEqual([
+      'tab-warning-tuning',
+      'tab-warning-drop',
+      'tab-warning-uncertain',
+      'tab-warning-clipped',
+    ]);
+    const h1 = screen.getByRole('heading', { level: 1 });
+    const last = screen.getByTestId('tab-warning-clipped');
+    expect(last.compareDocumentPosition(h1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId('tab-warning-drop').textContent).toContain(
+      'Looks like drop tuning — not supported in v1',
+    );
+    expect(screen.getByTestId('tab-warning-uncertain').textContent).toContain(
+      'Every note is uncertain — check the input level and room noise, then re-analyse',
+    );
+    expect(last.textContent).toContain(
+      'This take clipped — move back or lower the input and record again',
+    );
+    // Clipping and every-note-uncertain cannot be dismissed.
+    expect(last.querySelector('button')).toBeNull();
+    expect(screen.getByTestId('tab-warning-uncertain').querySelector('button')).toBeNull();
+    set({ tab: tabOf(flaggedNotes(3, [0, 1, 2])) });
+    for (const text of [strings['tab.dropTuning'], strings['tab.clipped']]) {
+      expect(vi.mocked(announce).mock.calls.filter(([t]) => t === text)).toHaveLength(1);
+    }
+  });
+
+  it('Dismiss hides tuning or drop tuning for this visit; a new visit shows them again', () => {
+    const take = { ...TAKE, warnings: { tuningOffsetCents: -45, belowRangeNotes: 1 } };
+    const first = open(take, flaggedNotes(5, []));
+    const { unmount } = render(<Tab takeId="t1" createSession={first.create} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss tuning warning' }));
+    expect(banners()).toEqual(['tab-warning-drop']);
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }));
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss drop tuning warning' }));
+    expect(banners()).toEqual([]);
+    unmount();
+    const again = open(take, flaggedNotes(5, []));
+    render(<Tab takeId="t1" createSession={again.create} />);
+    expect(banners()).toEqual(['tab-warning-tuning', 'tab-warning-drop']);
+  });
+
+  it.each([
+    ['analysing', { kind: 'running', progress: 0.3 }],
+    ['failed', { kind: 'failed', code: 'analysis-failed' }],
+  ] as const)('%s: only the clipping banner, from the take alone', (_, analysis) => {
+    const { create } = mockSession({
+      take: {
+        ...TAKE,
+        status: 'recorded',
+        clipped: true,
+        warnings: { tuningOffsetCents: -50, belowRangeNotes: 2 },
+      },
+      tab: null,
+      loading: false,
+      analysis,
+    });
+    render(<Tab takeId="t1" createSession={create} />);
+    expect(banners()).toEqual(['tab-warning-clipped']);
+  });
+
+  it('a re-analysis (new warnings) shows a dismissed banner again in the same visit', () => {
+    const take = { ...TAKE, warnings: { tuningOffsetCents: -45, belowRangeNotes: 1 } };
+    const { create, set } = open(take, flaggedNotes(5, []));
+    render(<Tab takeId="t1" createSession={create} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss tuning warning' }));
+    expect(banners()).toEqual(['tab-warning-drop']);
+    set({ take: { ...take, title: 'Renamed' } }); // same warnings: still dismissed
+    expect(banners()).toEqual(['tab-warning-drop']);
+    set({ take: { ...take, warnings: { tuningOffsetCents: -44, belowRangeNotes: 1 } } });
+    expect(banners()).toEqual(['tab-warning-tuning', 'tab-warning-drop']);
+  });
+
+  it('Maximum length reached: a toast when the take first loads recorded after a max-length stop', () => {
+    const recorded = {
+      ...TAKE,
+      status: 'recorded' as const,
+      stopReason: 'max-length' as const,
+      updatedAt: new Date().toISOString(),
+    };
+    const { create, set } = mockSession({
+      take: null,
+      tab: null,
+      loading: true,
+      analysis: { kind: 'idle' },
+    });
+    render(<Tab takeId="t1" createSession={create} />);
+    expect(getToast()).toBeNull();
+    set({ take: recorded, loading: false, analysis: { kind: 'running', progress: 0 } });
+    expect(getToast()?.message).toBe('Maximum length reached');
+    dismissToast();
+    set({ take: { ...recorded, status: 'analyzed' }, tab: tabOf(flaggedNotes(3, [])) });
+    expect(getToast()).toBeNull(); // once per visit
+  });
+
+  it('no toast for a max-length take left recorded and reopened later (stale)', () => {
+    const stale = mockSession({
+      take: {
+        ...TAKE,
+        status: 'recorded',
+        stopReason: 'max-length',
+        updatedAt: new Date(Date.now() - 60_000).toISOString(),
+      },
+      tab: null,
+      loading: false,
+      analysis: { kind: 'cancelled' },
+    });
+    render(<Tab takeId="t1" createSession={stale.create} />);
+    expect(getToast()).toBeNull();
+  });
+
+  it('no toast for an analysed max-length take, or a user stop', () => {
+    const analysed = open({ ...TAKE, stopReason: 'max-length' }, flaggedNotes(3, []));
+    const { unmount } = render(<Tab takeId="t1" createSession={analysed.create} />);
+    expect(getToast()).toBeNull();
+    unmount();
+    const user = mockSession({
+      take: { ...TAKE, status: 'recorded', stopReason: 'user' },
+      tab: null,
+      loading: false,
+      analysis: { kind: 'running', progress: 0 },
+    });
+    render(<Tab takeId="t1" createSession={user.create} />);
+    expect(getToast()).toBeNull();
+  });
+
+  /** The shown systems' text. */
+  const shown = () => [...document.querySelectorAll('pre')].map((p) => p.textContent);
+  /** The systems `layoutTab` gives at the area's width, with or without the count-in tempo. */
+  const expected = (notes: Note[], countInBpm?: number) => {
+    const width = Number(screen.getByTestId('tab-systems').getAttribute('data-width-chars'));
+    return layoutTab(notes, width, countInBpm).systems.map((sys) => sys.lines.join('\n'));
+  };
+
+  it('Bar lines: a pressed toggle with a count-in; off lays the tab out without bar lines', () => {
+    const settings = fakeSettings(true);
+    const notes = flaggedNotes(12, []).map((n, i) => ({ ...n, startMs: 1000 + i * 600 }));
+    const { create } = open({ ...TAKE, countInBpm: 120 }, notes);
+    render(<Tab takeId="t1" createSession={create} settings={settings} />);
+    const toggle = screen.getByRole('button', { name: 'Bar lines' });
+    expect(toggle.closest('[role="toolbar"]')).not.toBeNull();
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(expected(notes, 120)).not.toEqual(expected(notes));
+    expect(shown()).toEqual(expected(notes, 120));
+    fireEvent.click(toggle);
+    expect(settings.setBarLines).toHaveBeenCalledWith(false);
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(shown()).toEqual(expected(notes));
+    fireEvent.click(toggle);
+    expect(settings.setBarLines).toHaveBeenLastCalledWith(true);
+    expect(shown()).toEqual(expected(notes, 120));
+  });
+
+  it('no Bar lines button without a count-in, or with no notes', () => {
+    const settings = fakeSettings(true);
+    const plain = open(TAKE, flaggedNotes(5, []));
+    const { unmount } = render(
+      <Tab takeId="t1" createSession={plain.create} settings={settings} />,
+    );
+    expect(screen.queryByRole('button', { name: 'Bar lines' })).toBeNull();
+    unmount();
+    const empty = open({ ...TAKE, countInBpm: 120 }, []);
+    render(<Tab takeId="t1" createSession={empty.create} settings={settings} />);
+    expect(screen.getByRole('toolbar')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Bar lines' })).toBeNull();
   });
 });

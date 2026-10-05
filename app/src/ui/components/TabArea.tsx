@@ -13,6 +13,10 @@
 // Focusing or clicking a note selects it; a selection moved elsewhere (the arrow shortcuts)
 // moves focus onto the new note, unless focus is in a text field. When a reflow re-creates the
 // focused note's button, focus goes to that note's new button without selecting it.
+//
+// Story "Flags, warnings and bar lines on screen": a low-confidence note's button shows the
+// check fill and dotted underline (DESIGN.md tab-note-check) and its label ends ", check this
+// note". The lines sit above the buttons (and let clicks through), so the fill never hides them.
 
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { midiName, playedOrder } from '../../model/notes';
@@ -41,19 +45,22 @@ export interface NoteLabel {
 
 /**
  * Every note's accessible label in played order (US-6.2): "Note 12: B string, fret 3, D4, at
- * 4.25 seconds".
+ * 4.25 seconds", plus ", check this note" when it is flagged (low-confidence).
  */
 export function noteLabels(notes: readonly Note[]): NoteLabel[] {
-  return playedOrder(notes).map((note, i) => ({
-    id: note.id,
-    label: strings['tab.noteLabel'](
+  return playedOrder(notes).map((note, i) => {
+    const label = strings['tab.noteLabel'](
       i + 1,
       note.string,
       note.fret,
       midiName(note.midi),
       (note.startMs / 1000).toFixed(2),
-    ),
-  }));
+    );
+    return {
+      id: note.id,
+      label: note.lowConfidence ? strings['tab.noteLabelCheck'](label) : label,
+    };
+  });
 }
 
 interface Metrics {
@@ -82,9 +89,18 @@ export interface TabAreaProps {
   onSelect(noteId: string): void;
   /** The area's element id (the skip link's target). */
   id?: string;
+  /** Called with a note's id whenever its button takes focus (Next to check starts after it). */
+  onFocusNote?(noteId: string): void;
 }
 
-export function TabArea({ notes, countInBpm, selectedNoteId, onSelect, id }: TabAreaProps) {
+export function TabArea({
+  notes,
+  countInBpm,
+  selectedNoteId,
+  onSelect,
+  id,
+  onFocusNote,
+}: TabAreaProps) {
   const areaRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
   const probeRef = useRef<HTMLSpanElement>(null);
@@ -122,6 +138,10 @@ export function TabArea({ notes, countInBpm, selectedNoteId, onSelect, id }: Tab
     [notes, metrics, countInBpm],
   );
   const labels = useMemo(() => new Map(noteLabels(notes).map((l) => [l.id, l.label])), [notes]);
+  const flagged = useMemo(
+    () => new Set(notes.filter((n) => n.lowConfidence).map((n) => n.id)),
+    [notes],
+  );
   const firstId = useMemo(() => playedOrder(notes)[0]?.id ?? null, [notes]);
   /** The note last focused: the tab stop (and the arrows' start) while nothing is selected. */
   const [current, setCurrent] = useState<string | null>(null);
@@ -205,7 +225,9 @@ export function TabArea({ notes, countInBpm, selectedNoteId, onSelect, id }: Tab
                     }
                   }}
                   type="button"
-                  className={styles.note}
+                  className={
+                    flagged.has(cell.noteId) ? `${styles.note} ${styles.check}` : styles.note
+                  }
                   data-note-id={cell.noteId}
                   aria-label={labels.get(cell.noteId)}
                   aria-pressed={cell.noteId === selectedNoteId}
@@ -219,6 +241,7 @@ export function TabArea({ notes, countInBpm, selectedNoteId, onSelect, id }: Tab
                   onFocus={(e) => {
                     focused.current = { el: e.currentTarget, id: cell.noteId };
                     setCurrent(cell.noteId);
+                    onFocusNote?.(cell.noteId);
                     if (!restoring.current) onSelect(cell.noteId);
                   }}
                   onBlur={(e) => {

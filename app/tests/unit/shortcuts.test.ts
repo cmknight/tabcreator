@@ -328,9 +328,15 @@ describe('the Tab selection shortcuts', () => {
     selectedNoteId: string | null,
     notes = 3,
     over: Partial<Pick<TakeSnapshot, 'analysis' | 'missing'>> = {},
+    flagged: readonly number[] = [],
   ) {
-    const snapshot = {
-      tab: { notes: Array.from({ length: notes }, (_, i) => ({ id: `n${i}` })) },
+    let snapshot = {
+      tab: {
+        notes: Array.from({ length: notes }, (_, i) => ({
+          id: `n${i}`,
+          lowConfidence: flagged.includes(i),
+        })),
+      },
       selectedNoteId,
       analysis: { kind: 'idle' },
       ...over,
@@ -340,6 +346,14 @@ describe('the Tab selection shortcuts', () => {
       select: vi.fn(),
       selectNext: vi.fn(),
       selectPrev: vi.fn(),
+      // As the real session: the next flagged note after the selection, else after `from`,
+      // else from the start, wrapping.
+      selectNextFlagged: vi.fn((from?: string | null) => {
+        const current = snapshot.selectedNoteId ?? from ?? null;
+        const at = current === null ? -1 : Number(current.slice(1));
+        const next = flagged.find((i) => i > at) ?? flagged[0];
+        if (next !== undefined) snapshot = { ...snapshot, selectedNoteId: `n${next}` };
+      }),
     };
   }
 
@@ -370,13 +384,76 @@ describe('the Tab selection shortcuts', () => {
     return button;
   }
 
-  it('registers ← / → / Esc on the tab route with descriptions', () => {
+  it('registers ← / → / Esc / N on the tab route with descriptions', () => {
     const tab = SHORTCUTS.filter((s) => s.route === 'tab');
     expect(tab.map((s) => [s.key, s.description])).toEqual([
       ['ArrowLeft', 'Previous note'],
       ['ArrowRight', 'Next note'],
       ['Escape', 'Clear note selection'],
+      ['n', 'Next note to check'],
     ]);
+  });
+
+  /** A tab area of note buttons n0 … n<count − 1>, none focused. */
+  function area(count: number): HTMLButtonElement[] {
+    const el = add('div', { role: 'application', 'aria-label': 'Tab' });
+    return Array.from({ length: count }, (_, i) => {
+      const button = document.createElement('button');
+      button.setAttribute('data-note-id', `n${i}`);
+      el.append(button);
+      return button;
+    });
+  }
+
+  it('N selects and focuses the next flagged note, from the body, the tab area or a button', () => {
+    const session = fakeSession(null, 3, {}, [2]);
+    install(session);
+    const buttons = area(3);
+    expect(press(document.body, 'n').defaultPrevented).toBe(true);
+    expect(session.selectNextFlagged).toHaveBeenCalledWith(null);
+    expect(document.activeElement).toBe(buttons[2]);
+    buttons[0]!.focus();
+    press(buttons[0]!, 'n');
+    expect(session.selectNextFlagged).toHaveBeenLastCalledWith('n0');
+    expect(document.activeElement).toBe(buttons[2]);
+    press(add('button'), 'n'); // e.g. Next to check itself
+    expect(session.selectNextFlagged).toHaveBeenCalledTimes(3);
+  });
+
+  it('N starts from the focused note with nothing selected, and works with Caps Lock (N)', () => {
+    const session = fakeSession(null, 4, {}, [0, 2]);
+    install(session);
+    const buttons = area(4);
+    buttons[1]!.focus();
+    expect(press(buttons[1]!, 'N').defaultPrevented).toBe(true);
+    expect(session.selectNextFlagged).toHaveBeenCalledWith('n1');
+    expect(session.getSnapshot().selectedNoteId).toBe('n2');
+    expect(document.activeElement).toBe(buttons[2]);
+    press(buttons[2]!, 'n'); // wraps
+    expect(session.getSnapshot().selectedNoteId).toBe('n0');
+    expect(document.activeElement).toBe(buttons[0]);
+    // Shift is still refused.
+    expect(press(buttons[0]!, 'N', { shiftKey: true }).defaultPrevented).toBe(false);
+  });
+
+  it('N does nothing with no flagged note, from a text field, in the toolbar, or with no tab', () => {
+    const none = fakeSession(null, 3);
+    install(none);
+    expect(press(document.body, 'n').defaultPrevented).toBe(false);
+    expect(none.selectNextFlagged).not.toHaveBeenCalled();
+    remove();
+    const session = fakeSession(null, 3, {}, [1]);
+    install(session);
+    expect(press(add('input', { type: 'text' }), 'n').defaultPrevented).toBe(false);
+    const toolbar = add('div', { role: 'toolbar', 'aria-label': 'Tab tools' });
+    const tool = toolbar.appendChild(document.createElement('button'));
+    expect(press(tool, 'n').defaultPrevented).toBe(false);
+    expect(session.selectNextFlagged).not.toHaveBeenCalled();
+    remove();
+    const running = fakeSession(null, 3, { analysis: { kind: 'running', progress: 0.5 } }, [1]);
+    install(running);
+    expect(press(document.body, 'n').defaultPrevented).toBe(false);
+    expect(running.selectNextFlagged).not.toHaveBeenCalled();
   });
 
   it('in the tab area → selects the next note, ← the previous, from the focused note', () => {

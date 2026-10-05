@@ -10,24 +10,43 @@
 // (its buttons come later), the "Note list view" toggle, and the tab area (components/TabArea),
 // which reflows to the window and carries the note selection. While mounted, the screen's
 // session is the active take session the ← / → / Esc shortcuts act on.
-// Warnings, the toolbar's buttons, the status line and playback come with later stories.
+//
+// Story "Flags, warnings and bar lines on screen": the warning banners (components/TakeWarnings),
+// the status line with Next to check (components/TabStatusLine), the flagged notes, the "Maximum
+// length reached" toast, and the toolbar's Bar lines toggle (`prefs.barLines` through
+// settings-session). The other toolbar buttons and playback come with later stories.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import type { AppErrorCode } from '../../model/errors';
+import type { Take } from '../../model/types';
+import { settingsSession, type SettingsSession } from '../../session/settings-session';
 import {
   setActiveTakeSession,
   activeTakeSession,
   type TakeAnalysisState,
   type TakeSession,
+  type TakeSnapshot,
 } from '../../session/take-session';
 import { announce } from '../a11y/announcer';
+import { focusSelectedNote } from '../a11y/shortcuts';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
-import { ErrorIcon } from '../components/icons';
+import { BarLinesIcon, ErrorIcon } from '../components/icons';
 import { noteLabels, TabArea } from '../components/TabArea';
+import { TabStatusLine } from '../components/TabStatusLine';
 import { TakeHeader } from '../components/TakeHeader';
+import { TakeWarnings, type DismissibleWarning } from '../components/TakeWarnings';
 import { reloadOrExplain } from '../reload-or-explain';
 import { strings } from '../strings';
+import { showToast } from '../toast';
 import { useTakeSession } from '../use-take-session';
 import styles from './Screen.module.css';
 import tabStyles from './Tab.module.css';
@@ -128,13 +147,55 @@ export interface TabProps {
   takeId: string;
   /** Creates the screen's session; tests pass a mock. */
   createSession?: (takeId: string) => TakeSession;
+  /** The settings store the Bar lines toggle reads and writes; tests pass their own. */
+  settings?: Pick<SettingsSession, 'subscribePrefs' | 'getSnapshot' | 'setBarLines'>;
 }
 
-export function Tab({ takeId, createSession }: TabProps) {
+/**
+ * "Maximum length reached" once per screen visit, when the take first loads `recorded` with
+ * `stopReason` `max-length`: the open straight after its auto-stop, before analysis committed
+ * (spine AD-14: derived from persisted fields, no handoff). A later open finds it `analyzed`.
+ */
+function useMaxLengthToast(take: TakeSnapshot['take']) {
+  const checked = useRef(false);
+  useEffect(() => {
+    if (checked.current || !take) return;
+    checked.current = true;
+    // Written moments ago: a take left `recorded` (analysis cancelled, failed or interrupted)
+    // and reopened later does not toast again.
+    const fresh = Date.now() - Date.parse(take.updatedAt) < MAX_LENGTH_TOAST_WINDOW_MS;
+    if (take.stopReason === 'max-length' && take.status === 'recorded' && fresh) {
+      showToast({ message: strings['tab.maxLengthReached'] });
+    }
+  }, [take]);
+}
+
+/** How recently a max-length take must have been written for its open to toast. */
+export const MAX_LENGTH_TOAST_WINDOW_MS = 30_000;
+
+/** No warning dismissed. */
+const NONE_DISMISSED: ReadonlySet<DismissibleWarning> = new Set();
+
+export function Tab({ takeId, createSession, settings = settingsSession }: TabProps) {
   const { snapshot, session } = useTakeSession(takeId, createSession);
   const { take, tab, analysis, missing, selectedNoteId } = snapshot;
   useProgressAnnouncements(analysis);
+  useMaxLengthToast(missing ? null : take);
+  const { barLines } = useSyncExternalStore(settings.subscribePrefs, settings.getSnapshot).prefs;
   const [noteList, setNoteList] = useState(false);
+  /**
+   * Warnings dismissed on this visit (never persisted: they return when the take reopens), for
+   * the `warnings` they were dismissed on: a re-analysis replaces those, which shows them again.
+   */
+  const [dismissedFor, setDismissedFor] = useState<{
+    warnings: Take['warnings'];
+    kinds: ReadonlySet<DismissibleWarning>;
+  }>({ warnings: undefined, kinds: NONE_DISMISSED });
+  const dismissed = dismissedFor.warnings === take?.warnings ? dismissedFor.kinds : NONE_DISMISSED;
+  /** The status line last shown on this visit (see TabStatusLine). */
+  const lastStatusLine = useRef<string | null>(null);
+  /** The note that last had focus in the tab area: where Next to check starts, like `N`. */
+  const lastFocusedNote = useRef<string | null>(null);
   const notes = tab?.notes;
   const labels = useMemo(() => (notes ? noteLabels(notes) : []), [notes]);
 
@@ -244,9 +305,12 @@ export function Tab({ takeId, createSession }: TabProps) {
           <TabArea
             id={TAB_AREA_ID}
             notes={tab.notes}
-            countInBpm={take.countInBpm}
+            countInBpm={barLines ? take.countInBpm : undefined}
             selectedNoteId={selectedNoteId}
             onSelect={(id) => session.select(id)}
+            onFocusNote={(id) => {
+              lastFocusedNote.current = id;
+            }}
           />
         </div>
       </>
@@ -254,6 +318,7 @@ export function Tab({ takeId, createSession }: TabProps) {
   }
   const showTab = !missing && analysis.kind === 'idle' && !!tab && !!take && tab.notes.length > 0;
   const showToolbar = !missing && analysis.kind === 'idle' && !!tab && !!take;
+  const showBarLines = showTab && take?.countInBpm !== undefined;
 
   return (
     <section
@@ -283,6 +348,17 @@ export function Tab({ takeId, createSession }: TabProps) {
       {!missing && analysis.kind === 'failed' && (
         <FailureBanner code={analysis.code} session={session} />
       )}
+      {!missing && take && (
+        <TakeWarnings
+          take={take}
+          notes={showToolbar && tab ? tab.notes : null}
+          dismissed={dismissed}
+          onDismiss={(kind) =>
+            setDismissedFor({ warnings: take.warnings, kinds: new Set(dismissed).add(kind) })
+          }
+          focusAfterDismiss={() => titleRef.current?.focus()}
+        />
+      )}
       <TakeHeader
         fallbackTitle={strings['tab.title']}
         take={missing ? null : take}
@@ -290,7 +366,29 @@ export function Tab({ takeId, createSession }: TabProps) {
         titleRef={titleRef}
       />
       {showToolbar && (
-        <div className={tabStyles.toolbar} role="toolbar" aria-label={strings['tab.toolbar']} />
+        <div className={tabStyles.toolbar} role="toolbar" aria-label={strings['tab.toolbar']}>
+          {showBarLines && (
+            <button
+              type="button"
+              className={`${buttons.secondary} ${buttons.toggle} ${tabStyles.toolButton}`}
+              aria-pressed={barLines}
+              onClick={() => settings.setBarLines(!barLines)}
+            >
+              <BarLinesIcon className={tabStyles.toolIcon} />
+              {strings['tab.barLines']}
+            </button>
+          )}
+        </div>
+      )}
+      {showTab && tab && (
+        <TabStatusLine
+          notes={tab.notes}
+          lastLineRef={lastStatusLine}
+          onNextToCheck={() => {
+            session.selectNextFlagged(lastFocusedNote.current);
+            focusSelectedNote(session.getSnapshot().selectedNoteId);
+          }}
+        />
       )}
       {body}
     </section>
