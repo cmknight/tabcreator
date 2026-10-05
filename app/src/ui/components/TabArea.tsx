@@ -17,8 +17,14 @@
 // Story "Flags, warnings and bar lines on screen": a low-confidence note's button shows the
 // check fill and dotted underline (DESIGN.md tab-note-check) and its label ends ", check this
 // note". The lines sit above the buttons (and let clicks through), so the fill never hides them.
+//
+// Story "Playback with a following cursor": the note playback is on gets `data-playing` (DESIGN.md
+// tab-note-playing, a solid ink outline), kept by note id across reflows; it never moves the
+// selection or focus. While playback runs (`playing`), when that note's button is outside the
+// viewport it is scrolled into view, at most once per 500 ms (smoothly, unless reduced motion is asked for). A click on a note also
+// reports it through `onNoteClick` (the screen seeks to it while playing).
 
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { midiName, playedOrder } from '../../model/notes';
 import { layoutTab } from '../../model/tab-render';
 import type { Note } from '../../model/types';
@@ -35,6 +41,8 @@ const FALLBACK_CHAR_WIDTH = 9.6;
 const FALLBACK_LINE_HEIGHT = 21.6;
 /** The reflow debounce (EXPERIENCE.md Tab view). */
 export const REFLOW_DEBOUNCE_MS = 100;
+/** The playing note is scrolled into view at most this often (EXPERIENCE.md Playback). */
+export const KEEP_IN_VIEW_MS = 500;
 
 const TEXT_FIELD = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
 
@@ -91,6 +99,23 @@ export interface TabAreaProps {
   id?: string;
   /** Called with a note's id whenever its button takes focus (Next to check starts after it). */
   onFocusNote?(noteId: string): void;
+  /** The note playback is on (the playing outline), or null. */
+  playingNoteId?: string | null;
+  /** Whether playback is running: only then is the playing note kept in view. */
+  playing?: boolean;
+  /** Called with a note's id when it is clicked, after it is selected. */
+  onNoteClick?(noteId: string): void;
+}
+
+/** Whether `el` lies (partly) outside the window's viewport. */
+function outOfView(el: Element): boolean {
+  const r = el.getBoundingClientRect();
+  return r.top < 0 || r.left < 0 || r.bottom > window.innerHeight || r.right > window.innerWidth;
+}
+
+/** Whether the user asks for reduced motion. */
+function reducedMotion(): boolean {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 }
 
 export function TabArea({
@@ -100,6 +125,9 @@ export function TabArea({
   onSelect,
   id,
   onFocusNote,
+  playingNoteId = null,
+  playing = false,
+  onNoteClick,
 }: TabAreaProps) {
   const areaRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
@@ -180,6 +208,31 @@ export function TabArea({
     }
   }, [selectedNoteId, layout]);
 
+  // Keep the playing note in view: scroll at most once per KEEP_IN_VIEW_MS; a note that leaves
+  // the view sooner is checked again when that time is up.
+  const lastScroll = useRef(-Infinity);
+  useEffect(() => {
+    if (playingNoteId === null || !playing) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const check = () => {
+      const el = buttons.current.get(playingNoteId);
+      if (!el || !el.isConnected || !outOfView(el)) return;
+      const wait = lastScroll.current + KEEP_IN_VIEW_MS - performance.now();
+      if (wait > 0) {
+        timer = setTimeout(check, wait);
+        return;
+      }
+      lastScroll.current = performance.now();
+      el.scrollIntoView({
+        block: 'center',
+        inline: 'nearest',
+        behavior: reducedMotion() ? 'instant' : 'smooth',
+      });
+    };
+    check();
+    return () => clearTimeout(timer);
+  }, [playingNoteId, playing, layout]);
+
   const instructionsId = `${id ?? 'tab-area'}-instructions`;
   const systems = layout?.systems ?? [];
 
@@ -229,6 +282,7 @@ export function TabArea({
                     flagged.has(cell.noteId) ? `${styles.note} ${styles.check}` : styles.note
                   }
                   data-note-id={cell.noteId}
+                  data-playing={cell.noteId === playingNoteId ? 'true' : undefined}
                   aria-label={labels.get(cell.noteId)}
                   aria-pressed={cell.noteId === selectedNoteId}
                   tabIndex={cell.noteId === tabStop ? 0 : -1}
@@ -258,7 +312,10 @@ export function TabArea({
                       }
                     });
                   }}
-                  onClick={() => onSelect(cell.noteId)}
+                  onClick={() => {
+                    onSelect(cell.noteId);
+                    onNoteClick?.(cell.noteId);
+                  }}
                 />
               ))}
             </div>

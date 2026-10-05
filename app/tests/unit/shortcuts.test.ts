@@ -8,6 +8,7 @@ import {
   RECORD_KEYDOWN_MARK,
   recordToggle,
   SHORTCUTS,
+  tabPlaybackShortcuts,
   tabSelectionShortcuts,
   type Shortcut,
 } from '../../src/ui/a11y/shortcuts';
@@ -31,10 +32,11 @@ function add<K extends keyof HTMLElementTagNameMap>(
 }
 
 describe('the registry', () => {
-  it('registers Space on Record with a description', () => {
+  it('registers Space on Record and on the Tab screen, with descriptions', () => {
     const space = SHORTCUTS.filter((s) => s.key === ' ');
-    expect(space).toHaveLength(1);
+    expect(space).toHaveLength(2);
     expect(space[0]).toMatchObject({ route: 'record', description: 'Record / stop' });
+    expect(space[1]).toMatchObject({ route: 'tab', description: 'Play / pause' });
   });
 
   it("registers Esc as a global entry: Cancel count-in, ahead of the Tab screen's Esc", () => {
@@ -199,6 +201,20 @@ describe('the guard', () => {
     expect(guarded(link, 'Enter')).toBe(true);
     expect(guarded(document.createElement('input'), '?')).toBe(true);
     expect(guarded(null, ' ')).toBe(false);
+  });
+
+  it('Space on a note button in the tab area is not guarded; Enter there, and other buttons, are', () => {
+    const area = add('div', { role: 'application', 'aria-label': 'Tab' });
+    const noteButton = area.appendChild(document.createElement('button'));
+    noteButton.setAttribute('data-note-id', 'n0');
+    expect(guarded(noteButton, ' ')).toBe(false);
+    expect(guarded(noteButton, 'Enter')).toBe(true);
+    // A button in the area that is not a note, and a note-like button outside it, stay native.
+    const other = area.appendChild(document.createElement('button'));
+    expect(guarded(other, ' ')).toBe(true);
+    const outside = add('button', { 'data-note-id': 'n1' });
+    expect(guarded(outside, ' ')).toBe(true);
+    document.body.innerHTML = '';
   });
 });
 
@@ -391,6 +407,8 @@ describe('the Tab selection shortcuts', () => {
       ['ArrowRight', 'Next note'],
       ['Escape', 'Clear note selection'],
       ['n', 'Next note to check'],
+      [' ', 'Play / pause'],
+      ['p', 'Seek playback to selected note'],
     ]);
   });
 
@@ -590,5 +608,139 @@ describe('the Tab selection shortcuts', () => {
     press(document.body, 'Escape');
     expect(stop).toHaveBeenCalledWith('user');
     expect(session.select).not.toHaveBeenCalled();
+  });
+});
+
+describe('the Tab playback shortcuts', () => {
+  function fakeSession(selectedNoteId: string | null, over: Partial<TakeSnapshot> = {}) {
+    const snapshot = {
+      tab: { notes: [{ id: 'n0' }, { id: 'n1' }] },
+      selectedNoteId,
+      missing: false,
+      analysis: { kind: 'idle' },
+      ...over,
+    } as unknown as TakeSnapshot;
+    return { getSnapshot: () => snapshot };
+  }
+
+  function fakePlayback(available = true) {
+    return { available: vi.fn(() => available), toggle: vi.fn(), playFromNote: vi.fn() };
+  }
+
+  let remove: () => void = () => {};
+  afterEach(() => {
+    remove();
+    document.body.innerHTML = '';
+    window.location.hash = '';
+  });
+
+  function install(
+    session: ReturnType<typeof fakeSession> | null,
+    playback: ReturnType<typeof fakePlayback> | null,
+    hash = '#/tab/t1',
+  ) {
+    window.location.hash = hash;
+    remove = installShortcuts(
+      window,
+      tabPlaybackShortcuts(
+        () => session,
+        () => playback,
+      ),
+    );
+  }
+
+  /** A note button inside a tab area, focused. */
+  function note(id: string): HTMLButtonElement {
+    const area = add('div', { role: 'application', 'aria-label': 'Tab' });
+    const button = document.createElement('button');
+    button.setAttribute('data-note-id', id);
+    area.append(button);
+    button.focus();
+    return button;
+  }
+
+  it('Space toggles playback from the body and from a focused note button', () => {
+    const playback = fakePlayback();
+    install(fakeSession(null), playback);
+    expect(press(document.body, ' ').defaultPrevented).toBe(true);
+    expect(playback.toggle).toHaveBeenCalledTimes(1);
+    expect(press(note('n0'), ' ').defaultPrevented).toBe(true);
+    expect(playback.toggle).toHaveBeenCalledTimes(2);
+  });
+
+  it('Space keeps its native action on other buttons and does nothing in text fields', () => {
+    const playback = fakePlayback();
+    install(fakeSession(null), playback);
+    const play = add('button');
+    play.setAttribute('aria-label', 'Play');
+    expect(press(play, ' ').defaultPrevented).toBe(false);
+    const input = add('input');
+    expect(press(input, ' ').defaultPrevented).toBe(false);
+    expect(playback.toggle).not.toHaveBeenCalled();
+  });
+
+  it('Space and P do nothing in the toolbar, even on a note-like element there', () => {
+    const playback = fakePlayback();
+    install(fakeSession('n1'), playback);
+    const toolbar = add('div', { role: 'toolbar', 'aria-label': 'Tab tools' });
+    const span = toolbar.appendChild(document.createElement('span'));
+    span.tabIndex = 0;
+    expect(press(span, ' ').defaultPrevented).toBe(false);
+    expect(press(span, 'p').defaultPrevented).toBe(false);
+    expect(playback.toggle).not.toHaveBeenCalled();
+    expect(playback.playFromNote).not.toHaveBeenCalled();
+  });
+
+  it('no audio (or still loading): Space and P are left to the page', () => {
+    const playback = fakePlayback(false);
+    install(fakeSession('n1'), playback);
+    expect(press(document.body, ' ').defaultPrevented).toBe(false);
+    expect(press(document.body, 'p').defaultPrevented).toBe(false);
+    expect(playback.toggle).not.toHaveBeenCalled();
+    expect(playback.playFromNote).not.toHaveBeenCalled();
+  });
+
+  it('nothing without a shown tab, a mounted playback, or on another route', () => {
+    const playback = fakePlayback();
+    install(fakeSession('n1', { analysis: { kind: 'running', progress: 0.5 } }), playback);
+    expect(press(document.body, ' ').defaultPrevented).toBe(false);
+    remove();
+    install(
+      fakeSession('n1', { tab: { notes: [] } } as unknown as Partial<TakeSnapshot>),
+      playback,
+    );
+    expect(press(document.body, ' ').defaultPrevented).toBe(false);
+    remove();
+    install(fakeSession('n1'), null);
+    expect(press(document.body, ' ').defaultPrevented).toBe(false);
+    remove();
+    install(fakeSession('n1'), playback, '#/record');
+    expect(press(document.body, ' ').defaultPrevented).toBe(false);
+    expect(press(document.body, 'p').defaultPrevented).toBe(false);
+    expect(playback.toggle).not.toHaveBeenCalled();
+    expect(playback.playFromNote).not.toHaveBeenCalled();
+  });
+
+  it('P plays from the selected note, case-insensitively; with no selection it does nothing', () => {
+    const playback = fakePlayback();
+    install(fakeSession('n1'), playback);
+    expect(press(document.body, 'p').defaultPrevented).toBe(true);
+    expect(playback.playFromNote).toHaveBeenCalledWith('n1');
+    expect(press(note('n1'), 'P').defaultPrevented).toBe(true);
+    expect(playback.playFromNote).toHaveBeenCalledTimes(2);
+    // Shift+P is refused, as for every shortcut.
+    expect(press(document.body, 'P', { shiftKey: true }).defaultPrevented).toBe(false);
+    remove();
+    const none = fakePlayback();
+    install(fakeSession(null), none);
+    expect(press(document.body, 'p').defaultPrevented).toBe(false);
+    expect(none.playFromNote).not.toHaveBeenCalled();
+  });
+
+  it('P in a text field does nothing', () => {
+    const playback = fakePlayback();
+    install(fakeSession('n1'), playback);
+    expect(press(add('input'), 'p').defaultPrevented).toBe(false);
+    expect(playback.playFromNote).not.toHaveBeenCalled();
   });
 });

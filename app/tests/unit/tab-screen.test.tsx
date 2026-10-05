@@ -8,6 +8,8 @@ import {
   type TakeSession,
   type TakeSnapshot,
 } from '../../src/session/take-session';
+import { activePlayback } from '../../src/session/playback';
+import { TabArea } from '../../src/ui/components/TabArea';
 import { Tab } from '../../src/ui/screens/Tab';
 import { announce } from '../../src/ui/a11y/announcer';
 import { reloadOrExplain } from '../../src/ui/reload-or-explain';
@@ -991,5 +993,295 @@ describe('Tab screen flags, warnings and bar lines', () => {
     render(<Tab takeId="t1" createSession={empty.create} settings={settings} />);
     expect(screen.getByRole('toolbar')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Bar lines' })).toBeNull();
+  });
+});
+
+describe('Tab screen playback', () => {
+  const NOTES = Array.from({ length: 12 }, (_, i) => ({
+    ...note(i, ((i % 6) + 1) as Note['string'], i % 10),
+    startMs: 1000 + i * 250,
+  }));
+  const TAB12: TabRecord = {
+    takeId: 't1',
+    notes: NOTES,
+    updatedAt: TAKE.updatedAt,
+    deletedStartMs: [],
+  };
+  const open = (take: Take = TAKE) =>
+    mockSession({ take, tab: TAB12, loading: false, analysis: { kind: 'idle' } });
+  const readAudio = vi.fn(() => Promise.resolve(new Blob(['x'], { type: 'audio/webm' })));
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      'URL',
+      Object.assign(Object.create(URL), {
+        createObjectURL: vi.fn(() => 'blob:take'),
+        revokeObjectURL: vi.fn(),
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const playButton = () => screen.getByRole('button', { name: /^(Play|Pause)$/ });
+  const audioEl = () => document.querySelector('audio')!;
+  const noteButton = (id: string) =>
+    document.querySelector<HTMLButtonElement>(`[data-note-id="${id}"]`)!;
+
+  /** Renders an analysed take and lets its audio load. */
+  async function renderLoaded(take: Take = TAKE) {
+    const mock = open(take);
+    const view = render(<Tab takeId="t1" createSession={mock.create} readAudio={readAudio} />);
+    await act(async () => {});
+    return { ...mock, ...view };
+  }
+
+  /** Makes the jsdom <audio> act as playing (jsdom has no media playback). */
+  function startPlaying(el: HTMLAudioElement, seconds: number) {
+    Object.defineProperty(el, 'paused', { configurable: true, writable: true, value: false });
+    Object.defineProperty(el, 'currentTime', {
+      configurable: true,
+      writable: true,
+      value: seconds,
+    });
+    act(() => void el.dispatchEvent(new Event('play')));
+  }
+
+  it('the group sits between the status line and the tab: Play, the speeds and the time', async () => {
+    await renderLoaded();
+    const group = screen.getByRole('group', { name: 'Playback' });
+    expect(screen.getByTestId('tab-status-line').nextElementSibling).toBe(group);
+    expect(
+      group.compareDocumentPosition(screen.getByRole('application')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(playButton().getAttribute('aria-label')).toBe('Play');
+    expect(playButton().hasAttribute('disabled')).toBe(false);
+    const speeds = screen.getByRole('group', { name: 'Playback speed' });
+    expect(
+      [...speeds.querySelectorAll('button')].map((b) => [
+        b.textContent,
+        b.getAttribute('aria-label'),
+        b.getAttribute('aria-pressed'),
+      ]),
+    ).toEqual([
+      ['0.5×', '0.5 times speed', 'false'],
+      ['0.75×', '0.75 times speed', 'false'],
+      ['1×', '1 times speed', 'true'],
+    ]);
+    expect(screen.getByTestId('tab-playback-time').textContent).toBe('0:00 / 0:04');
+    expect(audioEl().getAttribute('preload')).toBe('auto');
+    expect(audioEl().hidden).toBe(true);
+    expect(audioEl().getAttribute('src')).toBe('blob:take');
+    expect(readAudio).toHaveBeenCalledWith('t1');
+  });
+
+  it('no audio: Play disabled with "Audio deleted" as tooltip and description; speed enabled', async () => {
+    await renderLoaded({ ...TAKE, audioMime: null });
+    const play = playButton();
+    expect(play.hasAttribute('disabled')).toBe(true);
+    expect(play.parentElement!.getAttribute('title')).toBe('Audio deleted');
+    const reason = document.getElementById(play.getAttribute('aria-describedby')!);
+    expect(reason?.textContent).toBe('Audio deleted');
+    for (const b of screen
+      .getByRole('group', { name: 'Playback speed' })
+      .querySelectorAll('button')) {
+      expect(b.hasAttribute('disabled')).toBe(false);
+    }
+    expect(activePlayback()?.available()).toBe(false);
+  });
+
+  it('unplayable audio (an element error): Play disabled with "Audio can\'t be played"', async () => {
+    await renderLoaded();
+    act(() => void audioEl().dispatchEvent(new Event('error')));
+    const play = playButton();
+    expect(play.hasAttribute('disabled')).toBe(true);
+    expect(play.parentElement!.getAttribute('title')).toBe("Audio can't be played");
+    const reason = document.getElementById(play.getAttribute('aria-describedby')!);
+    expect(reason?.textContent).toBe("Audio can't be played");
+    expect(activePlayback()?.available()).toBe(false);
+  });
+
+  it('no group while the tab is not shown (analysing)', async () => {
+    const { create } = mockSession({
+      take: TAKE,
+      tab: null,
+      loading: false,
+      analysis: { kind: 'running', progress: 0.3 },
+    });
+    render(<Tab takeId="t1" createSession={create} readAudio={readAudio} />);
+    await act(async () => {});
+    expect(screen.queryByRole('group', { name: 'Playback' })).toBeNull();
+    expect(readAudio).not.toHaveBeenCalled();
+    expect(activePlayback()).toBeNull();
+  });
+
+  it('registers its playback for the shortcuts while shown; unmount clears it and revokes the URL', async () => {
+    const { unmount } = await renderLoaded();
+    expect(activePlayback()?.available()).toBe(true);
+    unmount();
+    expect(activePlayback()).toBeNull();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:take');
+  });
+
+  it('speed: the pressed segment and the element rate, pitch preserved', async () => {
+    await renderLoaded();
+    fireEvent.click(screen.getByRole('button', { name: '0.75 times speed' }));
+    expect(
+      screen.getByRole('button', { name: '0.75 times speed' }).getAttribute('aria-pressed'),
+    ).toBe('true');
+    expect(screen.getByRole('button', { name: '1 times speed' }).getAttribute('aria-pressed')).toBe(
+      'false',
+    );
+    expect(audioEl().playbackRate).toBe(0.75);
+    expect(audioEl().preservesPitch).toBe(true);
+  });
+
+  it('while playing: Pause, the playing outline on the current note; it never moves the selection', async () => {
+    const { session } = await renderLoaded();
+    startPlaying(audioEl(), 1.6);
+    expect(playButton().getAttribute('aria-label')).toBe('Pause');
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    // Notes start at 1.0 s, 250 ms apart: 1.6 s is note 2.
+    expect(noteButton('n2').getAttribute('data-playing')).toBe('true');
+    expect(document.querySelectorAll('[data-playing]')).toHaveLength(1);
+    expect(session.select).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('a click on a note while playing selects it and seeks 100 ms before it; paused, it only selects', async () => {
+    const { session } = await renderLoaded();
+    const el = audioEl();
+    Object.defineProperty(el, 'currentTime', { configurable: true, writable: true, value: 0 });
+    fireEvent.click(noteButton('n4'));
+    expect(session.select).toHaveBeenCalledWith('n4');
+    expect(el.currentTime).toBe(0);
+    startPlaying(el, 1.2);
+    fireEvent.click(noteButton('n8'));
+    expect(session.select).toHaveBeenCalledWith('n8');
+    expect(el.currentTime).toBeCloseTo(2.9);
+  });
+});
+
+describe('Tab area: keeping the playing note in view', () => {
+  const NOTES = Array.from({ length: 6 }, (_, i) => note(i, ((i % 6) + 1) as Note['string'], i));
+  let outside = new Set<string>();
+  let now = 0;
+  const scrollIntoView = vi.fn();
+
+  beforeEach(() => {
+    outside = new Set();
+    now = 10_000;
+    scrollIntoView.mockClear();
+    vi.useFakeTimers();
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    Element.prototype.scrollIntoView = scrollIntoView;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const off = outside.has(this.getAttribute('data-note-id') ?? '');
+      const top = off ? window.innerHeight + 100 : 10;
+      return {
+        width: 8,
+        height: 20,
+        top,
+        left: 0,
+        right: 8,
+        bottom: top + 20,
+        x: 0,
+        y: top,
+      } as DOMRect;
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const area = (playingNoteId: string | null, playing = true) => (
+    <TabArea
+      notes={NOTES}
+      selectedNoteId={null}
+      onSelect={() => {}}
+      playingNoteId={playingNoteId}
+      playing={playing}
+    />
+  );
+
+  it('scrolls an out-of-view playing note into view, smoothly; an in-view one is left', () => {
+    outside = new Set(['n1']);
+    const { rerender } = render(area('n0'));
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    rerender(area('n1'));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.contexts[0]).toBe(document.querySelector('[data-note-id="n1"]'));
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      block: 'center',
+      inline: 'nearest',
+      behavior: 'smooth',
+    });
+  });
+
+  it('at most once per 500 ms: a later change waits, then scrolls if still out of view', () => {
+    outside = new Set(['n1', 'n2', 'n3']);
+    const { rerender } = render(area('n1'));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    now += 200;
+    rerender(area('n2'));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    now += 300;
+    act(() => vi.advanceTimersByTime(300));
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(scrollIntoView.mock.contexts[1]).toBe(document.querySelector('[data-note-id="n2"]'));
+    // Back in view by the time the wait ends: no scroll.
+    now += 100;
+    rerender(area('n3'));
+    outside = new Set();
+    now += 400;
+    act(() => vi.advanceTimersByTime(400));
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+  });
+
+  it('paused (the cursor kept): a reflow or a note out of view never scrolls', () => {
+    outside = new Set(['n1']);
+    const { rerender } = render(area('n1', false));
+    // A re-layout (here: bar lines on) re-creates the note buttons.
+    rerender(
+      <TabArea
+        notes={NOTES}
+        countInBpm={120}
+        selectedNoteId={null}
+        onSelect={() => {}}
+        playingNoteId="n1"
+        playing={false}
+      />,
+    );
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    // Playing again: it scrolls.
+    rerender(area('n1', true));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
+  it('reduced motion: scrolls without smooth behaviour', () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: q.includes('reduce') }));
+    outside = new Set(['n1']);
+    render(area('n1'));
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      block: 'center',
+      inline: 'nearest',
+      behavior: 'instant',
+    });
+  });
+
+  it('the playing outline follows the note id across a re-render', () => {
+    const { rerender } = render(area('n3'));
+    expect(document.querySelector('[data-playing]')?.getAttribute('data-note-id')).toBe('n3');
+    rerender(area(null));
+    expect(document.querySelector('[data-playing]')).toBeNull();
   });
 });

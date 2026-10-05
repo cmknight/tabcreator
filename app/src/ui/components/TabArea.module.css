@@ -86,3 +86,14 @@
   outline: 2px solid var(--color-primary);
   outline-offset: 0;
 }
+
+/* Playing (DESIGN.md tab-note-playing): a solid ink outline, drawn just outside the selection
+   outline so the two combine and stay distinct from it and the check style. */
+.note[data-playing='true']::after {
+  position: absolute;
+  inset: -5px;
+  border: 2px solid var(--color-text);
+  border-radius: 3px;
+  content: '';
+  pointer-events: none;
+}

@@ -1,0 +1,66 @@
+/* The playback group (DESIGN.md Playback controls): between the status line and the tab. */
+.playback {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  margin-block-start: var(--space-3);
+}
+
+.play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.play:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.icon {
+  flex: none;
+  inline-size: 18px;
+  block-size: 18px;
+}
+
+/* The speed segmented control: three joined toggle buttons. */
+.speeds {
+  display: inline-flex;
+}
+
+.speed {
+  padding-inline: var(--space-3);
+}
+
+/* The pressed segment's border sits above its neighbours'; a focused segment's ring above all. */
+.speed[aria-pressed='true'] {
+  position: relative;
+}
+
+.speed:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+.speed:not(:first-child) {
+  margin-inline-start: -1px;
+}
+
+.speed:not(:first-child, :last-child) {
+  border-radius: 0;
+}
+
+.speed:first-child:not(:last-child) {
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+}
+
+.speed:last-child:not(:first-child) {
+  border-start-start-radius: 0;
+  border-end-start-radius: 0;
+}
+
+.time {
+  font: var(--font-numeric);
+}

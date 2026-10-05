@@ -33,8 +33,17 @@ export function makeNotes(count = 40, flagged: readonly number[] = []): Note[] {
   });
 }
 
-/** Take fields a seeded take may carry: as recorded (count-in, clipping) and as analysed. */
-export type SeedTake = Partial<Pick<Take, 'countInBpm' | 'clipped' | 'stopReason' | 'warnings'>>;
+/**
+ * Take fields a seeded take may carry: as recorded (count-in, clipping, audio type, trim) and as
+ * analysed. A seeded take has no audio (`audioMime` null) unless the test writes a file and sets
+ * `audioMime` (story "Playback with a following cursor").
+ */
+export type SeedTake = Partial<
+  Pick<
+    Take,
+    'countInBpm' | 'clipped' | 'stopReason' | 'warnings' | 'audioMime' | 'trimStartMs' | 'trimEndMs'
+  >
+>;
 
 /**
  * Creates a `recorded` take and commits an analysis with `notes` (as `take-session`), so the

@@ -276,6 +276,27 @@ export const strings = {
   'tab.maxLengthReached': 'Maximum length reached',
   /** The toolbar's Bar lines toggle (EXPERIENCE.md Toolbar). */
   'tab.barLines': 'Bar lines',
+  /** The playback group's accessible name (EXPERIENCE.md Playback). */
+  'tab.playback': 'Playback',
+  /** The Play/Pause button's accessible name while paused. */
+  'tab.play': 'Play',
+  /** The Play/Pause button's accessible name while playing. */
+  'tab.pause': 'Pause',
+  /** Why Play is disabled: the take's audio is gone (EXPERIENCE.md Audio deleted). */
+  'tab.audioDeleted': 'Audio deleted',
+  /** Why Play is disabled: the browser cannot play the take's audio file. */
+  'tab.audioUnplayable': "Audio can't be played",
+  /** A speed option's accessible name: "0.5 times speed" (the visible text is "0.5×"). */
+  'tab.speedLabel': (speed: number) => `${speed} times speed`,
+  /** The speed segmented control's accessible name. */
+  'tab.speed': 'Playback speed',
+  /** A speed option: "0.5×", "0.75×", "1×". */
+  'tab.speedOption': (speed: number) => `${speed}×`,
+  /** The playhead and the take's duration, each `m:ss`. */
+  'tab.playbackTime': (current: string, duration: string) => `${current} / ${duration}`,
+  /** Shortcut descriptions (the `?` dialog). */
+  'tab.shortcutPlayPause': 'Play / pause',
+  'tab.shortcutSeekToNote': 'Seek playback to selected note',
   'library.title': 'Library',
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */

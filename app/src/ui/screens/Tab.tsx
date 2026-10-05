@@ -14,7 +14,12 @@
 // Story "Flags, warnings and bar lines on screen": the warning banners (components/TakeWarnings),
 // the status line with Next to check (components/TabStatusLine), the flagged notes, the "Maximum
 // length reached" toast, and the toolbar's Bar lines toggle (`prefs.barLines` through
-// settings-session). The other toolbar buttons and playback come with later stories.
+// settings-session). The other toolbar buttons come with later stories.
+//
+// Story "Playback with a following cursor": the playback group (components/PlaybackControls,
+// state in ui/use-playback.ts) between the status line and the tab, shown with the tab. The
+// playing note is outlined in the tab area; a click on a note while playing seeks to it. While
+// shown, its controller is the active playback the Space and `P` shortcuts act on.
 
 import {
   useEffect,
@@ -27,6 +32,7 @@ import {
 } from 'react';
 import type { AppErrorCode } from '../../model/errors';
 import type { Take } from '../../model/types';
+import { activePlayback, setActivePlayback } from '../../session/playback';
 import { settingsSession, type SettingsSession } from '../../session/settings-session';
 import {
   setActiveTakeSession,
@@ -40,6 +46,7 @@ import { focusSelectedNote } from '../a11y/shortcuts';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
 import { BarLinesIcon, ErrorIcon } from '../components/icons';
+import { PlaybackControls } from '../components/PlaybackControls';
 import { noteLabels, TabArea } from '../components/TabArea';
 import { TabStatusLine } from '../components/TabStatusLine';
 import { TakeHeader } from '../components/TakeHeader';
@@ -47,6 +54,7 @@ import { TakeWarnings, type DismissibleWarning } from '../components/TakeWarning
 import { reloadOrExplain } from '../reload-or-explain';
 import { strings } from '../strings';
 import { showToast } from '../toast';
+import { usePlayback } from '../use-playback';
 import { useTakeSession } from '../use-take-session';
 import styles from './Screen.module.css';
 import tabStyles from './Tab.module.css';
@@ -149,6 +157,8 @@ export interface TabProps {
   createSession?: (takeId: string) => TakeSession;
   /** The settings store the Bar lines toggle reads and writes; tests pass their own. */
   settings?: Pick<SettingsSession, 'subscribePrefs' | 'getSnapshot' | 'setBarLines'>;
+  /** Reads the take's compressed audio for playback; tests pass their own. */
+  readAudio?: (takeId: string) => Promise<Blob | null>;
 }
 
 /**
@@ -176,7 +186,7 @@ export const MAX_LENGTH_TOAST_WINDOW_MS = 30_000;
 /** No warning dismissed. */
 const NONE_DISMISSED: ReadonlySet<DismissibleWarning> = new Set();
 
-export function Tab({ takeId, createSession, settings = settingsSession }: TabProps) {
+export function Tab({ takeId, createSession, settings = settingsSession, readAudio }: TabProps) {
   const { snapshot, session } = useTakeSession(takeId, createSession);
   const { take, tab, analysis, missing, selectedNoteId } = snapshot;
   useProgressAnnouncements(analysis);
@@ -198,6 +208,23 @@ export function Tab({ takeId, createSession, settings = settingsSession }: TabPr
   const lastFocusedNote = useRef<string | null>(null);
   const notes = tab?.notes;
   const labels = useMemo(() => (notes ? noteLabels(notes) : []), [notes]);
+  const showTab = !missing && analysis.kind === 'idle' && !!tab && !!take && tab.notes.length > 0;
+  const playback = usePlayback({
+    takeId,
+    take: missing ? null : take,
+    notes: notes ?? null,
+    ...(readAudio ? { readAudio } : {}),
+  });
+  const { controller } = playback;
+
+  // The Space and P shortcuts reach this screen's playback while its group is shown.
+  useEffect(() => {
+    if (!showTab) return;
+    setActivePlayback(controller);
+    return () => {
+      if (activePlayback() === controller) setActivePlayback(null);
+    };
+  }, [showTab, controller]);
 
   // The shortcut registry reaches this session while the screen is mounted.
   useEffect(() => {
@@ -311,12 +338,16 @@ export function Tab({ takeId, createSession, settings = settingsSession }: TabPr
             onFocusNote={(id) => {
               lastFocusedNote.current = id;
             }}
+            playingNoteId={playback.playingNoteId}
+            playing={playback.playing}
+            onNoteClick={(id) => {
+              if (playback.playing) playback.seekToNote(id, false);
+            }}
           />
         </div>
       </>
     );
   }
-  const showTab = !missing && analysis.kind === 'idle' && !!tab && !!take && tab.notes.length > 0;
   const showToolbar = !missing && analysis.kind === 'idle' && !!tab && !!take;
   const showBarLines = showTab && take?.countInBpm !== undefined;
 
@@ -390,6 +421,7 @@ export function Tab({ takeId, createSession, settings = settingsSession }: TabPr
           }}
         />
       )}
+      {showTab && <PlaybackControls playback={playback} />}
       {body}
     </section>
   );

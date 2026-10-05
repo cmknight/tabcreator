@@ -56,3 +56,21 @@ export function BarLinesIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/** Play: the Tab screen's Play/Pause button while paused (a right-pointing triangle). */
+export function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 5v14l11-7z" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Pause: the Tab screen's Play/Pause button while playing (two bars). */
+export function PauseIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 5h4v14H7zM13 5h4v14h-4z" fill="currentColor" />
+    </svg>
+  );
+}

@@ -19,6 +19,12 @@
 // Story "Flags, warnings and bar lines on screen": `N` (Next to check) selects and focuses the
 // next low-confidence note. It follows the arrows' shown-tab rule but works with focus anywhere
 // on the Tab screen, except in a text field (the guard) or the toolbar.
+//
+// Story "Playback with a following cursor": Space plays / pauses and `P` seeks to 100 ms before
+// the selected note (and plays). Both reach the screen's playback through `activePlayback()`
+// (session/playback.ts), apply only while the tab is shown and its audio is loaded, and do
+// nothing in a text field or the toolbar. Space on a focused note button is the guard's one
+// exception (see `guarded`).
 
 import { useEffect } from 'react';
 import {
@@ -26,6 +32,7 @@ import {
   type RecordingSession,
   type RecordingSnapshot,
 } from '../../session/recording-session';
+import { activePlayback, type PlaybackController } from '../../session/playback';
 import { activeTakeSession, type TakeSession } from '../../session/take-session';
 import { parseRoute, type Route } from '../router';
 import { strings } from '../strings';
@@ -53,11 +60,19 @@ const TEXT_FIELD = 'input, textarea, select, [contenteditable]:not([contentedita
 const SPACE_ACTION = 'button, summary, [role="button"], [role="checkbox"], [role="switch"]';
 /** Elements Enter activates natively. */
 const ENTER_ACTION = `${SPACE_ACTION}, a[href], [role="link"]`;
+/** A note button in the tab area: Space there is Play / Pause, not a press. */
+const NOTE_BUTTON = '[role="application"] [data-note-id]';
 
 /**
- * On the Tab screen this also settles Space and Enter on a focused toolbar button (or the note
- * buttons, the skip link, the Note list view toggle): they keep their native action (press the
- * button, follow the link), and no `tab`-route Space or Enter shortcut fires there.
+ * On the Tab screen this also settles Space and Enter on a focused toolbar button (or the skip
+ * link, the Note list view toggle, Play, the speed buttons, the banners' buttons): they keep
+ * their native action (press the button, follow the link), and no `tab`-route Space or Enter
+ * shortcut fires there.
+ *
+ * The one exception (story "Playback with a following cursor"): Space on a note button inside
+ * the tab area (`[role="application"]`) is not guarded, so the Tab screen's Space (Play / Pause,
+ * EXPERIENCE.md Keyboard) runs there. A note is a selection target, already selected when
+ * focused, so pressing it would do nothing visible. Enter on a note stays native.
  *
  * Whether `key` pressed with focus on `target` must be left to the page: focus is in a text
  * field, or on an element where the key has a native action (Space: a button or checkbox;
@@ -66,7 +81,10 @@ const ENTER_ACTION = `${SPACE_ACTION}, a[href], [role="link"]`;
 export function guarded(target: EventTarget | null, key: string): boolean {
   if (!(target instanceof Element)) return false;
   if (target.closest(TEXT_FIELD)) return true;
-  if (key === ' ') return target.closest(SPACE_ACTION) !== null;
+  if (key === ' ') {
+    if (target.closest(NOTE_BUTTON)) return false;
+    return target.closest(SPACE_ACTION) !== null;
+  }
   if (key === 'Enter') return target.closest(ENTER_ACTION) !== null;
   return false;
 }
@@ -232,6 +250,46 @@ export function tabSelectionShortcuts(
   ];
 }
 
+/**
+ * Space (Play / Pause) and `P` (seek to 100 ms before the selected note and play) on the Tab
+ * screen, acting on `playback()` (the mounted screen's), while the tab is shown (`session()`'s,
+ * as for the arrows) and its audio is loaded; never with focus in the toolbar (the guard covers
+ * text fields and, for Space, every button but the notes). `P` applies only with a note
+ * selected.
+ */
+export function tabPlaybackShortcuts(
+  session: () => Pick<TakeSession, 'getSnapshot'> | null = activeTakeSession,
+  playback: () => PlaybackController | null = activePlayback,
+): Shortcut[] {
+  const applies = (target: EventTarget | null) => {
+    if (inToolbar(target)) return false;
+    const snap = session()?.getSnapshot();
+    const shown =
+      !!snap && !snap.missing && snap.analysis.kind === 'idle' && (snap.tab?.notes.length ?? 0) > 0;
+    return shown && (playback()?.available() ?? false);
+  };
+  const selected = () => session()?.getSnapshot().selectedNoteId ?? null;
+  return [
+    {
+      key: ' ',
+      route: 'tab',
+      description: strings['tab.shortcutPlayPause'],
+      when: applies,
+      handler: () => playback()?.toggle(),
+    },
+    {
+      key: 'p',
+      route: 'tab',
+      description: strings['tab.shortcutSeekToNote'],
+      when: (target) => applies(target) && selected() !== null,
+      handler: () => {
+        const id = selected();
+        if (id !== null) playback()?.playFromNote(id);
+      },
+    },
+  ];
+}
+
 /** Every shortcut in the app. */
 export const SHORTCUTS: readonly Shortcut[] = [
   {
@@ -242,6 +300,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   },
   cancelCountIn(recordingSession),
   ...tabSelectionShortcuts(),
+  ...tabPlaybackShortcuts(),
 ];
 
 /**
