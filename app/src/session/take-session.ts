@@ -33,6 +33,10 @@
 // through `apply` like `setFret`. A command may name the note to select afterwards (a delete:
 // the next note, else the previous; an insert: the new note). Undo and redo also work once the
 // last note is deleted (the screen shows No notes found), while there is history.
+//
+// Story "Undo and redo controls": the snapshot carries the labels of the top undo and redo
+// steps (`undoLabel`, `redoLabel`), republished whenever the history changes, for the toolbar's
+// Undo and Redo buttons.
 
 import { engineClient } from '../engine/engine-client';
 import { isAppError, type AppErrorCode } from '../model/errors';
@@ -95,6 +99,13 @@ export interface TakeSnapshot {
    * memory; Retry or the next edit saves again); null otherwise.
    */
   saveFailed: 'storage-full' | null;
+  /**
+   * The label of the step an undo would revert, or null with nothing to undo (story "Undo and
+   * redo controls": the Undo button's tooltip). Agrees with `canUndo()`.
+   */
+  undoLabel: CommandLabel | null;
+  /** The label of the step a redo would restore, or null with nothing to redo. Agrees with `canRedo()`. */
+  redoLabel: CommandLabel | null;
 }
 
 /** An announceable outcome of an edit, undo or redo (the screen words it, spine AD-18). */
@@ -290,6 +301,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     selectedNoteId: null,
     lastFocusedNoteId: null,
     saveFailed: null,
+    undoLabel: null,
+    redoLabel: null,
   };
   const listeners = new Set<() => void>();
   const editListeners = new Set<(event: EditEvent) => void>();
@@ -343,6 +356,13 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     if (patch.tab !== undefined && patch.tab !== snapshot.tab) revision++;
     const wasSelected = snapshot.selectedNoteId;
     snapshot = { ...snapshot, ...patch };
+    // The undo and redo labels follow the history, which changes only just before a publish
+    // (a command, a merge, undo, redo, and the reset of a load, an analysis or a deletion).
+    const undoLabel = history.undo.at(-1)?.label ?? null;
+    const redoLabel = history.redo.at(-1)?.label ?? null;
+    if (snapshot.undoLabel !== undoLabel || snapshot.redoLabel !== redoLabel) {
+      snapshot = { ...snapshot, undoLabel, redoLabel };
+    }
     // The selection follows its note: cleared when the note is gone (deleted, re-analysed).
     const selected = snapshot.selectedNoteId;
     if (selected !== null && !snapshot.tab?.notes.some((n) => n.id === selected)) {
@@ -448,6 +468,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       if (snapshot.missing) return;
       if (!take) {
         heldTabs.delete(takeId);
+        resetEdits();
         publish({ loading: false, missing: true });
         return;
       }

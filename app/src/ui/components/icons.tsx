@@ -75,6 +75,38 @@ export function PauseIcon({ className }: { className?: string }) {
   );
 }
 
+/** Undo: an arrow curving back to the left (the mockup's `i-undo`). */
+export function UndoIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M9 7H4V2M4 7c2.2-2.5 5-4 8.5-4A8.5 8.5 0 1 1 5 16.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/** Redo: an arrow curving forward to the right (the mockup's `i-redo`). */
+export function RedoIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M15 7h5V2M20 7c-2.2-2.5-5-4-8.5-4A8.5 8.5 0 1 0 19 16.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /** Plus: the Tab toolbar's Insert button. */
 export function InsertIcon({ className }: { className?: string }) {
   return (

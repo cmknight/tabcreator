@@ -38,15 +38,24 @@
 // announcement. A new edit's re-fit replaces the set (an edit that changed nothing leaves it);
 // undo, redo, a failed edit, the tab going away (the take missing, an analysis) and leaving the
 // screen clear it.
+//
+// Story "Undo and redo controls": Undo and Redo lead the toolbar. Their tooltips (a `title` and
+// an accessible description, as the disabled Play's) name the step ("Undo move to string 3") or
+// say "Nothing to undo"; Insert and Delete say why they are disabled ("No notes yet", "Select a
+// note to delete"). A click undoes or redoes one step as the shortcuts do; a clicked button left
+// disabled hands focus to the other.
 
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
+  type FocusEvent,
   type ReactNode,
+  type Ref,
 } from 'react';
 import type { CommandLabel } from '../../model/edit-history';
 import type { AppErrorCode } from '../../model/errors';
@@ -65,10 +74,18 @@ import {
 import { announce } from '../a11y/announcer';
 import { NOTE_BUTTON } from '../a11y/selectors';
 import { focusSelectedNote } from '../a11y/shortcuts';
+import hidden from '../a11y/visually-hidden.module.css';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
 import { EditPopover } from '../components/EditPopover';
-import { BarLinesIcon, DeleteIcon, ErrorIcon, InsertIcon } from '../components/icons';
+import {
+  BarLinesIcon,
+  DeleteIcon,
+  ErrorIcon,
+  InsertIcon,
+  RedoIcon,
+  UndoIcon,
+} from '../components/icons';
 import { StorageFullBannerView } from '../components/StorageFullBannerView';
 import { PlaybackControls } from '../components/PlaybackControls';
 import { noteLabels, reducedMotion, TabArea } from '../components/TabArea';
@@ -185,6 +202,55 @@ export function commandLabelText(label: CommandLabel): string {
     case 'confirm':
       return strings['tab.commandConfirm'];
   }
+}
+
+/**
+ * A toolbar button with an icon, a text label and an optional tooltip: the tooltip goes on a
+ * wrapper (a disabled button gets no pointer events) and is the button's accessible description,
+ * as for the disabled Play button.
+ */
+function ToolButton({
+  icon,
+  label,
+  tooltip,
+  disabled,
+  onClick,
+  buttonRef,
+  onFocus,
+  onBlur,
+}: {
+  icon: ReactNode;
+  label: string;
+  tooltip: string | null;
+  disabled: boolean;
+  onClick: () => void;
+  buttonRef?: Ref<HTMLButtonElement>;
+  onFocus?: () => void;
+  onBlur?: (event: FocusEvent<HTMLButtonElement>) => void;
+}) {
+  const tooltipId = useId();
+  return (
+    <span className={tabStyles.toolWrap} title={tooltip ?? undefined}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`${buttons.secondary} ${tabStyles.toolButton}`}
+        disabled={disabled}
+        aria-describedby={tooltip !== null ? tooltipId : undefined}
+        onClick={onClick}
+        onFocus={onFocus}
+        onBlur={onBlur}
+      >
+        {icon}
+        {label}
+      </button>
+      {tooltip !== null && (
+        <span id={tooltipId} className={hidden.visuallyHidden}>
+          {tooltip}
+        </span>
+      )}
+    </span>
+  );
 }
 
 /** What an edit announces, by its command ("Moved to G string, fret 7"). */
@@ -433,6 +499,40 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
     (analyseButton.current ?? titleRef.current)?.focus();
   }, [stateKey]);
 
+  // A clicked Undo or Redo that its own step disabled hands focus to the other button, so focus
+  // is never lost to <body>. `travelFocus` is the one of them holding focus.
+  const undoButton = useRef<HTMLButtonElement>(null);
+  const redoButton = useRef<HTMLButtonElement>(null);
+  const travelFocus = useRef<'undo' | 'redo' | null>(null);
+  const canUndo = snapshot.undoLabel !== null;
+  const canRedo = snapshot.redoLabel !== null;
+  const showToolbar = !missing && analysis.kind === 'idle' && !!tab && !!take;
+  useLayoutEffect(() => {
+    // A hidden toolbar takes its buttons (and their focus) with it, with no blur to release it.
+    if (!showToolbar) {
+      travelFocus.current = null;
+      return;
+    }
+    const held = travelFocus.current;
+    if (held === null) return;
+    const [from, to] =
+      held === 'undo'
+        ? [undoButton.current, redoButton.current]
+        : [redoButton.current, undoButton.current];
+    if (!from?.disabled) return;
+    // Handled once: a disabled button holds no focus to hand over later.
+    travelFocus.current = null;
+    if (!to || to.disabled) return;
+    const active = document.activeElement;
+    if (active !== from && active !== null && active !== document.body) return;
+    to.focus();
+  }, [canUndo, canRedo, showToolbar]);
+  const onTravelBlur = (event: FocusEvent<HTMLButtonElement>) => {
+    // Focus leaving for another element releases it; a blur to nothing (the button disabled)
+    // keeps it, for the effect above.
+    if (event.relatedTarget !== null || !event.currentTarget.disabled) travelFocus.current = null;
+  };
+
   let body: ReactNode = null;
   if (missing) {
     body = <p className={tabStyles.message}>{strings['tab.notFound']}</p>;
@@ -532,7 +632,6 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
       </>
     );
   }
-  const showToolbar = !missing && analysis.kind === 'idle' && !!tab && !!take;
   const popoverNote =
     showTab && popover ? (tab.notes.find((n) => n.id === popover.noteId) ?? null) : null;
   // A popover whose note went away (an undo, a re-analysis) stays closed if the note comes back.
@@ -587,24 +686,58 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
       />
       {showToolbar && (
         <div className={tabStyles.toolbar} role="toolbar" aria-label={strings['tab.toolbar']}>
-          <button
-            type="button"
-            className={`${buttons.secondary} ${tabStyles.toolButton}`}
+          <ToolButton
+            buttonRef={undoButton}
+            icon={<UndoIcon className={tabStyles.toolIcon} />}
+            label={strings['tab.undo']}
+            tooltip={
+              snapshot.undoLabel
+                ? strings['tab.undoAction'](snapshot.undoLabel)
+                : strings['tab.nothingToUndo']
+            }
+            disabled={!canUndo}
+            onClick={() => void session.undo()}
+            onFocus={() => {
+              travelFocus.current = 'undo';
+            }}
+            onBlur={onTravelBlur}
+          />
+          <ToolButton
+            buttonRef={redoButton}
+            icon={<RedoIcon className={tabStyles.toolIcon} />}
+            label={strings['tab.redo']}
+            tooltip={
+              snapshot.redoLabel
+                ? strings['tab.redoAction'](snapshot.redoLabel)
+                : strings['tab.nothingToRedo']
+            }
+            disabled={!canRedo}
+            onClick={() => void session.redo()}
+            onFocus={() => {
+              travelFocus.current = 'redo';
+            }}
+            onBlur={onTravelBlur}
+          />
+          <ToolButton
+            icon={<InsertIcon className={tabStyles.toolIcon} />}
+            label={strings['tab.insert']}
+            tooltip={showTab ? null : strings['tab.noNotesYet']}
             disabled={!showTab}
             onClick={() => void session.insert()}
-          >
-            <InsertIcon className={tabStyles.toolIcon} />
-            {strings['tab.insert']}
-          </button>
-          <button
-            type="button"
-            className={`${buttons.secondary} ${tabStyles.toolButton}`}
+          />
+          <ToolButton
+            icon={<DeleteIcon className={tabStyles.toolIcon} />}
+            label={strings['tab.delete']}
+            tooltip={
+              !showTab
+                ? strings['tab.noNotesYet']
+                : selectedNoteId === null
+                  ? strings['tab.selectToDelete']
+                  : null
+            }
             disabled={!showTab || selectedNoteId === null}
             onClick={() => void session.deleteSelected()}
-          >
-            <DeleteIcon className={tabStyles.toolIcon} />
-            {strings['tab.delete']}
-          </button>
+          />
           {showBarLines && (
             <button
               type="button"

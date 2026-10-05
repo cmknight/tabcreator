@@ -48,3 +48,4 @@ PWA config and service worker, `ui/a11y/`, dark mode, the capability check, CI b
   - the page scrolls sideways at 320 px because the shell's top navigation bar is wider than that (the tab itself fits; story 5.8);
   - the Tab screen's state changes (analysis done, failed, take not found) are not announced and the progress bar has no aria-valuetext (story 5.6);
   - the polite announcement queue has no cap or expiry (Recording retro, story 3.3).
+- Carried from story 8.4's review (2026-10-05): the Tab toolbar declares role="toolbar" but has no arrow-key navigation; every button is a Tab stop (now six or so).

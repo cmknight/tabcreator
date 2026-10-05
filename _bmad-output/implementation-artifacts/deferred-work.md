@@ -37,3 +37,6 @@
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-re-fit-feedback-plan.md`
   summary: EXPERIENCE.md gives only the plural "<n> nearby notes re-fingered"; story 8.2 added the singular "1 nearby note re-fingered" — owner: UX owner.
   evidence: tab.refingered in app/src/ui/strings.ts.
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-undo-and-redo-controls-plan.md`
+  summary: EXPERIENCE.md and the mockup show only "Undo move to string 2", "Nothing to undo/redo" and "No notes yet"; story 8.4 added "Undo/Redo set fret N", "… delete note", "… insert note", "… confirm note" and "Select a note to delete" — owner: UX owner.
+  evidence: commandPhrase, tab.undoAction/redoAction and the reasons in app/src/ui/strings.ts.

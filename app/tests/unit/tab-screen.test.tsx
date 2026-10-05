@@ -58,11 +58,19 @@ const note = (i: number, string: Note['string'], fret: number): Note => ({
   lowConfidence: false,
 });
 
-/** A snapshot; `selectedNoteId`, `lastFocusedNoteId` and `saveFailed` default to null. */
-type Snap = Omit<TakeSnapshot, 'selectedNoteId' | 'lastFocusedNoteId' | 'saveFailed'> & {
+/**
+ * A snapshot; `selectedNoteId`, `lastFocusedNoteId`, `saveFailed`, `undoLabel` and `redoLabel`
+ * default to null.
+ */
+type Snap = Omit<
+  TakeSnapshot,
+  'selectedNoteId' | 'lastFocusedNoteId' | 'saveFailed' | 'undoLabel' | 'redoLabel'
+> & {
   selectedNoteId?: string | null;
   lastFocusedNoteId?: string | null;
   saveFailed?: TakeSnapshot['saveFailed'];
+  undoLabel?: TakeSnapshot['undoLabel'];
+  redoLabel?: TakeSnapshot['redoLabel'];
 };
 
 function mockSession(initial: Snap) {
@@ -70,6 +78,8 @@ function mockSession(initial: Snap) {
     selectedNoteId: null,
     lastFocusedNoteId: null,
     saveFailed: null,
+    undoLabel: null,
+    redoLabel: null,
     ...initial,
   };
   const listeners = new Set<() => void>();
@@ -1010,23 +1020,222 @@ describe('Tab screen tab area, header and selection', () => {
     expect(document.activeElement).toBe(noteButton('n20'));
   });
 
-  it('the toolbar under the header: Insert, and Delete (disabled with nothing selected)', () => {
+  it('the toolbar under the header: Undo, Redo, Insert, and Delete (disabled with nothing selected)', () => {
     const { create, session, set } = analysed();
     render(<Tab takeId="t1" createSession={create} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Tab tools' });
     const names = [...toolbar.querySelectorAll('button')].map((b) => b.textContent);
-    expect(names).toEqual(['Insert', 'Delete']);
+    expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete']);
     const insert = screen.getByRole('button', { name: 'Insert' }) as HTMLButtonElement;
     const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement;
     expect(insert.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
     expect(insert.disabled).toBe(false);
+    expect(insert.parentElement!.hasAttribute('title')).toBe(false);
+    expect(insert.hasAttribute('aria-describedby')).toBe(false);
     expect(del.disabled).toBe(true);
     fireEvent.click(insert);
     expect(session.insert).toHaveBeenCalledTimes(1);
     set({ selectedNoteId: 'n3' });
     expect(del.disabled).toBe(false);
+    expect(del.parentElement!.hasAttribute('title')).toBe(false);
     fireEvent.click(del);
     expect(session.deleteSelected).toHaveBeenCalledTimes(1);
+  });
+
+  // Story "Undo and redo controls".
+  describe('Undo and Redo', () => {
+    const MOVE: CommandLabel = { kind: 'moveString', string: 3, fret: 5 };
+    const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
+    /** The button's tooltip, checked to be its accessible description too. */
+    const tooltip = (b: HTMLButtonElement) => {
+      const title = b.parentElement!.getAttribute('title');
+      const id = b.getAttribute('aria-describedby');
+      expect(id && document.getElementById(id)?.textContent).toBe(title);
+      return title;
+    };
+
+    it('fresh tab: both disabled, "Nothing to undo" / "Nothing to redo"', () => {
+      const { create } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      expect(button('Undo').disabled).toBe(true);
+      expect(tooltip(button('Undo'))).toBe('Nothing to undo');
+      expect(button('Redo').disabled).toBe(true);
+      expect(tooltip(button('Redo'))).toBe('Nothing to redo');
+      for (const name of ['Undo', 'Redo']) {
+        expect(button(name).querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+      }
+    });
+
+    it('after a move: Undo enabled "Undo move to string 3"; Redo disabled', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ undoLabel: MOVE });
+      expect(button('Undo').disabled).toBe(false);
+      expect(tooltip(button('Undo'))).toBe('Undo move to string 3');
+      expect(button('Redo').disabled).toBe(true);
+      expect(tooltip(button('Redo'))).toBe('Nothing to redo');
+    });
+
+    it('the tooltip names each command in lower case', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      const cases: [CommandLabel, string][] = [
+        [{ kind: 'setFret', fret: 5 }, 'Undo set fret 5'],
+        [{ kind: 'setFret', fret: 12 }, 'Undo set fret 12'],
+        [{ kind: 'delete' }, 'Undo delete note'],
+        [{ kind: 'insert' }, 'Undo insert note'],
+        [{ kind: 'confirm' }, 'Undo confirm note'],
+      ];
+      for (const [label, text] of cases) {
+        set({ undoLabel: label });
+        expect(tooltip(button('Undo'))).toBe(text);
+      }
+    });
+
+    it('a click on Undo undoes; Undo disabled, Redo "Redo move to string 3", focus on Redo', () => {
+      const { create, session, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ undoLabel: MOVE });
+      const undo = button('Undo');
+      act(() => undo.focus());
+      fireEvent.click(undo);
+      expect(session.undo).toHaveBeenCalledTimes(1);
+      set({ undoLabel: null, redoLabel: MOVE });
+      expect(undo.disabled).toBe(true);
+      expect(tooltip(undo)).toBe('Nothing to undo');
+      expect(tooltip(button('Redo'))).toBe('Redo move to string 3');
+      expect(document.activeElement).toBe(button('Redo'));
+      // And back: a click on Redo leaves it disabled; focus returns to Undo.
+      fireEvent.click(button('Redo'));
+      expect(session.redo).toHaveBeenCalledTimes(1);
+      set({ undoLabel: MOVE, redoLabel: null });
+      expect(document.activeElement).toBe(undo);
+    });
+
+    it('a click that leaves the button enabled keeps focus on it', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ undoLabel: MOVE });
+      const undo = button('Undo');
+      act(() => undo.focus());
+      fireEvent.click(undo);
+      set({ undoLabel: { kind: 'confirm' }, redoLabel: MOVE });
+      expect(document.activeElement).toBe(undo);
+    });
+
+    it('a hidden toolbar releases the held focus: a later undo with focus elsewhere moves none', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ undoLabel: MOVE });
+      act(() => button('Undo').focus());
+      set({ analysis: { kind: 'running', progress: 0.1 } }); // the toolbar goes
+      set({ analysis: { kind: 'idle' } });
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      set({ undoLabel: null, redoLabel: MOVE }); // an undo by shortcut
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    it('a reset that disables both releases the held focus', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ undoLabel: MOVE });
+      act(() => button('Undo').focus());
+      set({ undoLabel: null, redoLabel: null });
+      set({ undoLabel: MOVE });
+      set({ undoLabel: null, redoLabel: MOVE }); // a later undo by shortcut
+      expect(document.activeElement).not.toBe(button('Redo'));
+    });
+
+    it('focus elsewhere is left alone when the history changes', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ undoLabel: MOVE });
+      const insert = button('Insert');
+      act(() => insert.focus());
+      set({ undoLabel: null, redoLabel: MOVE });
+      expect(document.activeElement).toBe(insert);
+    });
+
+    it('a new edit after an undo: Redo "Nothing to redo"', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ undoLabel: null, redoLabel: MOVE });
+      expect(button('Redo').disabled).toBe(false);
+      set({ undoLabel: { kind: 'setFret', fret: 12 }, redoLabel: null });
+      expect(button('Redo').disabled).toBe(true);
+      expect(tooltip(button('Redo'))).toBe('Nothing to redo');
+      expect(tooltip(button('Undo'))).toBe('Undo set fret 12');
+    });
+
+    it('Delete with notes but nothing selected: "Select a note to delete"', () => {
+      const { create } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      expect(button('Delete').disabled).toBe(true);
+      expect(tooltip(button('Delete'))).toBe('Select a note to delete');
+    });
+
+    describe('No notes found', () => {
+      const EMPTY: TabRecord = {
+        takeId: 't1',
+        notes: [],
+        updatedAt: TAKE.updatedAt,
+        deletedStartMs: [],
+      };
+      const empty = (over: Partial<TakeSnapshot> = {}) =>
+        mockSession({
+          take: TAKE,
+          tab: EMPTY,
+          loading: false,
+          analysis: { kind: 'idle' },
+          ...over,
+        });
+
+      it('analysed empty: Undo, Redo, Insert and Delete disabled with their reasons; no Bar lines', () => {
+        const { create } = empty();
+        render(<Tab takeId="t1" createSession={create} />);
+        expect(screen.getByRole('heading', { name: 'No notes found' })).toBeTruthy();
+        const toolbar = screen.getByRole('toolbar', { name: 'Tab tools' });
+        const names = [...toolbar.querySelectorAll('button')].map((b) => b.textContent);
+        expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete']);
+        const expected: [string, string][] = [
+          ['Undo', 'Nothing to undo'],
+          ['Redo', 'Nothing to redo'],
+          ['Insert', 'No notes yet'],
+          ['Delete', 'No notes yet'],
+        ];
+        for (const [name, reason] of expected) {
+          expect(button(name).disabled).toBe(true);
+          expect(tooltip(button(name))).toBe(reason);
+        }
+      });
+
+      it('deleted all: Undo enabled "Undo delete note"; a click undoes', () => {
+        const { create, session } = empty({ undoLabel: { kind: 'delete' } });
+        render(<Tab takeId="t1" createSession={create} />);
+        expect(button('Undo').disabled).toBe(false);
+        expect(tooltip(button('Undo'))).toBe('Undo delete note');
+        expect(tooltip(button('Insert'))).toBe('No notes yet');
+        expect(tooltip(button('Delete'))).toBe('No notes yet');
+        fireEvent.click(button('Undo'));
+        expect(session.undo).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('no toolbar while loading, analysing or missing', () => {
+      const { create, set } = mockSession({
+        take: null,
+        tab: null,
+        loading: true,
+        analysis: { kind: 'idle' },
+        undoLabel: MOVE,
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+      set({ take: TAKE, tab: TAB40, loading: false, analysis: { kind: 'running', progress: 0.3 } });
+      expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+      set({ analysis: { kind: 'idle' }, missing: true });
+      expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    });
   });
 
   // Story "String moves, delete, insert and confirm": the edit popover.

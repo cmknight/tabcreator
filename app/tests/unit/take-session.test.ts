@@ -110,6 +110,8 @@ describe('take session', () => {
       selectedNoteId: null,
       lastFocusedNoteId: null,
       saveFailed: null,
+      undoLabel: null,
+      redoLabel: null,
     });
     expect(h.deps.analysis.ensureAnalysed).not.toHaveBeenCalled();
   });
@@ -208,6 +210,8 @@ describe('take session', () => {
       selectedNoteId: null,
       lastFocusedNoteId: null,
       saveFailed: null,
+      undoLabel: null,
+      redoLabel: null,
       missing: true,
     });
   });
@@ -1708,6 +1712,199 @@ describe('take session edits', () => {
       await session.undo();
       expect(session.canUndo()).toBe(false); // one step only
     });
+  });
+
+  // Story "Undo and redo controls": the top steps' labels in the snapshot.
+  describe('undo and redo labels', () => {
+    /** The snapshot's labels, checked against canUndo / canRedo. */
+    const labels = (session: ReturnType<typeof createTakeSession>) => {
+      const { undoLabel, redoLabel } = session.getSnapshot();
+      expect(session.canUndo()).toBe(undoLabel !== null);
+      expect(session.canRedo()).toBe(redoLabel !== null);
+      return { undoLabel, redoLabel };
+    };
+
+    it('fresh: both null', async () => {
+      const { session } = await open();
+      expect(labels(session)).toEqual({ undoLabel: null, redoLabel: null });
+    });
+
+    it('a move, undo, redo and a new edit after an undo republish the labels', async () => {
+      const { session } = await open();
+      let published = 0;
+      session.subscribe(() => published++);
+      const MOVE = { kind: 'moveString', string: 3, fret: 5 };
+      await session.moveString('b', 3);
+      expect(labels(session)).toEqual({ undoLabel: MOVE, redoLabel: null });
+      published = 0;
+      await session.undo();
+      expect(published).toBeGreaterThan(0);
+      expect(labels(session)).toEqual({ undoLabel: null, redoLabel: MOVE });
+      await session.redo();
+      expect(labels(session)).toEqual({ undoLabel: MOVE, redoLabel: null });
+      await session.undo();
+      await session.confirm('c'); // a new edit clears redo
+      expect(labels(session)).toEqual({ undoLabel: { kind: 'confirm' }, redoLabel: null });
+    });
+
+    it('merged digits: the merged step labels set fret 12', async () => {
+      const { session } = await open();
+      session.select('b');
+      session.typeDigit(1);
+      await tick(0);
+      expect(labels(session).undoLabel).toEqual({ kind: 'setFret', fret: 1 });
+      await tick(200);
+      session.typeDigit(2);
+      await tick(0);
+      expect(labels(session)).toEqual({
+        undoLabel: { kind: 'setFret', fret: 12 },
+        redoLabel: null,
+      });
+    });
+
+    it('an edit that changed nothing leaves them, redo included', async () => {
+      const { session } = await open();
+      await session.confirm('b');
+      await session.confirm('c');
+      await session.undo();
+      const before = session.getSnapshot();
+      expect(before.redoLabel).toEqual({ kind: 'confirm' });
+      await session.confirm('b'); // already confirmed: no step
+      expect(session.getSnapshot().undoLabel).toBe(before.undoLabel);
+      expect(session.getSnapshot().redoLabel).toBe(before.redoLabel);
+      expect(session.canRedo()).toBe(true);
+    });
+
+    it('a re-read that finds the take gone resets them; the pending save is dropped', async () => {
+      const { h, session } = await open();
+      await session.setFret('b', 5);
+      expect(session.canUndo()).toBe(true);
+      vi.mocked(h.deps.db.getTake).mockResolvedValue(null);
+      session.analyse(); // not recorded: re-reads the take
+      await tick(0);
+      expect(session.getSnapshot()).toMatchObject({
+        missing: true,
+        undoLabel: null,
+        redoLabel: null,
+      });
+      expect(session.canUndo()).toBe(false);
+      await tick(1000);
+      expect(h.deps.putTab).not.toHaveBeenCalled();
+    });
+
+    it('deleting every note keeps undo: "delete note"', async () => {
+      const { session } = await open({ ...TAB5, notes: [NOTES[0]!] });
+      session.select('a');
+      await session.deleteSelected();
+      expect(session.getSnapshot().tab!.notes).toEqual([]);
+      expect(labels(session)).toEqual({ undoLabel: { kind: 'delete' }, redoLabel: null });
+      await session.undo();
+      expect(labels(session)).toEqual({ undoLabel: null, redoLabel: { kind: 'delete' } });
+    });
+
+    it('a reload, an analysis and a deletion reset them', async () => {
+      const { h, session } = await open();
+      await session.setFret('b', 5);
+      await session.undo();
+      await session.setFret('c', 4);
+      await session.undo();
+      expect(labels(session).redoLabel).not.toBeNull();
+      session.analyse(); // analysed: re-reads the take and tab
+      await tick(0);
+      expect(labels(session)).toEqual({ undoLabel: null, redoLabel: null });
+      await session.setFret('b', 5);
+      expect(labels(session).undoLabel).not.toBeNull();
+      h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+      expect(session.getSnapshot()).toMatchObject({
+        missing: true,
+        undoLabel: null,
+        redoLabel: null,
+      });
+    });
+  });
+
+  // Story "Undo and redo controls": history integrity at the session level.
+  describe('property: 50 random commands through the session', () => {
+    /** mulberry32: a small seeded PRNG. */
+    function rng(seed: number) {
+      let a = seed >>> 0;
+      return () => {
+        a = (a + 0x6d2b79f5) >>> 0;
+        let t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    it.each([1, 7, 42, 99, 2026])(
+      'one step per changing command; undo all = original, redo all = final (seed %i)',
+      async (seed) => {
+        const random = rng(seed);
+        const notes = Array.from({ length: 12 }, (_, i) => {
+          const string = (Math.floor(random() * 6) + 1) as Note['string'];
+          // A phrase break (a gap over 1000 ms) every four notes.
+          const startMs = i * 300 + Math.floor(i / 4) * 1500;
+          return {
+            ...note(`n${i}`, startMs, string, Math.floor(random() * 13)),
+            lowConfidence: random() < 0.3,
+          };
+        });
+        const { session } = await open({ ...TAB5, notes, deletedStartMs: [99] });
+        /** The labels agree with canUndo / canRedo. */
+        const agree = () => {
+          const { undoLabel, redoLabel } = session.getSnapshot();
+          expect(undoLabel !== null).toBe(session.canUndo());
+          expect(redoLabel !== null).toBe(session.canRedo());
+        };
+        const state = () => {
+          const { notes, deletedStartMs } = session.getSnapshot().tab!;
+          return structuredClone({ notes, deletedStartMs });
+        };
+        /** The Tab after each command that changed it, the original first. */
+        const states = [state()];
+        for (let i = 0; i < 50; i++) {
+          const current = session.getSnapshot().tab!.notes;
+          const target = current[Math.floor(random() * current.length)]?.id ?? null;
+          const kind = Math.floor(random() * 5);
+          const before = session.getSnapshot().tab!;
+          if (target === null || kind === 3) {
+            session.select(random() < 0.2 ? null : target);
+            await session.insert();
+          } else if (kind === 0) {
+            await session.setFret(target, Math.floor(random() * 30));
+          } else if (kind === 1) {
+            await session.moveString(target, (Math.floor(random() * 6) + 1) as Note['string']);
+          } else if (kind === 2) {
+            session.select(target);
+            await session.deleteSelected();
+          } else {
+            await session.confirm(target);
+          }
+          const after = session.getSnapshot().tab!;
+          const changed =
+            after.notes !== before.notes || after.deletedStartMs !== before.deletedStartMs;
+          if (changed) states.push(state());
+        }
+        expect(states.length).toBeGreaterThan(10);
+        // Undo walks back through every changed state, one step per command.
+        for (let i = states.length - 2; i >= 0; i--) {
+          expect(session.canUndo()).toBe(true);
+          await session.undo();
+          agree();
+          expect(state()).toEqual(states[i]);
+        }
+        expect(session.canUndo()).toBe(false);
+        expect(state()).toEqual(states[0]);
+        for (let i = 1; i < states.length; i++) {
+          await session.redo();
+          agree();
+          expect(state()).toEqual(states[i]);
+        }
+        expect(session.canRedo()).toBe(false);
+        expect(state()).toEqual(states.at(-1));
+      },
+    );
   });
 
   it('edits do nothing while the tab is not shown (analysing)', async () => {

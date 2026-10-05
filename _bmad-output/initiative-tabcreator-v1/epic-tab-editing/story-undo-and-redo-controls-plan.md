@@ -3,18 +3,26 @@ title: 'Undo and redo controls'
 type: 'feature'
 ticket: '4'
 created: '2026-10-05'
-status: 'draft'
+status: 'built'
+baseline_revision: 'ee1a3df85049147b6ac52905335431ead725062e'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
   - '{project-root}/_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/mockups/tab.html'
 warnings: []
-deferred: []
+deferred:
+  - summary: >-
+      The Tab toolbar has role="toolbar" but no arrow-key navigation; every button is its own Tab stop.
+    evidence: |-
+      Pre-existing since the toolbar landed (epic Analysis and tab view); story 8.4 adds two more stops. The ARIA toolbar pattern expects one Tab stop with arrow keys.
+    location: >-
+      app/src/ui/screens/Tab.tsx toolbar
+    severity: low
 ---
 
 <intent-contract>
@@ -104,11 +112,11 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `app/src/session/take-session.ts` -- `undoLabel`/`redoLabel` in the snapshot -- the toolbar can re-render on history change.
-- [ ] `app/src/ui/screens/Tab.tsx`, `icons.tsx`, `strings.ts`, `Tab.module.css` (if needed) -- the Undo/Redo buttons, the tooltips and reasons, the Insert/Delete reasons, focus handling -- the controls.
-- [ ] `app/tests/unit/take-session.test.ts` -- label publishing, and the seeded property test (≥ 5 seeds × 50) -- history integrity.
-- [ ] `app/tests/unit/tab-screen.test.tsx` -- every I/O matrix row about the toolbar.
-- [ ] `app/tests/e2e/tab-edit.dev.spec.ts` -- the ACs.
+- [x] `app/src/session/take-session.ts` -- `undoLabel`/`redoLabel` in the snapshot -- the toolbar can re-render on history change.
+- [x] `app/src/ui/screens/Tab.tsx`, `icons.tsx`, `strings.ts`, `Tab.module.css` (if needed) -- the Undo/Redo buttons, the tooltips and reasons, the Insert/Delete reasons, focus handling -- the controls.
+- [x] `app/tests/unit/take-session.test.ts` -- label publishing, and the seeded property test (≥ 5 seeds × 50) -- history integrity.
+- [x] `app/tests/unit/tab-screen.test.tsx` -- every I/O matrix row about the toolbar.
+- [x] `app/tests/e2e/tab-edit.dev.spec.ts` -- the ACs.
 
 **Acceptance Criteria:**
 - Given a seeded tab on the Tab screen, when the player moves a note to string 3 by the popover, then the Undo button's tooltip is "Undo move to string 3" and Redo is disabled with "Nothing to redo"; when they click Undo, then the move is reverted, Undo is disabled with "Nothing to undo", and Redo's tooltip is "Redo move to string 3".
@@ -117,12 +125,80 @@ deferred: []
 
 ## Implementation Notes
 
+- `take-session.ts`: `publish` derives `undoLabel`/`redoLabel` from `history` on every publish (every history change is followed by one), so they cannot drift from `canUndo()`/`canRedo()`. `load()` now also calls `resetEdits()` when the take is missing.
+- `Tab.tsx`: a local `ToolButton` puts the tooltip on a wrapping `<span title>` plus a visually hidden `aria-describedby` span (the disabled-Play pattern); `.toolWrap` in `Tab.module.css`. Focus hand-off is a layout effect keyed on can-undo/can-redo: if Undo or Redo held focus and is now disabled, focus moves to the other one when that is enabled.
+- Tests: session label tests and a 5-seed × 50-command property test (`take-session.test.ts`), toolbar tests (`tab-screen.test.tsx`), and four dev e2e tests (`tab-edit.dev.spec.ts`: the popover move + Undo/Redo buttons, macOS ⌘Z/⌘⇧Z with Ctrl+Z inert, No notes found reasons, delete-all then Undo).
+
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-05 — Review pass
+- verdicts: 18 findings — high 0, medium 0, low 16, false 2, maybe-false 0
+- findings:
+  - `[low]` `[patch]` (blind) The macOS e2e can't tell whether Ctrl+Z is inert (it presses Ctrl+Z then ⌘Z before checking) — it now asserts nothing changed after Ctrl+Z, and that Ctrl+Y does nothing on a Mac.
+  - `[low]` `[patch]` (blind) Tooltip phrases lower-case the first letter of the announcement text — each command now has its own tooltip phrase string.
+  - `[low]` `[reject]` (blind) The buttons don't show their keyboard shortcuts — neither EXPERIENCE nor the mockup tooltips include them; the `?` dialog's story covers discoverability.
+  - `[low]` `[patch]` (blind) `travelFocus` outlives the toolbar, so a later shortcut undo with focus on the body pulls focus to Redo — cleared when the toolbar hides or unmounts, and when a hand-off is impossible.
+  - `[low]` `[patch]` (blind) The `resetEdits()` in `load()`'s missing-take branch is untested — test added (edit, then a re-read finds no take: missing, labels null, no save).
+  - `[low]` `[patch]` (blind) The no-op edit test doesn't check that redo survives — it now undoes first, then a no-op, and asserts `redoLabel` and `canRedo()` are kept.
+  - `[low]` `[patch]` (blind) The property test never checks the labels — it now asserts the labels agree with `canUndo()`/`canRedo()` at every step.
+  - `[low]` `[defer]` (blind) The toolbar has no arrow-key navigation (`role="toolbar"` with one Tab stop per button) — pre-existing since the toolbar landed (epic 5); for epic Offline, accessibility and budgets.
+  - `[low]` `[reject]` (blind) `ToolButton` is applied unevenly (Bar lines, enabled Insert/Delete without tooltips) — by design: tooltips name undo/redo actions and disabled reasons only (DESIGN toolbar rule).
+  - `[low]` `[reject]` (blind) No e2e that a mouse-clicked Undo never loses focus to the body — the e2e checks focus moving to Redo after the click; unit tests cover the rest.
+  - `[low]` `[patch]` (blind) A missing blank line before `InsertIcon` in icons.tsx — fixed.
+  - `[low]` `[patch]` (edge) `travelFocus` stays set when both buttons disable or the toolbar unmounts — the same as the blind finding.
+  - `[low]` `[reject]` (edge) Undo clicked twice before the first publishes undoes two steps — two clicks mean two undos, as with two Ctrl+Z presses.
+  - `[low]` `[patch]` (verification-gap) The missing-take `resetEdits()` has no test — the same as the blind finding.
+  - `[low]` `[reject]` (intent) Tooltips are `title` attributes, not a rendered tooltip — the native title is the tooltip, as with the disabled Play button.
+  - `[low]` `[reject]` (intent) "A new edit clears redo" is not checked at e2e — it is a session rule, tested there since 8.1 and again here.
+  - `[low]` `[reject]` (intent) A multi-step full unwind through the toolbar is not checked at e2e — the session property test covers it; the toolbar calls the same `undo()`.
+  - `[false]` `[reject]` (intent) No notes found: the Verify line versus the ruling — the diff follows the ruling (disabled only without history), and both sides are tested.
 
 ## Verification
 
 **Commands:**
 - `cd app && npx -y pnpm@12.6.0 lint && npx -y pnpm@12.6.0 typecheck && npx -y pnpm@12.6.0 format:check && npx -y pnpm@12.6.0 test` -- expected: pass.
 - `cd app && export PATH="$HOME/.cargo/bin:$PATH" && npx -y pnpm@12.6.0 exec playwright test --project=dev tests/e2e/tab-edit.dev.spec.ts tests/e2e/tab-states.dev.spec.ts tests/e2e/tab-screen.dev.spec.ts` -- expected: pass.
+
+## Auto Run Result
+
+**Status:** built, 2026-10-05.
+
+**Summary:** the take-session snapshot exposes `undoLabel`/`redoLabel` (republished on every history change, including the missing-take reload).
+- **Undo and Redo buttons** come first in the Tab toolbar, with the mockup icons. Their tooltips (title plus accessible description) name the action from per-command phrases ("Undo move to string 3"), or say "Nothing to undo"/"Nothing to redo".
+- **Insert and Delete reasons:** "No notes yet" with no notes, and Delete gives "Select a note to delete" with nothing selected.
+- **No notes found** keeps Undo and Redo enabled while there is history (the 8.3 ruling).
+- **Focus** moves to the other button when the clicked one disables; the hand-off is cleared when the toolbar hides or both buttons disable.
+
+**Files:**
+- `app/src/session/take-session.ts`: labels in the snapshot; missing-take reset.
+- `app/src/ui/screens/Tab.tsx` and `Tab.module.css`: `ToolButton`, Undo/Redo, the reasons, the focus hand-off.
+- `app/src/ui/components/icons.tsx`: `UndoIcon`, `RedoIcon`.
+- `app/src/ui/strings.ts`: `commandPhrase`, `tab.undoAction`/`redoAction`, the reasons.
+- Tests:
+  - `take-session.test.ts`: labels; the property test with 5 seeds × 50 commands, one step per changing command, and labels agreeing at every step;
+  - `tab-screen.test.tsx`: the toolbar rows and focus;
+  - `tests/e2e/tab-edit.dev.spec.ts`: the tooltips and Undo/Redo by click, macOS ⌘Z/⌘⇧Z with Ctrl+Z/Ctrl+Y inert, No notes found reasons, deleting the only note then undoing.
+
+**Review:** thorough, 18 findings (16 low, 2 false).
+- **Patched (low):**
+  - the macOS e2e proves Ctrl+Z and Ctrl+Y inert;
+  - per-command tooltip phrases;
+  - the `travelFocus` lifetime;
+  - tests for the missing-take reset, redo kept by a no-op, and labels in the property test;
+  - an icons nit.
+- **Deferred:** toolbar arrow-key navigation (pre-existing; noted in epic Offline, accessibility and budgets).
+- **Rejected:** with reasons in the triage log.
+
+**Follow-up review: not recommended.** No high or medium.
+
+**Verification:**
+- lint, typecheck, format:check and test pass (1335).
+- Dev and chromium e2e: 177/177.
+- prod-mic: 4/4.
+
+**Residual risks:**
+- The focus hand-off relies on a layout effect before the browser blurs a newly disabled button; checked in jsdom and Chromium only.
+- The macOS mapping is checked by faking the platform.
+- The tooltip phrases are new copy (deferred-work).

@@ -1,3 +1,4 @@
+import type { CommandLabel } from '../model/edit-history';
 import type { StringNo } from '../model/types';
 import { formatSigned } from './number-format';
 
@@ -30,6 +31,22 @@ function signedCents(cents: number): string {
  * Every user-visible string (spine AD-12). One flat object; keys are
  * `<screen|global>.<camelCase>`. Parameterised strings are typed functions.
  */
+/** An edit command as Undo's and Redo's tooltips name it, mid-sentence: "move to string 3". */
+function commandPhrase(label: CommandLabel): string {
+  switch (label.kind) {
+    case 'setFret':
+      return `set fret ${label.fret}`;
+    case 'moveString':
+      return `move to string ${label.string}`;
+    case 'delete':
+      return 'delete note';
+    case 'insert':
+      return 'insert note';
+    case 'confirm':
+      return 'confirm note';
+  }
+}
+
 export const strings = {
   'global.appName': 'TabCreator',
   'global.navLabel': 'Main',
@@ -341,6 +358,19 @@ export const strings = {
   /** The toolbar's Insert and Delete buttons (EXPERIENCE.md Toolbar). */
   'tab.insert': 'Insert',
   'tab.delete': 'Delete',
+  /** Insert's and Delete's tooltip with no notes (No notes found). */
+  'tab.noNotesYet': 'No notes yet',
+  /** Delete's tooltip with notes but none selected. */
+  'tab.selectToDelete': 'Select a note to delete',
+  /** The toolbar's Undo and Redo buttons (EXPERIENCE.md Toolbar). */
+  'tab.undo': 'Undo',
+  'tab.redo': 'Redo',
+  /** Undo's and Redo's tooltips, naming the step: "Undo move to string 3", "Redo set fret 5". */
+  'tab.undoAction': (label: CommandLabel) => `Undo ${commandPhrase(label)}`,
+  'tab.redoAction': (label: CommandLabel) => `Redo ${commandPhrase(label)}`,
+  /** Undo's and Redo's tooltips with nothing to undo or redo. */
+  'tab.nothingToUndo': 'Nothing to undo',
+  'tab.nothingToRedo': 'Nothing to redo',
   /** The edit popover (EXPERIENCE.md Fret popover): its name, the fret field's label. */
   'tab.popover': 'Edit note',
   'tab.popoverFret': 'Fret',

@@ -8,6 +8,7 @@ import {
   makeNotes,
   noteButton,
   openSeededTab,
+  seedTab,
   selectedNote,
   tabArea,
 } from './tab-helpers';
@@ -622,5 +623,138 @@ test('re-fit feedback on a seeded tab: a fret change re-fingers its neighbours, 
   await expect.poll(() => storedTab(page, takeId)).toEqual(before);
   await expect(page.locator('[data-refit]')).toHaveCount(0);
   await expect(noteButton(page, 's0')).toHaveAttribute('aria-pressed', 'true');
+  expect(unexpected(errors)).toEqual([]);
+});
+
+// Story "Undo and redo controls": the toolbar's Undo and Redo, their tooltips, the Insert and
+// Delete reasons, and ⌘Z / ⌘⇧Z on macOS.
+
+const toolButton = (page: Page, name: string) =>
+  page.getByRole('toolbar', { name: 'Tab tools' }).getByRole('button', { name, exact: true });
+
+/** The tool button is disabled or enabled with `tooltip` as its title and description. */
+async function expectTool(page: Page, name: string, enabled: boolean, tooltip: string) {
+  const button = toolButton(page, name);
+  if (enabled) await expect(button).toBeEnabled();
+  else await expect(button).toBeDisabled();
+  await expect(button).toHaveAccessibleDescription(tooltip);
+  await expect(button.locator('..')).toHaveAttribute('title', tooltip);
+}
+
+test('Undo and Redo buttons: a popover move, then Undo reverts it, focus on Redo; Redo restores it', async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  const takeId = await openSeededTab(page);
+  const before = await storedTab(page, takeId);
+  await expectTool(page, 'Undo', false, 'Nothing to undo');
+  await expectTool(page, 'Redo', false, 'Nothing to redo');
+  await expectTool(page, 'Delete', false, 'Select a note to delete');
+
+  // Note 12 (index 11) is D4 on the B string at fret 3; the G string plays it at fret 7.
+  await noteButton(page, 'note-11').dblclick();
+  const dialog = page.getByRole('dialog', { name: 'Edit note' });
+  await dialog.getByRole('button', { name: 'String 3, fret 7' }).click();
+  await expect(dialog).toBeHidden();
+  await expect
+    .poll(() => storedNote(page, takeId, 'note-11'))
+    .toMatchObject({ string: 3, fret: 7 });
+  await expectTool(page, 'Undo', true, 'Undo move to string 3');
+  await expectTool(page, 'Redo', false, 'Nothing to redo');
+
+  await toolButton(page, 'Undo').click();
+  await expect.poll(() => storedTab(page, takeId)).toEqual(before);
+  await expectTool(page, 'Undo', false, 'Nothing to undo');
+  await expectTool(page, 'Redo', true, 'Redo move to string 3');
+  await expect(toolButton(page, 'Redo')).toBeFocused();
+  await expect(noteButton(page, 'note-11')).toHaveAttribute('aria-pressed', 'true');
+
+  // Keyboard on the focused Redo: Enter redoes, focus moves back to Undo.
+  await page.keyboard.press('Enter');
+  await expect
+    .poll(() => storedNote(page, takeId, 'note-11'))
+    .toMatchObject({ string: 3, fret: 7 });
+  await expectTool(page, 'Undo', true, 'Undo move to string 3');
+  await expect(toolButton(page, 'Undo')).toBeFocused();
+  await expectNoSeriousAxe(page);
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('macOS: ⌘Z undoes and ⌘⇧Z redoes; Ctrl+Z and Ctrl+Y do nothing', async ({ page }) => {
+  const errors = collectErrors(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
+    Object.defineProperty(navigator, 'userAgentData', { get: () => ({ platform: 'macOS' }) });
+  });
+  const takeId = await openSeededTab(page);
+
+  // Two edits on two notes: two undo steps.
+  await noteButton(page, 'note-11').click();
+  await page.keyboard.press('5');
+  await expect.poll(() => storedNote(page, takeId, 'note-11')).toMatchObject({ fret: 5 });
+  await page.keyboard.press('ArrowRight');
+  await expect(noteButton(page, 'note-12')).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('7');
+  await expect.poll(() => storedNote(page, takeId, 'note-12')).toMatchObject({ fret: 7 });
+  await expectTool(page, 'Undo', true, 'Undo set fret 7');
+
+  // Ctrl+Z and Ctrl+Y are not the Mac's undo and redo: nothing changes.
+  await page.keyboard.press('Control+z');
+  await page.keyboard.press('Control+y');
+  // Past the 300 ms save debounce, so an undo they had queued would show here.
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 400)));
+  await expectTool(page, 'Undo', true, 'Undo set fret 7');
+  await expectTool(page, 'Redo', false, 'Nothing to redo');
+  expect(await storedNote(page, takeId, 'note-12')).toMatchObject({ fret: 7 });
+  expect(await storedNote(page, takeId, 'note-11')).toMatchObject({ fret: 5 });
+
+  // ⌘Z undoes one step.
+  await page.keyboard.press('Meta+z');
+  await expectTool(page, 'Undo', true, 'Undo set fret 5');
+  await expectTool(page, 'Redo', true, 'Redo set fret 7');
+  await expect.poll(() => storedNote(page, takeId, 'note-12')).toMatchObject({ fret: 9 });
+  expect(await storedNote(page, takeId, 'note-11')).toMatchObject({ fret: 5 });
+
+  await page.keyboard.press('Meta+Shift+z');
+  await expectTool(page, 'Redo', false, 'Nothing to redo');
+  await expect.poll(() => storedNote(page, takeId, 'note-12')).toMatchObject({ fret: 7 });
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('No notes found: Undo, Redo, Insert and Delete disabled with their reasons', async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  await page.goto('./#/library');
+  await expect(page.getByRole('navigation', { name: 'Main' })).toBeVisible();
+  const id = await seedTab(page, []);
+  await page.goto(`./#/tab/${encodeURIComponent(id)}`);
+  await expect(page.getByRole('heading', { name: 'No notes found' })).toBeVisible();
+  const toolbar = page.getByRole('toolbar', { name: 'Tab tools' });
+  await expect(toolbar.getByRole('button')).toHaveText(['Undo', 'Redo', 'Insert', 'Delete']);
+  await expectTool(page, 'Undo', false, 'Nothing to undo');
+  await expectTool(page, 'Redo', false, 'Nothing to redo');
+  await expectTool(page, 'Insert', false, 'No notes yet');
+  await expectTool(page, 'Delete', false, 'No notes yet');
+  await expectNoSeriousAxe(page);
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('deleting the only note: No notes found with "Undo delete note"; Undo brings it back', async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  const takeId = await openSeededTab(page, makeNotes(1));
+  const before = await storedTab(page, takeId);
+  await noteButton(page, 'note-00').click();
+  await toolButton(page, 'Delete').click();
+  await expect(page.getByRole('heading', { name: 'No notes found' })).toBeVisible();
+  await expectTool(page, 'Undo', true, 'Undo delete note');
+  await expectTool(page, 'Insert', false, 'No notes yet');
+  await expectTool(page, 'Delete', false, 'No notes yet');
+  await toolButton(page, 'Undo').click();
+  await expect(noteButton(page, 'note-00')).toBeVisible();
+  await expect.poll(() => storedTab(page, takeId)).toEqual(before);
+  await expectTool(page, 'Redo', true, 'Redo delete note');
   expect(unexpected(errors)).toEqual([]);
 });

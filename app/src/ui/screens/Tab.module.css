@@ -94,6 +94,11 @@
   gap: 6px;
 }
 
+/* A toolbar button's tooltip wrapper (the tooltip shows on a disabled button too). */
+.toolWrap {
+  display: inline-flex;
+}
+
 .toolButton {
   display: inline-flex;
   gap: var(--space-2);
