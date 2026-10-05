@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
-import { MIME, decodedSeconds } from './helpers';
+import { MIME, decodedSeconds, recordButton, timer } from './helpers';
 import { expectNoSeriousAxe, FIXTURE, goLive, held } from './mic-helpers';
+import { opfsFiles, readTakes as readStoredTakes } from './storage-helpers';
 
 // Runs in the `dev` project only (story 3.11, US-3.2): a take whose page reloads mid-recording
 // is offered back on Record ("An unfinished take from <time> was recovered (m:ss)") once the
@@ -12,8 +13,6 @@ const SCAN_WAIT_MS = 10_000;
 const BANNER_TEXT =
   /^An unfinished take from (1[0-2]|[1-9]):[0-5]\d (am|pm) was recovered \((\d+):(\d\d)\)$/;
 
-const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', exact: true });
-const timer = (page: Page) => page.getByRole('timer');
 const banners = (page: Page) => page.getByTestId('recovered-take-banner');
 const heading = (page: Page) => page.getByRole('heading', { name: 'Record', level: 1 });
 
@@ -39,43 +38,7 @@ interface StoredTake {
 }
 
 /** The takes in IndexedDB (read with a connection of the test's own). */
-function readTakes(page: Page): Promise<StoredTake[]> {
-  return page.evaluate(
-    () =>
-      new Promise<StoredTake[]>((resolve, reject) => {
-        const open = indexedDB.open('tabcreator');
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const db = open.result;
-          const all = db.transaction('takes').objectStore('takes').getAll();
-          all.onsuccess = () => {
-            resolve(all.result as StoredTake[]);
-            db.close();
-          };
-          all.onerror = () => reject(all.error);
-        };
-      }),
-  );
-}
-
-/** Every file in OPFS `raw/` and `audio/`, as `dir/name`. */
-function opfsFiles(page: Page): Promise<string[]> {
-  return page.evaluate(async () => {
-    const root = await navigator.storage.getDirectory();
-    const names: string[] = [];
-    for (const dir of ['raw', 'audio']) {
-      try {
-        const handle = await root.getDirectoryHandle(dir);
-        for await (const name of (handle as unknown as { keys(): AsyncIterable<string> }).keys()) {
-          names.push(`${dir}/${name}`);
-        }
-      } catch {
-        // No such directory: nothing in it.
-      }
-    }
-    return names.sort();
-  });
-}
+const readTakes = (page: Page) => readStoredTakes<StoredTake>(page);
 
 /** The banner's sentence and its length in seconds. */
 async function bannerSeconds(page: Page): Promise<{ text: string; seconds: number }> {
@@ -129,6 +92,39 @@ test('reload mid-take: the leave dialog, then the banner; Open rebuilds the take
   expect(await decodedSeconds(page, take!.id)).toBeGreaterThanOrEqual(9);
   // The raw file stays for analysis.
   expect(await opfsFiles(page)).toContain(`raw/${take!.id}.f32`);
+});
+
+// Refactor sweep (5.12 deferral, Recording retro A5): recovery's WAV fallback in a real browser.
+// The dev hook `window.__encodePcmFailHook` makes the re-encode (`encodePcm`) reject, so Open
+// rebuilds the take as WAV; its Tab then analyses it.
+test('Open with the re-encode failing: the take is rebuilt as WAV and analyses', async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  await goLive(page);
+  await reloadMidTake(page, '0:02');
+  await expect(banners(page)).toHaveCount(1, { timeout: SCAN_WAIT_MS });
+  const [take] = await readTakes(page);
+  expect(take).toMatchObject({ status: 'recording' });
+
+  await page.evaluate(() => {
+    (window as unknown as { __encodePcmFailHook: boolean }).__encodePcmFailHook = true;
+  });
+  await banners(page).first().getByRole('button', { name: 'Open' }).click();
+  await expect(page).toHaveURL(new RegExp(`#/tab/${take!.id}$`), { timeout: 20_000 });
+  const [saved] = await readTakes(page);
+  expect(saved).toMatchObject({
+    id: take!.id,
+    stopReason: 'recovered',
+    audioMime: 'audio/wav',
+  });
+  expect(await opfsFiles(page)).toContain(`audio/${take!.id}.wav`);
+
+  // The Tab screen analyses the rebuilt take.
+  await expect(page.getByTestId('tab-status-line')).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(async () => (await readTakes(page))[0], { timeout: 30_000 })
+    .toMatchObject({ id: take!.id, status: 'analyzed', audioMime: 'audio/wav' });
 });
 
 test('Discard: the take, its raw and compressed files go; focus moves to the h1', async ({

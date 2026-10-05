@@ -16,6 +16,8 @@
 import workletUrl from './recorder-worklet.ts?worker&url';
 import { AppError } from '../model/errors';
 import { CLIP_LEVEL } from '../model/level-warnings';
+import { quietlySync as quietly } from '../model/quietly';
+import { resumeWithin, within } from './context-resume';
 
 /** The compressed copy's MIME type (spine AD-9); `model/audio-format.ts` lists it. */
 export const RECORDING_MIME = 'audio/webm;codecs=opus';
@@ -87,16 +89,35 @@ function markCaptureStart(): void {
 /** How long `startCapture` waits for a suspended context to resume. */
 const RESUME_TIMEOUT_MS = 1000;
 
-/** Resolves after `ms`, or with the promise if it settles first; never rejects. */
-function within(promise: Promise<unknown>, ms: number): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([
-    promise.then(
-      () => true,
-      () => true,
-    ),
-    new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), ms))),
-  ]).finally(() => clearTimeout(timer));
+/**
+ * The compressed copy's graph: `input` into a mono MediaStreamAudioDestinationNode whose stream
+ * feeds a MediaRecorder (`RECORDING_MIME`, `RECORDING_BITS_PER_SECOND`), not yet started. Each
+ * non-empty data chunk is pushed onto `parts`. When MediaRecorder cannot be built, the
+ * destination's tracks are stopped and the error is thrown. Shared by the live capture and
+ * recovery's re-encode (encode.ts).
+ */
+export function createCompressedOutput(
+  ctx: AudioContext,
+  input: AudioNode,
+  parts: Blob[],
+): { destination: MediaStreamAudioDestinationNode; recorder: MediaRecorder } {
+  const destination = ctx.createMediaStreamDestination();
+  destination.channelCount = 1;
+  input.connect(destination);
+  let recorder: MediaRecorder;
+  try {
+    recorder = new MediaRecorder(destination.stream, {
+      mimeType: RECORDING_MIME,
+      audioBitsPerSecond: RECORDING_BITS_PER_SECOND,
+    });
+  } catch (err) {
+    for (const track of destination.stream.getTracks()) track.stop();
+    throw err;
+  }
+  recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) parts.push(event.data);
+  };
+  return { destination, recorder };
 }
 
 /** The ms from now until audio-clock `time` (s), at least 0. */
@@ -134,13 +155,6 @@ export async function startCapture(
    * tracks; a node never connected (or a closed context) is skipped.
    */
   const teardown = () => {
-    const quietly = (fn: () => void) => {
-      try {
-        fn();
-      } catch {
-        // Not connected, or the context is closed.
-      }
-    };
     clearTimeout(startTimer);
     if (worklet) {
       const node = worklet;
@@ -158,9 +172,8 @@ export async function startCapture(
     for (const track of destination?.stream.getTracks() ?? []) track.stop();
   };
 
-  if (ctx.state !== 'running') await within(ctx.resume(), RESUME_TIMEOUT_MS);
   // A suspended context's clock is frozen: nothing would ever be captured.
-  if ((ctx.state as AudioContextState) !== 'running') {
+  if (!(await resumeWithin(ctx, RESUME_TIMEOUT_MS))) {
     throw new AppError('mic-failed', `The audio context is ${ctx.state}`);
   }
 
@@ -185,19 +198,12 @@ export async function startCapture(
     };
     gate = ctx.createGain();
     gate.gain.value = 0;
-    destination = ctx.createMediaStreamDestination();
-    destination.channelCount = 1;
     source.connect(worklet);
     source.connect(gate);
-    gate.connect(destination);
-    const media = new MediaRecorder(destination.stream, {
-      mimeType: RECORDING_MIME,
-      audioBitsPerSecond: RECORDING_BITS_PER_SECOND,
-    });
+    const output = createCompressedOutput(ctx, gate, parts);
+    destination = output.destination;
+    const media = output.recorder;
     recorder = media;
-    media.ondataavailable = (event) => {
-      if (event.data.size > 0) parts.push(event.data);
-    };
     media.onerror = () => {
       mediaError = true;
     };

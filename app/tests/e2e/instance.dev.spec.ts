@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
-import { MIME, collectErrors, decodedSeconds } from './helpers';
+import { MIME, collectErrors, decodedSeconds, recordButton, stopButton, timer } from './helpers';
 import { expectNoSeriousAxe, FIXTURE, goLive, held } from './mic-helpers';
+import { opfsFiles, readTakes as readStoredTakes } from './storage-helpers';
 
 // Runs in the `dev` project only (story 3.10, US-8.5): two pages of one browser context share
 // Web Locks and BroadcastChannel, like two tabs. The fake mic (US-0.4) plays
@@ -16,36 +17,10 @@ const otherTabHeading = (page: Page) => page.getByRole('heading', { name: OTHER_
 const appNav = (page: Page) => page.getByRole('navigation', { name: 'Main' });
 
 /** The takes in IndexedDB (read with a connection of the test's own). */
-function readTakes(
-  page: Page,
-): Promise<{ id: string; status: string; stopReason?: string; audioMime: string | null }[]> {
-  return page.evaluate(
-    () =>
-      new Promise((resolve, reject) => {
-        const open = indexedDB.open('tabcreator');
-        let missing = false;
-        open.onupgradeneeded = () => {
-          missing = true;
-          open.transaction?.abort();
-        };
-        open.onerror = () => (missing ? resolve([]) : reject(open.error));
-        open.onsuccess = () => {
-          const db = open.result;
-          if (!db.objectStoreNames.contains('takes')) {
-            db.close();
-            resolve([]);
-            return;
-          }
-          const all = db.transaction('takes').objectStore('takes').getAll();
-          all.onsuccess = () => {
-            resolve(all.result);
-            db.close();
-          };
-          all.onerror = () => reject(all.error);
-        };
-      }),
+const readTakes = (page: Page) =>
+  readStoredTakes<{ id: string; status: string; stopReason?: string; audioMime: string | null }>(
+    page,
   );
-}
 
 /** The take the page's recording store is recording (the dev server's module instance). */
 function activeTakeId(page: Page): Promise<string | null> {
@@ -150,8 +125,8 @@ test('Use here while the first tab records: its take is saved as instance-lost; 
 }) => {
   const first = await context.newPage();
   const firstErrors = await goLive(first);
-  await first.getByRole('button', { name: 'Record', exact: true }).click();
-  await expect(first.getByRole('timer')).toHaveText('0:03', { timeout: 6_000 });
+  await recordButton(first).click();
+  await expect(timer(first)).toHaveText('0:03', { timeout: 6_000 });
   const id = await activeTakeId(first);
   expect(id).not.toBeNull();
 
@@ -191,9 +166,6 @@ test('Use here while the first tab records: its take is saved as instance-lost; 
 // Story 5.3: the steal path, forced by the dev hook `__instanceTest.ignoreReleaseRequests()`
 // (the holder ignores Use here's release request, so the other page steals the lock at 3 s).
 
-const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', exact: true });
-const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop', exact: true });
-const timer = (page: Page) => page.getByRole('timer');
 const recoveredBanners = (page: Page) => page.getByTestId('recovered-take-banner');
 
 type InstanceEvent = { event: 'released-posted' | 'released-heard' | 'scan'; at: number };
@@ -205,25 +177,6 @@ const instanceEvents = (page: Page): Promise<InstanceEvent[]> =>
 /** The page ignores release requests from now on (until it reloads). */
 const ignoreReleaseRequests = (page: Page) =>
   page.evaluate(() => window.__instanceTest!.ignoreReleaseRequests());
-
-/** Every file in OPFS `raw/` and `audio/`, as `dir/name`. */
-function opfsFiles(page: Page): Promise<string[]> {
-  return page.evaluate(async () => {
-    const root = await navigator.storage.getDirectory();
-    const names: string[] = [];
-    for (const dir of ['raw', 'audio']) {
-      try {
-        const handle = await root.getDirectoryHandle(dir);
-        for await (const name of (handle as unknown as { keys(): AsyncIterable<string> }).keys()) {
-          names.push(`${dir}/${name}`);
-        }
-      } catch {
-        // No such directory: nothing in it.
-      }
-    }
-    return names.sort();
-  });
-}
 
 test('steal mid-take: saved once as instance-lost; the lost page says so; the scan waits for released', async ({
   context,

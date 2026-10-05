@@ -9,7 +9,7 @@ import {
   type TakeSnapshot,
 } from '../../src/session/take-session';
 import { activePlayback } from '../../src/session/playback';
-import { TabArea } from '../../src/ui/components/TabArea';
+import { noteLabels, TabArea } from '../../src/ui/components/TabArea';
 import { Tab } from '../../src/ui/screens/Tab';
 import { announce } from '../../src/ui/a11y/announcer';
 import { reloadOrExplain } from '../../src/ui/reload-or-explain';
@@ -291,7 +291,7 @@ describe('Tab screen analysis states', () => {
     expect(alert.textContent).toContain(
       'Storage is full — delete takes or their audio, or back up and clear',
     );
-    const link = screen.getByRole('link', { name: strings['tab.storageFullLibrary'] });
+    const link = screen.getByRole('link', { name: strings['global.goToLibrary'] });
     expect(link.getAttribute('href')).toBe('#/library');
     fireEvent.click(screen.getByRole('button', { name: strings['tab.retry'] }));
     expect(session.retryCommit).toHaveBeenCalledTimes(1);
@@ -1206,6 +1206,7 @@ describe('Tab area: keeping the playing note in view', () => {
   const area = (playingNoteId: string | null, playing = true) => (
     <TabArea
       notes={NOTES}
+      labels={noteLabels(NOTES)}
       selectedNoteId={null}
       onSelect={() => {}}
       playingNoteId={playingNoteId}
@@ -1254,6 +1255,7 @@ describe('Tab area: keeping the playing note in view', () => {
     rerender(
       <TabArea
         notes={NOTES}
+        labels={noteLabels(NOTES)}
         countInBpm={120}
         selectedNoteId={null}
         onSelect={() => {}}

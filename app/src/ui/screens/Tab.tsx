@@ -37,6 +37,7 @@ import { settingsSession, type SettingsSession } from '../../session/settings-se
 import {
   setActiveTakeSession,
   activeTakeSession,
+  isTabShown,
   type TakeAnalysisState,
   type TakeSession,
   type TakeSnapshot,
@@ -46,6 +47,7 @@ import { focusSelectedNote } from '../a11y/shortcuts';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
 import { BarLinesIcon, ErrorIcon } from '../components/icons';
+import { StorageFullBannerView } from '../components/StorageFullBannerView';
 import { PlaybackControls } from '../components/PlaybackControls';
 import { noteLabels, TabArea } from '../components/TabArea';
 import { TabStatusLine } from '../components/TabStatusLine';
@@ -128,16 +130,12 @@ function FailureBanner({ code, session }: { code: AppErrorCode; session: TakeSes
   }
   if (code === 'storage-full') {
     return (
-      <div className={className} data-testid="tab-storage-full">
-        <ErrorIcon className={banner.icon} />
-        <p className={banner.text}>{text}</p>
-        <a className={tabStyles.link} href="#/library">
-          {strings['tab.storageFullLibrary']}
-        </a>
-        <button type="button" className={buttons.secondary} onClick={() => session.retryCommit()}>
-          {strings['tab.retry']}
-        </button>
-      </div>
+      <StorageFullBannerView
+        text={text}
+        className={tabStyles.banner}
+        testId="tab-storage-full"
+        retry={{ label: strings['tab.retry'], onClick: () => session.retryCommit() }}
+      />
     );
   }
   return (
@@ -208,7 +206,8 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
   const lastFocusedNote = useRef<string | null>(null);
   const notes = tab?.notes;
   const labels = useMemo(() => (notes ? noteLabels(notes) : []), [notes]);
-  const showTab = !missing && analysis.kind === 'idle' && !!tab && !!take && tab.notes.length > 0;
+  // `take` is set whenever the tab is shown; checked here too so the render below can use it.
+  const showTab = isTabShown(snapshot) && !!tab && !!take;
   const playback = usePlayback({
     takeId,
     take: missing ? null : take,
@@ -332,6 +331,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
           <TabArea
             id={TAB_AREA_ID}
             notes={tab.notes}
+            labels={labels}
             countInBpm={barLines ? take.countInBpm : undefined}
             selectedNoteId={selectedNoteId}
             onSelect={(id) => session.select(id)}

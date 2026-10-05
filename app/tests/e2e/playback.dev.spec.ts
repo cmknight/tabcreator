@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
+import { recordButton, stopButton, timer } from './helpers';
 import { goLive } from './mic-helpers';
+import { readTab } from './storage-helpers';
 import { makeNotes, noteButton, openSeededTab, seedTab, type SeedTake } from './tab-helpers';
 
 // Story "Playback with a following cursor" (US-6.5): one test per row of the plan's I/O matrix
@@ -17,8 +19,6 @@ const CURSOR_BOUND_MS = 50;
 /** A seek lands this close to 100 ms before the note. */
 const SEEK_TOLERANCE_MS = 30;
 
-const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', exact: true });
-const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop', exact: true });
 const playButton = (page: Page) =>
   page.getByRole('group', { name: 'Playback' }).getByRole('button', { name: /^(Play|Pause)$/ });
 
@@ -32,7 +32,7 @@ async function recordScale(page: Page): Promise<string> {
   await goLive(page);
   await recordButton(page).click();
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('timer')).toHaveText(RECORD_SECONDS, { timeout: 12_000 });
+  await expect(timer(page)).toHaveText(RECORD_SECONDS, { timeout: 12_000 });
   await stopButton(page).click();
   await expect(page).toHaveURL(/#\/tab\/[^/]+$/, { timeout: 15_000 });
   await expect(page.getByTestId('tab-status-line')).toBeVisible({ timeout: 30_000 });
@@ -41,25 +41,9 @@ async function recordScale(page: Page): Promise<string> {
 }
 
 /** The saved tab's note starts by id. */
-function noteStarts(page: Page, id: string): Promise<Record<string, number>> {
-  return page.evaluate(
-    (takeId) =>
-      new Promise<Record<string, number>>((resolve, reject) => {
-        const open = indexedDB.open('tabcreator');
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const db = open.result;
-          const get = db.transaction('tabs').objectStore('tabs').get(takeId);
-          get.onsuccess = () => {
-            const notes = (get.result?.notes ?? []) as { id: string; startMs: number }[];
-            resolve(Object.fromEntries(notes.map((n) => [n.id, n.startMs])));
-            db.close();
-          };
-          get.onerror = () => reject(get.error);
-        };
-      }),
-    id,
-  );
+async function noteStarts(page: Page, id: string): Promise<Record<string, number>> {
+  const tab = await readTab<{ notes: { id: string; startMs: number }[] }>(page, id);
+  return Object.fromEntries((tab?.notes ?? []).map((n) => [n.id, n.startMs]));
 }
 
 /** Starts recording the `<audio>` element's seek targets (ms) in `window.__seeks`. */

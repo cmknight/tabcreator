@@ -9,6 +9,7 @@ import {
   type RecoveryHost,
 } from '../../src/session/recording-recovery';
 import type { CompressedFile } from '../../src/storage/audio-store';
+import { deferred } from './helpers';
 
 // Story 3.11: the recovery scan, Open and Discard, with fake storage holding takes, raw files
 // (sample arrays) and compressed files (blobs), and a fake encoder.
@@ -36,16 +37,6 @@ function take(id: string, fields: Partial<Take> = {}): Take {
 }
 
 const seconds = (s: number, value = 0.1) => new Float32Array(Math.round(s * RATE)).fill(value);
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (err: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 interface World {
   takes: Map<string, Take>;

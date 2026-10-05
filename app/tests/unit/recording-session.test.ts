@@ -5,6 +5,7 @@ import { OPEN_STRING_HZ } from '../../src/audio/tuner';
 import type { StringNo } from '../../src/model/types';
 import type { OpenedInput } from '../../src/session/input-derivation';
 import { createRecordingSession, type RecordingDeps } from '../../src/session/recording-session';
+import { flush } from './helpers';
 
 const stream = {} as MediaStream;
 const RATE = 48_000;
@@ -62,9 +63,6 @@ function recordingFakes(): Pick<
     newId: () => 'take-1',
   };
 }
-
-/** Lets pending promise callbacks and timers at 0 ms run. */
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** A constant frame at `amplitude`: peak and RMS both `20·log10(amplitude)`. */
 function level(amplitude: number) {

@@ -39,19 +39,41 @@ export async function goLive(
   return errors;
 }
 
+/** One `getUserMedia` call, as `countGetUserMedia` logs it. */
+export interface GumCall {
+  /** The `deviceId` constraint, as JSON. */
+  deviceId: string;
+  /** How many tracks from earlier calls were still live when this call was made. */
+  liveBefore: number;
+}
+
 /**
- * Counts every `getUserMedia` call from page start: wraps the native method and any
- * replacement later defined on `navigator.mediaDevices` (the dev fake mic's). Call before
- * `goto`; read with `gumCalls`. The count resets on reload.
+ * Counts and logs every `getUserMedia` call from page start: wraps the native method and any
+ * replacement later defined on `navigator.mediaDevices` (the dev fake mic's). Each call is logged
+ * with its device constraint and how many tracks from earlier calls were still live at that
+ * moment. Call before `goto`; read with `gumCalls` and `gumLog`. Both reset on reload.
  */
 export async function countGetUserMedia(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const w = window as unknown as { __gumCalls: number };
+    const w = window as unknown as { __gumCalls: number; __gumLog: GumCall[] };
     w.__gumCalls = 0;
+    w.__gumLog = [];
+    const tracks: MediaStreamTrack[] = [];
     const wrap = (fn: (...args: unknown[]) => unknown) =>
       function (this: unknown, ...args: unknown[]) {
         w.__gumCalls += 1;
-        return fn.apply(this, args);
+        const constraints = args[0] as MediaStreamConstraints | undefined;
+        const audio = typeof constraints?.audio === 'object' ? constraints.audio : {};
+        w.__gumLog.push({
+          deviceId: JSON.stringify(audio.deviceId ?? null),
+          liveBefore: tracks.filter((t) => t.readyState === 'live').length,
+        });
+        const result = fn.apply(this, args);
+        void Promise.resolve(result).then(
+          (stream) => tracks.push(...(stream as MediaStream).getTracks()),
+          () => {},
+        );
+        return result;
       };
     const proto = MediaDevices.prototype as unknown as {
       getUserMedia: (...args: unknown[]) => unknown;
@@ -71,8 +93,14 @@ export async function countGetUserMedia(page: Page): Promise<void> {
   });
 }
 
+/** How many times `getUserMedia` was called (`countGetUserMedia`). */
 export function gumCalls(page: Page): Promise<number> {
   return page.evaluate(() => (window as unknown as { __gumCalls: number }).__gumCalls);
+}
+
+/** Every `getUserMedia` call, in order (`countGetUserMedia`). */
+export function gumLog(page: Page): Promise<GumCall[]> {
+  return page.evaluate(() => (window as unknown as { __gumLog: GumCall[] }).__gumLog);
 }
 
 /** Axe on the page: no serious or critical violations. */

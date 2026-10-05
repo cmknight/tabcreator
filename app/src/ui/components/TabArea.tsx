@@ -92,6 +92,8 @@ function fitChars(measure: HTMLElement, charWidth: number): number {
 
 export interface TabAreaProps {
   notes: readonly Note[];
+  /** Every note's label in played order (`noteLabels(notes)`), computed once by the screen. */
+  labels: readonly NoteLabel[];
   countInBpm?: number;
   selectedNoteId: string | null;
   onSelect(noteId: string): void;
@@ -120,6 +122,7 @@ function reducedMotion(): boolean {
 
 export function TabArea({
   notes,
+  labels,
   countInBpm,
   selectedNoteId,
   onSelect,
@@ -165,15 +168,16 @@ export function TabArea({
     () => (metrics ? layoutTab(notes, metrics.widthChars, countInBpm) : null),
     [notes, metrics, countInBpm],
   );
-  const labels = useMemo(() => new Map(noteLabels(notes).map((l) => [l.id, l.label])), [notes]);
+  const labelById = useMemo(() => new Map(labels.map((l) => [l.id, l.label])), [labels]);
   const flagged = useMemo(
     () => new Set(notes.filter((n) => n.lowConfidence).map((n) => n.id)),
     [notes],
   );
-  const firstId = useMemo(() => playedOrder(notes)[0]?.id ?? null, [notes]);
+  const firstId = labels[0]?.id ?? null;
   /** The note last focused: the tab stop (and the arrows' start) while nothing is selected. */
   const [current, setCurrent] = useState<string | null>(null);
-  const tabStop = selectedNoteId ?? (current !== null && labels.has(current) ? current : firstId);
+  const tabStop =
+    selectedNoteId ?? (current !== null && labelById.has(current) ? current : firstId);
 
   const buttons = useRef(new Map<string, HTMLButtonElement>());
   /** The note button that had focus, until focus really leaves it (not a reflow re-creating it). */
@@ -283,7 +287,7 @@ export function TabArea({
                   }
                   data-note-id={cell.noteId}
                   data-playing={cell.noteId === playingNoteId ? 'true' : undefined}
-                  aria-label={labels.get(cell.noteId)}
+                  aria-label={labelById.get(cell.noteId)}
                   aria-pressed={cell.noteId === selectedNoteId}
                   tabIndex={cell.noteId === tabStop ? 0 : -1}
                   style={{

@@ -3,6 +3,7 @@
 // loads it only under import.meta.env.DEV. Not user-facing, so its text is not in ui/strings.ts.
 
 import { useState } from 'react';
+import { quietly } from '../model/quietly';
 import type { Tab, Take } from '../model/types';
 import { audioStore, type RawWriter } from '../storage/audio-store';
 import { db } from '../storage/db';
@@ -27,15 +28,6 @@ function sameBits(a: Float32Array, b: Float32Array): boolean {
   const y = new Uint32Array(b.buffer, b.byteOffset, b.length);
   for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
   return true;
-}
-
-/** Best-effort clean-up that never masks the check's own result or error. */
-async function quietly(step: () => Promise<unknown>): Promise<void> {
-  try {
-    await step();
-  } catch {
-    // Ignored: clean-up only.
-  }
 }
 
 async function rawRoundTrip() {

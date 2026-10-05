@@ -1,5 +1,5 @@
 import type { StringNo } from '../model/types';
-import { formatSigned } from './format';
+import { formatSigned } from './number-format';
 
 /** The tuner's spoken string names, `StringNo` 1 = high e … 6 = low E. */
 const STRING_NAMES: Readonly<Record<StringNo, string>> = {
@@ -88,37 +88,36 @@ export const strings = {
   'global.micSetupText': 'Audio is analysed on this computer and never uploaded.',
   'global.allowMic': 'Allow microphone',
   'global.tryAgain': 'Try again',
-  'global.micError.mic-denied.title': 'Microphone access is blocked',
-  'global.micError.mic-denied.body':
-    'Chrome is blocking the microphone for this site. To allow it:',
-  'global.micError.mic-denied.step1':
+  /** The storage-full banner's link to the Library (Record and Tab). */
+  'global.goToLibrary': 'Go to Library',
+  'global.micErrorMicDeniedTitle': 'Microphone access is blocked',
+  'global.micErrorMicDeniedBody': 'Chrome is blocking the microphone for this site. To allow it:',
+  'global.micErrorMicDeniedStep1':
     'Click the site settings icon at the left end of the address bar.',
-  'global.micError.mic-denied.step2': 'Turn on Microphone.',
-  'global.micError.mic-denied.step3': 'Come back here and choose Try again.',
-  'global.micError.mic-no-device.title': 'No microphone found',
-  'global.micError.mic-no-device.body': "Chrome can't find a microphone. To fix it:",
-  'global.micError.mic-no-device.step1':
+  'global.micErrorMicDeniedStep2': 'Turn on Microphone.',
+  'global.micErrorMicDeniedStep3': 'Come back here and choose Try again.',
+  'global.micErrorMicNoDeviceTitle': 'No microphone found',
+  'global.micErrorMicNoDeviceBody': "Chrome can't find a microphone. To fix it:",
+  'global.micErrorMicNoDeviceStep1':
     'Plug in a microphone or headset, or turn on your built-in mic.',
-  'global.micError.mic-no-device.step2':
-    'If your computer has a mic mute switch or key, turn it off.',
-  'global.micError.mic-no-device.step3': 'Come back here and choose Try again.',
-  'global.micError.mic-in-use.title': 'Your microphone is busy',
-  'global.micError.mic-in-use.body': 'Another app or tab is using the microphone. To free it:',
-  'global.micError.mic-in-use.step1': 'Close apps that use the mic, such as video calls.',
-  'global.micError.mic-in-use.step2': 'Close other browser tabs that are using the microphone.',
-  'global.micError.mic-in-use.step3': 'Come back here and choose Try again.',
-  'global.micError.mic-failed.title': "The microphone didn't start",
-  'global.micError.mic-failed.body': 'Something went wrong opening the microphone. To fix it:',
-  'global.micError.mic-failed.step1': 'Unplug the microphone and plug it back in.',
-  'global.micError.mic-failed.step2': "Check it works in your computer's sound settings.",
-  'global.micError.mic-failed.step3': 'Come back here and choose Try again.',
-  'global.micError.mic-lost.title': 'Microphone access was lost',
-  'global.micError.mic-lost.body':
-    'The microphone stopped or access was turned off. To get it back:',
-  'global.micError.mic-lost.step1': 'Check the microphone is still plugged in.',
-  'global.micError.mic-lost.step2':
+  'global.micErrorMicNoDeviceStep2': 'If your computer has a mic mute switch or key, turn it off.',
+  'global.micErrorMicNoDeviceStep3': 'Come back here and choose Try again.',
+  'global.micErrorMicInUseTitle': 'Your microphone is busy',
+  'global.micErrorMicInUseBody': 'Another app or tab is using the microphone. To free it:',
+  'global.micErrorMicInUseStep1': 'Close apps that use the mic, such as video calls.',
+  'global.micErrorMicInUseStep2': 'Close other browser tabs that are using the microphone.',
+  'global.micErrorMicInUseStep3': 'Come back here and choose Try again.',
+  'global.micErrorMicFailedTitle': "The microphone didn't start",
+  'global.micErrorMicFailedBody': 'Something went wrong opening the microphone. To fix it:',
+  'global.micErrorMicFailedStep1': 'Unplug the microphone and plug it back in.',
+  'global.micErrorMicFailedStep2': "Check it works in your computer's sound settings.",
+  'global.micErrorMicFailedStep3': 'Come back here and choose Try again.',
+  'global.micErrorMicLostTitle': 'Microphone access was lost',
+  'global.micErrorMicLostBody': 'The microphone stopped or access was turned off. To get it back:',
+  'global.micErrorMicLostStep1': 'Check the microphone is still plugged in.',
+  'global.micErrorMicLostStep2':
     'Check Microphone is still allowed in the site settings icon at the left end of the address bar.',
-  'global.micError.mic-lost.step3': 'Choose Try again.',
+  'global.micErrorMicLostStep3': 'Choose Try again.',
   'record.title': 'Record',
   'record.tuneFirst': 'Tune first',
   'record.record': 'Record',
@@ -146,8 +145,6 @@ export const strings = {
    * EXPERIENCE.md): the take is offered for recovery by the recovered-take banner.
    */
   'record.saveFailed': "Recording stopped but couldn't be saved — you'll be offered it to recover",
-  /** The storage-full banner's link to the Library. */
-  'record.storageFullLibrary': 'Go to Library',
   /** The recovered-take banner (EXPERIENCE.md Recovered take): the take's start time and length. */
   'record.recovered': (time: string, length: string) =>
     `An unfinished take from ${time} was recovered (${length})`,
@@ -194,8 +191,6 @@ export const strings = {
   'tab.retry': 'Retry',
   /** The error banner when the analysis result could not be saved (EXPERIENCE.md Storage full). */
   'tab.storageFull': 'Storage is full — delete takes or their audio, or back up and clear',
-  /** The storage-full banner's link to the Library. */
-  'tab.storageFullLibrary': 'Go to Library',
   /** An analysed take with no notes (EXPERIENCE.md No notes found), then its three tips. */
   'tab.noNotes': 'No notes found',
   /** No notes found, tip 1: the input may have been too quiet. */

@@ -4,6 +4,7 @@
 // Raw appends go through the OPFS worker (sync access handle, flushed per append), so a crash
 // loses at most the chunk being written. Rejects only with AppError.
 
+import { storageFullHookOn } from '../dev/hooks/storage-full';
 import { AUDIO_FORMATS, extensionFor, type AudioExtension } from '../model/audio-format';
 import { AppError } from '../model/errors';
 import { assertWritable, hasErrorName, toStorageError } from './write-guard';
@@ -71,16 +72,6 @@ export interface AudioStoreOptions {
 
 /** Directory entry names; the DOM lib in use has no async-iterable directory types. */
 type KeyedDirectory = FileSystemDirectoryHandle & { keys(): AsyncIterable<string> };
-
-/**
- * The dev storage-full hook (story 3.9): in dev builds only (absent from dist), while
- * `window.__storageFullHook` is true, every raw append rejects with `storage-full`, as when the
- * disk fills mid-take. Read through `globalThis`, as the OPFS worker's build also compiles this
- * module.
- */
-interface StorageFullHook {
-  __storageFullHook?: boolean;
-}
 
 export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
   const root = options.root ?? (() => navigator.storage.getDirectory());
@@ -243,8 +234,9 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
         async append(samples) {
           assertWritable();
           if (closed) throw new AppError('storage-failed', 'Raw writer is closed');
-          // Production builds replace the condition with `false`, so the hook tree-shakes out.
-          if (import.meta.env.DEV && (globalThis as StorageFullHook).__storageFullHook) {
+          // The dev storage-full hook (dev/hooks/storage-full.ts): production builds replace the
+          // condition with `false`, so the hook tree-shakes out.
+          if (import.meta.env.DEV && storageFullHookOn()) {
             throw new AppError('storage-full', 'Raw audio write: quota exceeded (dev hook)');
           }
           await request({ type: 'append', takeId, samples });

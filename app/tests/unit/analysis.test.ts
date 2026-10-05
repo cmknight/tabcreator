@@ -4,6 +4,7 @@ import type { AnalysisResult, DetectedNote, Tab, Take } from '../../src/model/ty
 import { createAnalysis, type AnalysisDeps } from '../../src/session/analysis';
 import type { FretPosition } from '../../src/engine/engine-client';
 import type { StorageEvent, StorageListener } from '../../src/storage/events';
+import { deferred } from './helpers';
 
 // Story 5.6 (US-4.4, US-4.5; spine AD-8, AD-9, AD-15): ensureAnalysed against a mocked engine,
 // database and audio store (plan I/O matrix, the analysis side).
@@ -39,17 +40,6 @@ const RESULT: AnalysisResult = {
   belowRangeNotes: 1,
   confidenceThreshold: 0.35,
 };
-
-/** A deferred promise. */
-function deferred<T>() {
-  let resolve!: (v: T) => void;
-  let reject!: (e: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 interface Harness {
   deps: AnalysisDeps;

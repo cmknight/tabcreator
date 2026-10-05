@@ -7,6 +7,7 @@ import {
 } from '../../src/engine/engine-client';
 import { AppError } from '../../src/model/errors';
 import type { EngineAnalyzeInput } from '../../src/model/types';
+import { flush } from './helpers';
 
 const INPUT: EngineAnalyzeInput = {
   sensitivity: 0.5,
@@ -73,8 +74,6 @@ function setup() {
 
 const pcm = () => new Float32Array(16);
 const note = { midi: 40, startMs: 0, endMs: 100 };
-const flush = () => new Promise((r) => setTimeout(r, 0));
-
 async function rejection(p: Promise<unknown>): Promise<AppError> {
   try {
     await p;

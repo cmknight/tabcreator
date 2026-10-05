@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { recordingSession } from '../../session/recording-session';
 import { announce } from '../a11y/announcer';
-import { micErrorCode } from '../mic-error';
+import { micErrorCode, micErrorKey } from '../mic-error';
 import { strings } from '../strings';
 
 /**
@@ -18,7 +18,7 @@ export function MicErrorAnnouncer() {
       previous = next;
       if (!entered) return;
       const code = micErrorCode(next.errorCode) ?? 'mic-failed';
-      announce(strings[`global.micError.${code}.title`], 'assertive');
+      announce(strings[micErrorKey(code, 'Title')], 'assertive');
     });
   }, []);
   return null;

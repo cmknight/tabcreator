@@ -3,6 +3,8 @@
 // beats 2–4. The clicks are connected only to the context's destination (the speakers), never
 // into the source → worklet / gate capture graph, so no click can enter a take.
 
+import { quietlySync as quietly } from '../model/quietly';
+
 /**
  * How far after the press beat 1 is scheduled, in seconds, so it is never late or clipped and
  * all four beat gaps are equal.
@@ -55,13 +57,6 @@ export type ClickContext = Pick<
  */
 export function scheduleClicks(ctx: ClickContext, beats: readonly number[]): () => void {
   const voices: { osc: OscillatorNode; gain: GainNode }[] = [];
-  const quietly = (fn: () => void) => {
-    try {
-      fn();
-    } catch {
-      // Already stopped or disconnected, or the context is closed.
-    }
-  };
   beats.forEach((time, k) => {
     const at = Math.max(time, ctx.currentTime);
     const osc = ctx.createOscillator();

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore, type ReactNode } from 'react';
 import { recordingSession } from '../../session/recording-session';
-import { micErrorCode, type MicErrorCode } from '../mic-error';
+import { micErrorCode, micErrorKey, type MicErrorCode } from '../mic-error';
 import { strings } from '../strings';
 import buttons from './buttons.module.css';
 import styles from './MicGate.module.css';
@@ -98,7 +98,6 @@ function MicSetupCard({
   errorCode: MicErrorCode | null;
 }) {
   if (errorCode) {
-    const key = `global.micError.${errorCode}` as const;
     return (
       <section
         className={`${styles.setup} ${styles.error}`}
@@ -107,13 +106,13 @@ function MicSetupCard({
       >
         <MicIcon off />
         <h2 id={MIC_CARD_TITLE_ID} className={styles.setupTitle} tabIndex={-1} data-focus-target="">
-          {strings[`${key}.title`]}
+          {strings[micErrorKey(errorCode, 'Title')]}
         </h2>
-        <p className={styles.setupText}>{strings[`${key}.body`]}</p>
+        <p className={styles.setupText}>{strings[micErrorKey(errorCode, 'Body')]}</p>
         <ol className={styles.steps}>
-          <li>{strings[`${key}.step1`]}</li>
-          <li>{strings[`${key}.step2`]}</li>
-          <li>{strings[`${key}.step3`]}</li>
+          <li>{strings[micErrorKey(errorCode, 'Step1')]}</li>
+          <li>{strings[micErrorKey(errorCode, 'Step2')]}</li>
+          <li>{strings[micErrorKey(errorCode, 'Step3')]}</li>
         </ol>
         <div className={styles.actions}>
           <button

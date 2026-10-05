@@ -22,6 +22,7 @@
 //   media clock there, so the e2e timing check covers the drawn outline.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { tracePlayback } from '../dev/hooks/playback';
 import { playedOrder } from '../model/notes';
 import { currentNoteIndex, inTrim, seekTargetMs } from '../model/playback';
 import type { Note, Take } from '../model/types';
@@ -30,20 +31,6 @@ import { readTakeAudio, type PlaybackController } from '../session/playback';
 /** The speeds of the segmented control, slowest first (EXPERIENCE.md Playback). */
 export const SPEEDS = [0.5, 0.75, 1] as const;
 export type Speed = (typeof SPEEDS)[number];
-
-/** One entry of the DEV-only cursor trace. */
-export interface PlaybackTraceEntry {
-  noteId: string;
-  /** The media clock when the cursor moved to the note, ms. */
-  mediaMs: number;
-}
-
-declare global {
-  interface Window {
-    /** Dev builds only (absent from dist): every cursor change while playing. */
-    __playbackTrace?: PlaybackTraceEntry[];
-  }
-}
 
 /** Object URLs for a blob (tests pass fakes). */
 export interface ObjectUrls {
@@ -103,7 +90,7 @@ export interface Playback {
 /** Appends to the DEV-only trace; production builds drop the call's body. */
 function trace(noteId: string, mediaMs: number): void {
   if (import.meta.env.DEV) {
-    (window.__playbackTrace ??= []).push({ noteId, mediaMs });
+    tracePlayback(noteId, mediaMs);
   }
 }
 

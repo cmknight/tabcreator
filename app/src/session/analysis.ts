@@ -23,6 +23,7 @@ import { engineClient, type EngineClient } from '../engine/engine-client';
 import { AppError, isAppError } from '../model/errors';
 import { devWarn } from '../model/log';
 import type { EngineAnalyzeInput, Note, Tab, Take } from '../model/types';
+import { devDb, devEngine, devHold, devSlowMs } from '../dev/hooks/analysis';
 import { audioStore, type AudioStore } from '../storage/audio-store';
 import { db, type TakeDb, type TakePatch } from '../storage/db';
 import { subscribe as subscribeStorage, type StorageListener } from '../storage/events';
@@ -398,85 +399,6 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
     pendingCommit: (takeId) => pending.has(takeId),
 
     isAnalysing: () => runs.size > 0,
-  };
-}
-
-/** Dev builds only: whether `search` asks to hold analysis (`?holdAnalysis`). */
-function devHold(): boolean {
-  if (!import.meta.env.DEV || typeof location === 'undefined') return false;
-  return new URLSearchParams(location.search).has('holdAnalysis');
-}
-
-/**
- * Dev builds only: `?slowAnalysis=<ms>` delays every engine analyze by that long, so e2e tests
- * can cancel or reload mid-analysis (story 5.7). 0 when absent.
- */
-function devSlowMs(): number {
-  if (!import.meta.env.DEV || typeof location === 'undefined') return 0;
-  const ms = Number(new URLSearchParams(location.search).get('slowAnalysis'));
-  return Number.isFinite(ms) && ms > 0 ? ms : 0;
-}
-
-/**
- * The dev failure hooks (story 5.7), read at each call from `window`: while
- * `__analysisFailHook` is true every engine analyze rejects with `analysis-failed`, and while
- * `__commitStorageFullHook` is true every `commitAnalysis` rejects with `storage-full`.
- */
-interface AnalysisDevHooks {
-  __analysisFailHook?: boolean;
-  __commitStorageFullHook?: boolean;
-}
-
-const devHooks = () => globalThis as AnalysisDevHooks;
-
-/**
- * Dev builds only: the engine with `?slowAnalysis` and `__analysisFailHook` applied. A delayed
- * analyze is cancelled by `cancel`, as a queued request is by the engine client.
- */
-function devEngine(engine: EngineClient, slowMs: number): AnalysisDeps['engine'] {
-  const delays = new Map<string, () => void>();
-  return {
-    async analyze(takeId, pcm, sampleRate, input, onProgress) {
-      if (slowMs > 0) {
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            delays.delete(takeId);
-            resolve();
-          }, slowMs);
-          delays.set(takeId, () => {
-            clearTimeout(timer);
-            delays.delete(takeId);
-            reject(new AppError('analysis-cancelled', `cancelled take ${takeId} (dev delay)`));
-          });
-        });
-      }
-      if (devHooks().__analysisFailHook) {
-        throw new AppError('analysis-failed', 'analysis failed (dev hook)');
-      }
-      return engine.analyze(takeId, pcm, sampleRate, input, onProgress);
-    },
-    mapFrets: (...args) => engine.mapFrets(...args),
-    version: () => engine.version(),
-    cancel(takeId) {
-      delays.get(takeId)?.();
-      engine.cancel(takeId);
-    },
-  };
-}
-
-/** Dev builds only: the database with `__commitStorageFullHook` applied. */
-function devDb(store: TakeDb): AnalysisDeps['db'] {
-  return {
-    getTake: (id) => store.getTake(id),
-    getTab: (id) => store.getTab(id),
-    commitAnalysis(takeId, tab, takePatch) {
-      if (devHooks().__commitStorageFullHook) {
-        return Promise.reject(
-          new AppError('storage-full', 'Commit analysis: quota exceeded (dev hook)'),
-        );
-      }
-      return store.commitAnalysis(takeId, tab, takePatch);
-    },
   };
 }
 

@@ -2,6 +2,8 @@
 
 import { strings } from './strings';
 
+export { formatSigned } from './number-format';
+
 /** `m:ss` for a duration in ms, rounded down to the second. */
 export function formatElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -33,14 +35,6 @@ export function formatTakeDate(date: Date | string): string {
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   return `${WEEKDAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}, ${hh}:${mm}`;
-}
-
-/**
- * A signed number with U+2212 for minus and `+` for plus: "+12", "−1", "0" (−0 is "0"). Callers
- * round first; level readings are never positive, so they show no `+`.
- */
-export function formatSigned(n: number): string {
-  return n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0';
 }
 
 /** A local clock time as a lowercase 12-hour clock: "9:14 pm", "12:05 am". */

@@ -13,8 +13,16 @@ import tseslint from 'typescript-eslint';
  * (src/App.tsx, src/main.tsx) that load it. No layer imports dev/; only src/App.tsx and
  * src/main.tsx may load it, through a dynamic import inside an `import.meta.env.DEV` guard (see
  * `syntaxConfigs`), so production builds tree-shake it out.
+ * The one exception is dev/hooks/ (the dev-only e2e hook readers and state): ui/, session/ and
+ * storage/ may import it statically, and call it only inside `import.meta.env.DEV`, so
+ * production builds tree-shake it (the CI dist grep checks). dev/hooks/ imports values from
+ * model/ only (types from anywhere), so it never forms an import cycle (see `devHooksConfigs`).
  */
 const dir = (/** @type {string} */ name) => [`**/${name}`, `**/${name}/**`];
+/** A `dev` path segment not followed by `hooks/`: dev/ but not dev/hooks/. */
+const DEV_EXCEPT_HOOKS = '(^|/)dev(/(?!hooks/)|$)';
+/** The layers that may import dev/hooks/ statically. */
+const DEV_HOOK_LAYERS = ['ui', 'session', 'storage'];
 const react = ['react', 'react/**', 'react-dom', 'react-dom/**'];
 const adapterForbids = (/** @type {string} */ self) => [
   ...['ui', 'session', 'storage', 'audio', 'engine', 'dev'].filter((d) => d !== self).flatMap(dir),
@@ -53,23 +61,54 @@ const layerFiles = { ui: [`src/ui/**/${SOURCE}`, 'src/App.tsx'] };
 const ENTRY_FILES = ['src/App.tsx', 'src/main.tsx'];
 
 /** @type {import('eslint').Linter.Config[]} */
-const layerConfigs = Object.entries(layers).map(([layer, group]) => ({
-  name: `tabcreator/layer-${layer}`,
-  files: layerFiles[layer] ?? [`src/${layer}/**/${SOURCE}`],
-  rules: {
-    'no-restricted-imports': [
-      'error',
-      {
-        patterns: [
-          {
-            group,
-            message: `${layer}/ may not import this (spine AD-1 dependency direction).`,
-          },
-        ],
-      },
-    ],
+const layerConfigs = Object.entries(layers).map(([layer, group]) => {
+  const message = `${layer}/ may not import this (spine AD-1 dependency direction).`;
+  const hooks = DEV_HOOK_LAYERS.includes(layer);
+  const devGroup = dir('dev');
+  return {
+    name: `tabcreator/layer-${layer}`,
+    files: layerFiles[layer] ?? [`src/${layer}/**/${SOURCE}`],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: hooks
+            ? [
+                { group: group.filter((p) => !devGroup.includes(p)), message },
+                { regex: DEV_EXCEPT_HOOKS, message },
+              ]
+            : [{ group, message }],
+        },
+      ],
+    },
+  };
+});
+
+/**
+ * dev/hooks/ imports values from model/ only; type-only imports from any layer are allowed (they
+ * leave no runtime edge). Checked by the typescript-eslint rule, which knows type imports.
+ * @type {import('eslint').Linter.Config[]}
+ */
+const devHooksConfigs = [
+  {
+    name: 'tabcreator/dev-hooks',
+    files: [`src/dev/hooks/**/${SOURCE}`],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: [...['ui', 'session', 'storage', 'audio', 'engine'].flatMap(dir), ...react],
+              allowTypeImports: true,
+              message: 'dev/hooks/ may import values from model/ only (types from any layer).',
+            },
+          ],
+        },
+      ],
+    },
   },
-}));
+];
 
 /**
  * `src/main.tsx` has no layer, but must not import dev/ statically either (src/App.tsx gets
@@ -190,6 +229,7 @@ export default tseslint.config(
     },
   },
   ...layerConfigs,
+  ...devHooksConfigs,
   ...entryConfigs,
   ...syntaxConfigs,
 );

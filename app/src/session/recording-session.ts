@@ -62,51 +62,46 @@ import {
   type MicPermission,
 } from '../audio/mic';
 import { encodePcm, encodeWavBlob, WAV_MIME } from '../audio/encode';
+import { devEncodePcm } from '../dev/hooks/recovery';
+import { readDevLimits } from '../dev/hooks/recording';
 import { AppError, isAppError, type AppErrorCode } from '../model/errors';
+import { MAX_TAKE_MS, WARN_LEAD_MS, type TakeLimits } from '../model/take-limits';
 import type { AnalysisSettings, StopReason, Take } from '../model/types';
 import { audioStore, type RawWriter } from '../storage/audio-store';
 import { db, type TakePatch } from '../storage/db';
 import { loadPrefs, updatePrefs } from '../storage/prefs';
 import type { InputTransition, OpenedInput } from './input-derivation';
-import { createInputQualityWatch, type InputQualityFields } from './input-quality-watch';
-import { createLevelWatch, type LevelFields } from './level-watch';
-import {
-  createRecordingRecovery,
-  type RecoveredTake,
-  type RecoveryDeps,
-} from './recording-recovery';
-import { createTakeLifecycle, type RecordingState, type TakeLimits } from './take-lifecycle';
-import { createTunerWatch, type TunerDisplay, type TunerFields } from './tuner-watch';
+import { createInputQualityWatch } from './input-quality-watch';
+import { createLevelWatch } from './level-watch';
+import { createRecordingRecovery, type RecoveryDeps } from './recording-recovery';
+import type { CountInPrefs, MicNotice, MicState, RecordingSnapshot } from './recording-types';
+import { createTakeLifecycle } from './take-lifecycle';
+import { createTunerWatch, type TunerDisplay } from './tuner-watch';
 
 export { TUNER_POLL_MS } from '../audio/tuner';
 export type { TunerDisplay } from './tuner-watch';
 export type { RecoveredTake } from './recording-recovery';
-export type { RecordingState, TakeLimits } from './take-lifecycle';
+export type { TakeLimits } from '../model/take-limits';
+export type {
+  CountInPrefs,
+  HandoverTake,
+  MicNotice,
+  MicState,
+  RecordingSnapshot,
+  RecordingState,
+} from './recording-types';
 export { takeTitle } from './take-lifecycle';
-
-export type MicState = 'setup' | 'requesting' | 'live' | 'error';
-
-/** The count-in pref: on or off, and its tempo. */
-export interface CountInPrefs {
-  on: boolean;
-  bpm: number;
-}
 
 /** The count-in tempo range, BPM (EXPERIENCE.md Count-in controls). */
 export const COUNT_IN_BPM_MIN = 40;
 export const COUNT_IN_BPM_MAX = 240;
 const DEFAULT_COUNT_IN: CountInPrefs = { on: false, bpm: 100 };
-/** The longest take, ms (CAP-5): it stops itself here. */
-export const MAX_TAKE_MS = 300_000;
-/** How long before the cap the "30 seconds left" warning shows, ms. */
-export const WARN_LEAD_MS = 30_000;
+export { MAX_TAKE_MS, WARN_LEAD_MS } from '../model/take-limits';
 /**
  * How long a handover waits for this store's release (`releaseForHandover`), ms: the instance
  * lock cuts it off then (instance-lock.ts re-exports it), and the unload guard disarms.
  */
 export const HANDOVER_WAIT_MS = 3000;
-/** The shortest cap the dev override accepts, ms, so a max-length take is never too short. */
-const DEV_MIN_CAP_MS = 1000;
 
 /**
  * A typed tempo as stored: rounded to a whole BPM and clamped to 40–240; `fallback` when it is
@@ -116,83 +111,6 @@ function clampBpm(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(COUNT_IN_BPM_MAX, Math.max(COUNT_IN_BPM_MIN, Math.round(value)));
 }
-
-/** A one-off fact for the shell to show; `seq` grows with each new notice. */
-export type MicNotice =
-  | {
-      /** The active input was unplugged and the default one is now in use. */
-      kind: 'switched';
-      /** The label of the input now in use; "" when the browser gives none. */
-      label: string;
-      seq: number;
-    }
-  | {
-      /** A take stopped under `MIN_TAKE_MS` was deleted. */
-      kind: 'too-short';
-      seq: number;
-    }
-  | {
-      /**
-       * The input a take was recording was unplugged: the take was saved (`mic-lost`) and the
-       * default input is now in use. Recording does not continue on it.
-       */
-      kind: 'stopped-saved';
-      seq: number;
-    }
-  | {
-      /**
-       * A stopped take could not be saved: it stays unfinished and is offered for recovery (the
-       * recovered-take banner).
-       */
-      kind: 'save-failed';
-      seq: number;
-    };
-
-/** The mic fields, plus the fields each input derivation owns (see input-derivation.ts). */
-export interface RecordingSnapshot extends LevelFields, InputQualityFields, TunerFields {
-  mic: MicState;
-  /** Set in `error`; kept while a Try again is `requesting`, so the error card stays in place. */
-  errorCode?: AppErrorCode;
-  /** The selectable audio inputs; only filled while `live`. */
-  devices: readonly MicDevice[];
-  /** The listed device the live input runs on (or is switching to); null when not live. */
-  activeDeviceId: string | null;
-  /** The latest notice; kept until the next one replaces it. */
-  notice?: MicNotice;
-  /** The take's state; carried through mic transitions. */
-  recording: RecordingState;
-  /** The id of the take being recorded (or created, or saved); null while `idle` or counting in. */
-  activeTakeId: string | null;
-  /** The count-in pref, as the Record screen's controls show it. */
-  countIn: CountInPrefs;
-  /** The take in progress has reached its warning time (`maxTakeMs − warnLeadMs`). */
-  nearLimit: boolean;
-  /** How many takes this store has saved (`recorded`); grows by one with each. */
-  savedSeq: number;
-  /**
-   * A take was stopped because storage is full (the Record screen's error banner); on until the
-   * next take starts.
-   */
-  storageFull: boolean;
-  /**
-   * With `storageFull`: true when the take it stopped was saved. Absent or false when nothing
-   * was saved (the save failed, the take was too short, or it could not be created), so the
-   * banner never says "saved" then. Absent until a storage-full stop first sets it.
-   */
-  storageFullSaved?: boolean;
-  /** Unfinished takes offered for recovery, oldest first (the Record screen's banners). */
-  recovered: readonly RecoveredTake[];
-  /**
-   * What the handover's save did with the take that was recording (story 5.3), for the lost
-   * tab's notice: `saved`, or `failed` (left `recording` for the other tab's recovery; a save cut
-   * off by the deadline or the write fence counts once it settles). Null before a handover, when
-   * no take was recording, and while the save runs.
-   */
-  handoverTake: HandoverTake;
-}
-
-/** See `RecordingSnapshot.handoverTake`. */
-export type HandoverTake = 'saved' | 'failed' | null;
 
 export interface RecordingSession {
   subscribe(listener: () => void): () => void;
@@ -918,21 +836,6 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
   };
 }
 
-/**
- * Dev builds only: the length limits from `?maxTakeMs=<n>&warnLeadMs=<n>` in `search`, each a
- * positive whole number of ms; a missing or invalid one keeps its constant. The cap is at least
- * `DEV_MIN_CAP_MS` and the lead at most the cap. Read once, when the store is created.
- */
-export function readDevLimits(search: string): TakeLimits {
-  const params = new URLSearchParams(search);
-  const read = (name: string, fallback: number) => {
-    const value = Number(params.get(name) ?? NaN);
-    return Number.isInteger(value) && value > 0 ? value : fallback;
-  };
-  const capMs = Math.max(DEV_MIN_CAP_MS, read('maxTakeMs', MAX_TAKE_MS));
-  return { capMs, leadMs: Math.min(capMs, read('warnLeadMs', WARN_LEAD_MS)) };
-}
-
 export const recordingSession: RecordingSession = createRecordingSession({
   requestMic,
   openInput,
@@ -956,7 +859,8 @@ export const recordingSession: RecordingSession = createRecordingSession({
     readCompressed: (id) => audioStore.readCompressed(id),
     deleteRaw: (id) => audioStore.deleteRaw(id),
     deleteAudio: (id) => audioStore.deleteAudio(id),
-    encodePcm,
+    // Dev builds only: the re-encode failure hook (dev/hooks/recovery.ts) tree-shakes out.
+    encodePcm: import.meta.env.DEV ? devEncodePcm(encodePcm) : encodePcm,
     encodeWav: encodeWavBlob,
   },
   addUnloadGuard: (handler) => {

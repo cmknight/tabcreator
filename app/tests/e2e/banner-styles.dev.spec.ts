@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { collectErrors } from './helpers';
+import { collectErrors, recordButton, timer } from './helpers';
 import { goLive } from './mic-helpers';
 
 // Runs in the `dev` project only. Pins the banners' and status icons' computed styles to their
@@ -9,8 +9,6 @@ import { goLive } from './mic-helpers';
 // and 18 px icon; error banners: --color-surface fill, --color-danger edge and 20 px icon.
 
 const LIMITS = 'maxTakeMs=8000&warnLeadMs=3000';
-const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', exact: true });
-const timer = (page: Page) => page.getByRole('timer');
 
 type Kind = 'warning' | 'error';
 const KIND = {

@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
+import { recordButton, stopButton, timer } from './helpers';
 import { FIXTURE, expectNoSeriousAxe, goLive } from './mic-helpers';
+import { rawFileExists, readTab, readTake } from './storage-helpers';
 
 // Story 5.7 (US-4.5, EXPERIENCE.md Tab states): the analysis states end to end, in the `dev`
 // project (the fake mic and the dev hooks). Each test records a short take and lets the Tab
@@ -17,8 +19,6 @@ interface TakeState {
   notes: number | null;
 }
 
-const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', exact: true });
-const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop', exact: true });
 const analysing = (page: Page) => page.getByText('Analysing…', { exact: true });
 const systems = (page: Page) => page.getByTestId('tab-systems');
 
@@ -29,7 +29,7 @@ const systems = (page: Page) => page.getByTestId('tab-systems');
 async function recordTake(page: Page, beforeStop?: () => Promise<void>): Promise<string> {
   await recordButton(page).click();
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('timer')).toHaveText('0:02', { timeout: 5_000 });
+  await expect(timer(page)).toHaveText('0:02', { timeout: 5_000 });
   await beforeStop?.();
   await stopButton(page).click();
   await expect(page).toHaveURL(/#\/tab\/[^/]+$/, { timeout: 15_000 });
@@ -39,33 +39,11 @@ async function recordTake(page: Page, beforeStop?: () => Promise<void>): Promise
 }
 
 /** The take's status, whether its raw file exists and its tab's note count. */
-function readState(page: Page, id: string): Promise<TakeState> {
-  return page.evaluate(async (takeId) => {
-    const get = (store: string) =>
-      new Promise<unknown>((resolve, reject) => {
-        const open = indexedDB.open('tabcreator');
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const db = open.result;
-          const req = db.transaction(store).objectStore(store).get(takeId);
-          req.onsuccess = () => {
-            resolve(req.result ?? null);
-            db.close();
-          };
-          req.onerror = () => reject(req.error);
-        };
-      });
-    const take = (await get('takes')) as { status: string } | null;
-    const tab = (await get('tabs')) as { notes: unknown[] } | null;
-    let rawExists = true;
-    try {
-      const root = await navigator.storage.getDirectory();
-      await (await root.getDirectoryHandle('raw')).getFileHandle(`${takeId}.f32`);
-    } catch {
-      rawExists = false;
-    }
-    return { status: take?.status ?? null, rawExists, notes: tab ? tab.notes.length : null };
-  }, id);
+async function readState(page: Page, id: string): Promise<TakeState> {
+  const take = await readTake<{ status: string }>(page, id);
+  const tab = await readTab<{ notes: unknown[] }>(page, id);
+  const rawExists = await rawFileExists(page, id);
+  return { status: take?.status ?? null, rawExists, notes: tab ? tab.notes.length : null };
 }
 
 /** Sets a dev hook on `window`. */

@@ -33,7 +33,7 @@ import {
   type RecordingSnapshot,
 } from '../../session/recording-session';
 import { activePlayback, type PlaybackController } from '../../session/playback';
-import { activeTakeSession, type TakeSession } from '../../session/take-session';
+import { activeTakeSession, isTabShown, type TakeSession } from '../../session/take-session';
 import { parseRoute, type Route } from '../router';
 import { strings } from '../strings';
 
@@ -195,12 +195,7 @@ type SelectionSession = Pick<
 export function tabSelectionShortcuts(
   session: () => SelectionSession | null = activeTakeSession,
 ): Shortcut[] {
-  const tabShown = () => {
-    const snap = session()?.getSnapshot();
-    return (
-      !!snap && !snap.missing && snap.analysis.kind === 'idle' && (snap.tab?.notes.length ?? 0) > 0
-    );
-  };
+  const tabShown = () => isTabShown(session()?.getSnapshot());
   const arrows = (target: EventTarget | null) =>
     inTabArea(target) && !inToolbar(target) && tabShown();
   return [
@@ -263,10 +258,7 @@ export function tabPlaybackShortcuts(
 ): Shortcut[] {
   const applies = (target: EventTarget | null) => {
     if (inToolbar(target)) return false;
-    const snap = session()?.getSnapshot();
-    const shown =
-      !!snap && !snap.missing && snap.analysis.kind === 'idle' && (snap.tab?.notes.length ?? 0) > 0;
-    return shown && (playback()?.available() ?? false);
+    return isTabShown(session()?.getSnapshot()) && (playback()?.available() ?? false);
   };
   const selected = () => session()?.getSnapshot().selectedNoteId ?? null;
   return [

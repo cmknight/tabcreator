@@ -58,6 +58,7 @@
 // `saveTake`, the step recovery shares.
 
 import { activeDevice, type Capture } from '../audio/mic';
+import { clearRecordingClock, setRecordingClock } from '../dev/hooks/recording';
 import { COUNT_IN_BEATS, countInSchedule } from '../audio/metronome';
 import { RECORDING_MIME } from '../audio/recorder';
 import { AppError, isAppError } from '../model/errors';
@@ -65,15 +66,14 @@ import { devWarn } from '../model/log';
 import type { AnalysisSettings, StopReason, Take } from '../model/types';
 import type { RawWriter } from '../storage/audio-store';
 import type { TakePatch } from '../storage/db';
+import type { TakeLimits } from '../model/take-limits';
 import { DEFAULT_PREFS } from '../storage/prefs';
 import type { OpenedInput } from './input-derivation';
-import type { RecordingSnapshot } from './recording-session';
+import type { RecordingSnapshot, RecordingState } from './recording-types';
 import { type ClipCounter, createClipCounter, isTooShort, saveTake } from './take-save';
 
-/**
- * Where a take is: none, counting in (no take yet), being created, capturing, or being saved.
- */
-export type RecordingState = 'idle' | 'count-in' | 'starting' | 'recording' | 'stopping';
+export type { RecordingState } from './recording-types';
+export type { TakeLimits } from '../model/take-limits';
 
 /**
  * The recording state's transitions: from each state, the states it may move to. The forward
@@ -128,31 +128,8 @@ export function createRecordingMachine(): RecordingMachine {
   };
 }
 
-/** A take's length limits, ms: the cap and the warning's lead before it. */
-export interface TakeLimits {
-  /** The cap (`MAX_TAKE_MS`). */
-  capMs: number;
-  /** The warning's lead before the cap (`WARN_LEAD_MS`). */
-  leadMs: number;
-}
-
 /** How long past the expected capture start the audio clock may lag before it counts as stopped. */
 const CLOCK_STALL_MS = 2000;
-
-/** The dev-only clock hook (story 3.6): the last count-in's times on the audio clock, in s. */
-interface RecordingClock {
-  /** The click's audio-clock time (`t0`). */
-  clickTime: number;
-  /** When the capture opens (beat five). */
-  captureStart: number;
-}
-
-declare global {
-  interface Window {
-    /** Dev builds only (absent from dist): set when a count-in's capture is scheduled. */
-    __recordingClock?: RecordingClock;
-  }
-}
 
 /** The shell functions the lifecycle drives (a subset of the store's deps). */
 export interface TakeLifecycleDeps {
@@ -528,7 +505,7 @@ export function createTakeLifecycle(
       return;
     }
     // Cleared for every take, so it never describes an earlier count-in.
-    if (import.meta.env.DEV) delete window.__recordingClock;
+    if (import.meta.env.DEV) clearRecordingClock();
     const take: ActiveTake = {
       id: deps.newId(),
       input: opened,
@@ -656,9 +633,7 @@ export function createTakeLifecycle(
       return;
     }
     take.capture = capture;
-    if (import.meta.env.DEV) {
-      window.__recordingClock = { clickTime, captureStart: capture.startTime };
-    }
+    if (import.meta.env.DEV) setRecordingClock(clickTime, capture.startTime);
     const reached = await untilClock(ci, capture.startTime);
     // A cancel has already aborted the capture and gone idle.
     if (ci.cancelled) return;

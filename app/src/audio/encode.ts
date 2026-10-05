@@ -6,7 +6,8 @@
 // `storage-failed` for its own failures, any other `AppError` passed through as it is.
 
 import { AppError, isAppError } from '../model/errors';
-import { RECORDING_BITS_PER_SECOND, RECORDING_MIME } from './recorder';
+import { resumeWithin } from './context-resume';
+import { createCompressedOutput, RECORDING_MIME } from './recorder';
 
 /** The WAV fallback's MIME type; `model/audio-format.ts` lists it. */
 export const WAV_MIME = 'audio/wav';
@@ -55,15 +56,7 @@ async function encode(samples: Float32Array, sampleRate: number): Promise<Blob> 
   let media: MediaRecorder | undefined;
   let tailTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    if (ctx.state !== 'running') {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([
-        ctx.resume().catch(() => {}),
-        new Promise<void>((resolve) => (timer = setTimeout(resolve, RESUME_TIMEOUT_MS))),
-      ]);
-      clearTimeout(timer);
-    }
-    if ((ctx.state as AudioContextState) !== 'running') {
+    if (!(await resumeWithin(ctx, RESUME_TIMEOUT_MS))) {
       throw encodeFailed(`The audio context is ${ctx.state}`);
     }
     const buffer = ctx.createBuffer(1, samples.length, sampleRate);
@@ -71,18 +64,11 @@ async function encode(samples: Float32Array, sampleRate: number): Promise<Blob> 
     const node = ctx.createBufferSource();
     source = node;
     node.buffer = buffer;
-    destination = ctx.createMediaStreamDestination();
-    destination.channelCount = 1;
-    node.connect(destination);
-    const recorder = new MediaRecorder(destination.stream, {
-      mimeType: RECORDING_MIME,
-      audioBitsPerSecond: RECORDING_BITS_PER_SECOND,
-    });
-    media = recorder;
     const parts: Blob[] = [];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) parts.push(event.data);
-    };
+    const output = createCompressedOutput(ctx, node, parts);
+    destination = output.destination;
+    const recorder = output.recorder;
+    media = recorder;
     const lengthMs = (samples.length / sampleRate) * 1000;
     await new Promise<void>((resolve, reject) => {
       let failed = false;

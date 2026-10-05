@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
-import { MIME, collectErrors } from './helpers';
+import { MIME, collectErrors, recordButton, stopButton, timer } from './helpers';
 import { expectNoSeriousAxe, FIXTURE, goLive, held, meter } from './mic-helpers';
+import { opfsFiles, readTake, takeCount, takeIds } from './storage-helpers';
 
 // Runs in the `dev` project only: the fake mic (US-0.4) plays c_major_scale_pos1 (7.95 s at
 // 48 kHz) as the microphone. Story 3.4: Record then Stop saves a take and opens its Tab.
@@ -31,10 +32,6 @@ interface SavedTake {
   clicks: { raw: number[]; decoded: number[] } | null;
 }
 
-const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', exact: true });
-const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop', exact: true });
-const timer = (page: Page) => page.getByRole('timer');
-
 /**
  * From now until the Tab opens, keeps the store's elapsed time while the take is `stopping`:
  * once the audio clock passes the stop time it is frozen at the audio-clock time between start
@@ -57,78 +54,70 @@ async function watchStopClock(page: Page): Promise<void> {
 }
 
 /** The take's record, its raw sample count and its compressed copy's decoded duration. */
-function readSaved(page: Page, id: string): Promise<SavedTake> {
-  return page.evaluate(async (takeId) => {
-    const take = await new Promise<SavedTake['take']>((resolve, reject) => {
-      const open = indexedDB.open('tabcreator');
-      open.onerror = () => reject(open.error);
-      open.onsuccess = () => {
-        const db = open.result;
-        const get = db.transaction('takes').objectStore('takes').get(takeId);
-        get.onsuccess = () => {
-          resolve((get.result as SavedTake['take']) ?? null);
-          db.close();
-        };
-        get.onerror = () => reject(get.error);
-      };
-    });
-    /** The loudest Goertzel amplitude at `hz` over 30 ms windows, hopped by 10 ms. */
-    const tone = (samples: Float32Array, rate: number, hz: number) => {
-      const n = Math.round(rate * 0.03);
-      const hop = Math.round(rate * 0.01);
-      const coeff = 2 * Math.cos((2 * Math.PI * hz) / rate);
-      let loudest = 0;
-      for (let at = 0; at + n <= samples.length; at += hop) {
-        let s1 = 0;
-        let s2 = 0;
-        for (let i = at; i < at + n; i++) {
-          const s0 = samples[i]! + coeff * s1 - s2;
-          s2 = s1;
-          s1 = s0;
+async function readSaved(page: Page, id: string): Promise<SavedTake> {
+  const take = await readTake<NonNullable<SavedTake['take']>>(page, id);
+  const audio = await page.evaluate(
+    async ([takeId, sampleRate]) => {
+      /** The loudest Goertzel amplitude at `hz` over 30 ms windows, hopped by 10 ms. */
+      const tone = (samples: Float32Array, rate: number, hz: number) => {
+        const n = Math.round(rate * 0.03);
+        const hop = Math.round(rate * 0.01);
+        const coeff = 2 * Math.cos((2 * Math.PI * hz) / rate);
+        let loudest = 0;
+        for (let at = 0; at + n <= samples.length; at += hop) {
+          let s1 = 0;
+          let s2 = 0;
+          for (let i = at; i < at + n; i++) {
+            const s0 = samples[i]! + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+          }
+          const power = Math.max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2);
+          loudest = Math.max(loudest, (2 * Math.sqrt(power)) / n);
         }
-        const power = Math.max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2);
-        loudest = Math.max(loudest, (2 * Math.sqrt(power)) / n);
+        return loudest;
+      };
+      const CLICK_HZ = [1000, 1500];
+      let rawClicks: number[] | null = null;
+      let decodedClicks: number[] | null = null;
+      const rms = (samples: Float32Array) => {
+        let sum = 0;
+        for (const v of samples) sum += v * v;
+        return samples.length ? Math.sqrt(sum / samples.length) : 0;
+      };
+      const root = await navigator.storage.getDirectory();
+      let rawSamples: number | null;
+      let rawRms: number | null;
+      try {
+        const raw = await (await root.getDirectoryHandle('raw')).getFileHandle(`${takeId}.f32`);
+        const samples = new Float32Array(await (await raw.getFile()).arrayBuffer());
+        rawSamples = samples.length;
+        rawRms = rms(samples);
+        const rate = sampleRate ?? 48_000;
+        rawClicks = CLICK_HZ.map((hz) => tone(samples, rate, hz));
+      } catch {
+        rawSamples = null;
+        rawRms = null;
       }
-      return loudest;
-    };
-    const CLICK_HZ = [1000, 1500];
-    let rawClicks: number[] | null = null;
-    let decodedClicks: number[] | null = null;
-    const rms = (samples: Float32Array) => {
-      let sum = 0;
-      for (const v of samples) sum += v * v;
-      return samples.length ? Math.sqrt(sum / samples.length) : 0;
-    };
-    const root = await navigator.storage.getDirectory();
-    let rawSamples: number | null;
-    let rawRms: number | null;
-    try {
-      const raw = await (await root.getDirectoryHandle('raw')).getFileHandle(`${takeId}.f32`);
-      const samples = new Float32Array(await (await raw.getFile()).arrayBuffer());
-      rawSamples = samples.length;
-      rawRms = rms(samples);
-      const rate = take?.sampleRate ?? 48_000;
-      rawClicks = CLICK_HZ.map((hz) => tone(samples, rate, hz));
-    } catch {
-      rawSamples = null;
-      rawRms = null;
-    }
-    let decodedSeconds: number | null;
-    let decodedRms: number | null;
-    try {
-      const file = await (await root.getDirectoryHandle('audio')).getFileHandle(`${takeId}.webm`);
-      const ctx = new OfflineAudioContext(1, 1, 48_000);
-      const buffer = await ctx.decodeAudioData(await (await file.getFile()).arrayBuffer());
-      decodedSeconds = buffer.duration;
-      decodedRms = rms(buffer.getChannelData(0));
-      decodedClicks = CLICK_HZ.map((hz) => tone(buffer.getChannelData(0), buffer.sampleRate, hz));
-    } catch {
-      decodedSeconds = null;
-      decodedRms = null;
-    }
-    const clicks = rawClicks && decodedClicks ? { raw: rawClicks, decoded: decodedClicks } : null;
-    return { take, rawSamples, rawRms, decodedSeconds, decodedRms, clicks };
-  }, id);
+      let decodedSeconds: number | null;
+      let decodedRms: number | null;
+      try {
+        const file = await (await root.getDirectoryHandle('audio')).getFileHandle(`${takeId}.webm`);
+        const ctx = new OfflineAudioContext(1, 1, 48_000);
+        const buffer = await ctx.decodeAudioData(await (await file.getFile()).arrayBuffer());
+        decodedSeconds = buffer.duration;
+        decodedRms = rms(buffer.getChannelData(0));
+        decodedClicks = CLICK_HZ.map((hz) => tone(buffer.getChannelData(0), buffer.sampleRate, hz));
+      } catch {
+        decodedSeconds = null;
+        decodedRms = null;
+      }
+      const clicks = rawClicks && decodedClicks ? { raw: rawClicks, decoded: decodedClicks } : null;
+      return { rawSamples, rawRms, decodedSeconds, decodedRms, clicks };
+    },
+    [id, take?.sampleRate] as const,
+  );
+  return { take, ...audio };
 }
 
 /** Waits for the Tab of the new take and returns its id. */
@@ -290,39 +279,6 @@ test('Space on the focused Record button toggles once (its own click)', async ({
 /** Blurs whatever has focus, so keys go to the page itself. */
 const blur = (page: Page) =>
   page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-
-/**
- * The number of saved takes (0 before the database exists). Never creates the database: an open
- * that would create it is aborted, so the app's own first open still runs its upgrade.
- */
-function takeCount(page: Page): Promise<number> {
-  return page.evaluate(
-    () =>
-      new Promise<number>((resolve, reject) => {
-        const open = indexedDB.open('tabcreator');
-        let missing = false;
-        open.onupgradeneeded = () => {
-          missing = true;
-          open.transaction?.abort();
-        };
-        open.onerror = () => (missing ? resolve(0) : reject(open.error));
-        open.onsuccess = () => {
-          const db = open.result;
-          if (!db.objectStoreNames.contains('takes')) {
-            db.close();
-            resolve(0);
-            return;
-          }
-          const count = db.transaction('takes').objectStore('takes').count();
-          count.onsuccess = () => {
-            resolve(count.result);
-            db.close();
-          };
-          count.onerror = () => reject(count.error);
-        };
-      }),
-  );
-}
 
 const keydownMarks = (page: Page) =>
   page.evaluate(() => performance.getEntriesByName('record-keydown').length);
@@ -548,25 +504,6 @@ async function announced(page: Page, texts: readonly string[]): Promise<string[]
   return all.filter((t) => texts.includes(t));
 }
 
-/** The names of the files in OPFS `raw/` and `audio/` (none when a directory is missing). */
-function opfsFiles(page: Page): Promise<string[]> {
-  return page.evaluate(async () => {
-    const root = await navigator.storage.getDirectory();
-    const names: string[] = [];
-    for (const dir of ['raw', 'audio']) {
-      try {
-        const handle = await root.getDirectoryHandle(dir);
-        for await (const name of (handle as unknown as { keys(): AsyncIterable<string> }).keys()) {
-          names.push(`${dir}/${name}`);
-        }
-      } catch {
-        // No such directory: nothing in it.
-      }
-    }
-    return names;
-  });
-}
-
 test('near the cap: "30 seconds left" shows and is announced once; at the cap it stops and saves', async ({
   page,
 }) => {
@@ -692,26 +629,6 @@ const OPEN_DEVICE = 'fake-mic-open_strings';
 const LOST_TITLE = 'Microphone access was lost';
 const STORAGE_FULL = 'Storage is full — recording stopped and saved';
 const storageBanner = (page: Page) => page.getByTestId('storage-full-banner');
-
-/** The ids of every saved take. */
-function takeIds(page: Page): Promise<string[]> {
-  return page.evaluate(
-    () =>
-      new Promise<string[]>((resolve, reject) => {
-        const open = indexedDB.open('tabcreator');
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const db = open.result;
-          const keys = db.transaction('takes').objectStore('takes').getAllKeys();
-          keys.onsuccess = () => {
-            resolve(keys.result as string[]);
-            db.close();
-          };
-          keys.onerror = () => reject(keys.error);
-        };
-      }),
-  );
-}
 
 /**
  * Waits until the take has `ms` of audio-clock time, then runs `then` (by name) at once. Rejects

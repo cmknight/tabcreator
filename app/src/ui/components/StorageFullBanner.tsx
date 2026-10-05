@@ -2,9 +2,8 @@ import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { recordingSession } from '../../session/recording-session';
 import { announce } from '../a11y/announcer';
 import { strings } from '../strings';
-import banner from './banner.module.css';
-import { ErrorIcon } from './icons';
 import styles from './StorageFullBanner.module.css';
+import { StorageFullBannerView } from './StorageFullBannerView';
 
 /**
  * The storage-full error banner (story 3.9, CAP-25): shown on Record after a take was stopped
@@ -34,15 +33,6 @@ export function StorageFullBanner() {
 
   if (!storageFull) return null;
   return (
-    <div
-      className={`${banner.banner} ${banner.error} ${styles.banner}`}
-      data-testid="storage-full-banner"
-    >
-      <ErrorIcon className={banner.icon} />
-      <p className={banner.text}>{text}</p>
-      <a className={styles.link} href="#/library">
-        {strings['record.storageFullLibrary']}
-      </a>
-    </div>
+    <StorageFullBannerView text={text} className={styles.banner} testId="storage-full-banner" />
   );
 }

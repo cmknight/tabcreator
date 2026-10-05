@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
+import { recordButton, stopButton, timer } from './helpers';
 import { FIXTURE, goLive, held } from './mic-helpers';
+import { rawFileExists, readTab, readTake, takeIds } from './storage-helpers';
 
 // Ticket 12 (AD-15; Recording retro A5): a `recorded` take whose raw file is gone analyses from
 // its compressed audio, decoded at the take's rate (`audio/decode.ts`), from the recorded webm
@@ -40,59 +42,34 @@ interface TakeState {
   notes: NoteKey[] | null;
 }
 
-const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', exact: true });
-const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop', exact: true });
 const systems = (page: Page) => page.getByTestId('tab-systems');
 
 /** The take's status, audio type and stop reason, whether its raw file exists, and its notes. */
-function readState(page: Page, id: string): Promise<TakeState> {
-  return page.evaluate(async (takeId) => {
-    const get = (store: string) =>
-      new Promise<unknown>((resolve, reject) => {
-        const open = indexedDB.open('tabcreator');
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const db = open.result;
-          const req = db.transaction(store).objectStore(store).get(takeId);
-          req.onsuccess = () => {
-            resolve(req.result ?? null);
-            db.close();
-          };
-          req.onerror = () => reject(req.error);
-        };
-      });
-    const take = (await get('takes')) as {
-      status: string;
-      audioMime: string | null;
-      stopReason?: string;
-    } | null;
-    const tab = (await get('tabs')) as { notes: NoteKey[] } | null;
-    let rawExists = true;
-    try {
-      const root = await navigator.storage.getDirectory();
-      await (await root.getDirectoryHandle('raw')).getFileHandle(`${takeId}.f32`);
-    } catch {
-      rawExists = false;
-    }
-    return {
-      status: take?.status ?? null,
-      audioMime: take?.audioMime ?? null,
-      stopReason: take?.stopReason ?? null,
-      rawExists,
-      notes: tab
-        ? [...tab.notes]
-            .sort((a, b) => a.startMs - b.startMs)
-            .map(({ midi, startMs }) => ({ midi, startMs }))
-        : null,
-    };
-  }, id);
+async function readState(page: Page, id: string): Promise<TakeState> {
+  const take = await readTake<{ status: string; audioMime: string | null; stopReason?: string }>(
+    page,
+    id,
+  );
+  const tab = await readTab<{ notes: NoteKey[] }>(page, id);
+  const rawExists = await rawFileExists(page, id);
+  return {
+    status: take?.status ?? null,
+    audioMime: take?.audioMime ?? null,
+    stopReason: take?.stopReason ?? null,
+    rawExists,
+    notes: tab
+      ? [...tab.notes]
+          .sort((a, b) => a.startMs - b.startMs)
+          .map(({ midi, startMs }) => ({ midi, startMs }))
+      : null,
+  };
 }
 
 /** Records about 3 s with analysis held and stops; returns the take id once it is saved. */
 async function recordHeldTake(page: Page): Promise<string> {
   await recordButton(page).click();
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('timer')).toHaveText('0:03', { timeout: 6_000 });
+  await expect(timer(page)).toHaveText('0:03', { timeout: 6_000 });
   await stopButton(page).click();
   await expect(page).toHaveURL(/#\/tab\/[^/]+$/, { timeout: 15_000 });
   const id = decodeURIComponent(new URL(page.url()).hash.slice('#/tab/'.length));
@@ -245,32 +222,12 @@ test('raw file gone, WAV-fallback copy: the take decodes and analyses (Recording
   expect(errors).toEqual([]);
 });
 
-/** The ids of every saved take. */
-function takeIds(page: Page): Promise<string[]> {
-  return page.evaluate(
-    () =>
-      new Promise<string[]>((resolve, reject) => {
-        const open = indexedDB.open('tabcreator');
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const db = open.result;
-          const keys = db.transaction('takes').objectStore('takes').getAllKeys();
-          keys.onsuccess = () => {
-            resolve(keys.result as string[]);
-            db.close();
-          };
-          keys.onerror = () => reject(keys.error);
-        };
-      }),
-  );
-}
-
 test('a take saved by a mic-lost stop analyses when its Tab is opened', async ({ page }) => {
   // As record.dev.spec.ts's unplug test: the scale on the first input, silence on the second.
   const errors = await goLive(page, held(`${FIXTURE},silence_60s`));
   await recordButton(page).click();
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('timer')).toHaveText('0:03', { timeout: 6_000 });
+  await expect(timer(page)).toHaveText('0:03', { timeout: 6_000 });
   await page.evaluate((device) => window.__fakeMic!.unplug(device), `fake-mic-${FIXTURE}`);
   await expect(page.getByTestId('toast')).toHaveText(
     'Microphone disconnected — recording stopped and saved',

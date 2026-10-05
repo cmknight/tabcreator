@@ -8,7 +8,6 @@ import {
   createRecordingSession,
   HANDOVER_WAIT_MS,
   MAX_TAKE_MS,
-  readDevLimits,
   takeTitle,
   WARN_LEAD_MS,
   type RecordingDeps,
@@ -16,6 +15,8 @@ import {
 import type { RawWriter } from '../../src/storage/audio-store';
 import { loadPrefs, updatePrefs } from '../../src/storage/prefs';
 import { COUNT_IN_LEAD_S } from '../../src/audio/metronome';
+import { readDevLimits } from '../../src/dev/hooks/recording';
+import { deferred, flush } from './helpers';
 
 // Stories 3.4 and 3.6: record() and stop('user') in the recording store, and the count-in, with a
 // fake capture that emits chunks before and after createTake resolves, and fake storage that logs
@@ -26,18 +27,6 @@ const ANALYSIS_DEFAULTS = { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 };
 const DEVICE = { deviceId: 'mic-a', label: 'USB Interface', groupId: 'g-a' };
 /** 2026-10-02 21:14:05 local time. */
 const NOW = new Date(2026, 9, 2, 21, 14, 5).getTime();
-
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (err: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 /** A chunk of `n` samples, all `value`, so the raw file's order can be checked. */
 const chunk = (value: number, n = RATE) => new Float32Array(n).fill(value);

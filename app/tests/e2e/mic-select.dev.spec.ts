@@ -1,6 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
 import { collectErrors } from './helpers';
-import { countGetUserMedia, expectNoSeriousAxe, goLive, gumCalls, meter } from './mic-helpers';
+import {
+  countGetUserMedia,
+  expectNoSeriousAxe,
+  goLive,
+  gumCalls,
+  gumLog,
+  meter,
+} from './mic-helpers';
 
 // Runs in the `dev` project only: each `?fakeMic` fixture is one fake input device (story 2.2),
 // id `fake-mic-<fixture>`, label "Fake mic: <fixture>". open_strings moves the meter; silence_60s
@@ -19,55 +26,13 @@ const lostCard = (page: Page) => page.getByRole('region', { name: LOST_TITLE });
 const storedPrefs = (page: Page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem('tabcreator.prefs.v1') ?? 'null'));
 
-interface GumCall {
-  /** The `deviceId` constraint, as JSON. */
-  deviceId: string;
-  /** How many tracks from earlier calls were still live when this call was made. */
-  liveBefore: number;
-}
-
-/**
- * Wraps the fake mic's getUserMedia to record each call's device constraint and how many
- * earlier tracks were still live at that moment. Waits for the fake mic first: `main.tsx`
- * installs it after a dynamic import that can finish after `goto` resolves, and installing it
- * later would replace this wrapper.
- */
-async function recordGum(page: Page): Promise<void> {
-  await page.waitForFunction(() => window.__fakeMic !== undefined);
-  await page.evaluate(() => {
-    const md = navigator.mediaDevices;
-    const original = md.getUserMedia.bind(md);
-    const w = window as unknown as { __gum: GumCall[] };
-    w.__gum = [];
-    const tracks: MediaStreamTrack[] = [];
-    // Reflect, not Object.defineProperty: `countGetUserMedia` hooks the latter and would count
-    // this wrapper's call through to the fake mic as a second call.
-    Reflect.defineProperty(md, 'getUserMedia', {
-      value: async (c: MediaStreamConstraints) => {
-        const audio = typeof c.audio === 'object' ? c.audio : {};
-        w.__gum.push({
-          deviceId: JSON.stringify(audio.deviceId ?? null),
-          liveBefore: tracks.filter((t) => t.readyState === 'live').length,
-        });
-        const stream = await original(c);
-        tracks.push(...stream.getTracks());
-        return stream;
-      },
-      configurable: true,
-    });
-  });
-}
-
-const gumLog = (page: Page) =>
-  page.evaluate(() => (window as unknown as { __gum: GumCall[] }).__gum);
-
 /**
  * Opens Record with `fixtures` as the devices and goes live with Allow, counting and logging
  * every `getUserMedia` call.
  */
 async function goLiveLogged(page: Page, fixtures: string): Promise<string[]> {
   await countGetUserMedia(page);
-  return goLive(page, fixtures, { before: () => recordGum(page) });
+  return goLive(page, fixtures);
 }
 
 /** The meter's reading moves away from −60 (open_strings is playing). */

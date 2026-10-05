@@ -22,6 +22,7 @@
 // re-reads the take just before its save, so after a handover it writes nothing and never
 // navigates; the take stays `recording` for the new holder's scan.
 
+import { quietly } from '../model/quietly';
 import type { Take } from '../model/types';
 import type { CompressedFile } from '../storage/audio-store';
 import type { TakePatch } from '../storage/db';
@@ -92,15 +93,6 @@ export interface RecordingRecovery {
    * offered already. Never rejects.
    */
   reoffer(id: string): Promise<void>;
-}
-
-/** Runs `fn`, ignoring a failure (best-effort cleanup; the next start retries it). */
-async function quietly(fn: () => Promise<unknown>): Promise<void> {
-  try {
-    await fn();
-  } catch {
-    // Left for the next start's scan.
-  }
 }
 
 export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost): RecordingRecovery {

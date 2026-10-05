@@ -4,6 +4,8 @@
 // and the returned controls (exposed as `window.__fakeMic`) simulate device loss, revoked access,
 // getUserMedia failures and low-quality inputs.
 
+import { resumeWithin } from '../audio/context-resume';
+
 /** Fixture WAV URLs, keyed by fixture name. Lazy: nothing is fetched until it is needed. */
 const FIXTURES: Record<string, () => Promise<string>> = Object.fromEntries(
   Object.entries(
@@ -159,14 +161,7 @@ export function installFakeMic(fixtures: string[]): FakeMicControls {
   }
 
   async function resume(ctx: AudioContext): Promise<void> {
-    // resume() can stay pending forever without user activation, so do not wait on it alone.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      ctx.resume(),
-      new Promise<void>((resolve) => (timer = setTimeout(resolve, RESUME_TIMEOUT_MS))),
-    ]);
-    clearTimeout(timer);
-    if (ctx.state !== 'running') {
+    if (!(await resumeWithin(ctx, RESUME_TIMEOUT_MS))) {
       throw new DOMException('Fake mic needs a user gesture to start audio', 'NotAllowedError');
     }
   }

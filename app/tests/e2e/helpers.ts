@@ -27,3 +27,13 @@ export function decodedSeconds(page: Page, id: string): Promise<number | null> {
     }
   }, id);
 }
+
+/** Record's Record button (`exact`, so not "Record" inside another name). */
+export const recordButton = (page: Page) =>
+  page.getByRole('button', { name: 'Record', exact: true });
+
+/** Record's Stop button. */
+export const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop', exact: true });
+
+/** Record's elapsed-time readout. */
+export const timer = (page: Page) => page.getByRole('timer');

@@ -3,8 +3,7 @@ import { AppError } from '../../src/model/errors';
 import type { Prefs } from '../../src/model/types';
 import { createSettingsSession } from '../../src/session/settings-session';
 import { DEFAULT_PREFS, loadPrefs, PREFS_KEY } from '../../src/storage/prefs';
-
-const flush = () => new Promise((r) => setTimeout(r, 0));
+import { flush } from './helpers';
 
 describe('settings session', () => {
   it('asks for the version on first subscribe and reports ready', async () => {

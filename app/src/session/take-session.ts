@@ -48,6 +48,21 @@ export interface TakeSnapshot {
   missing?: true;
 }
 
+/**
+ * Whether the take's tab is shown: the take exists, no analysis is running or failed, and its
+ * tab has notes. The Tab screen shows the tab area then, and the Tab shortcuts apply only then.
+ */
+export function isTabShown(
+  snapshot: Pick<TakeSnapshot, 'missing' | 'analysis' | 'tab'> | null | undefined,
+): boolean {
+  return (
+    !!snapshot &&
+    !snapshot.missing &&
+    snapshot.analysis.kind === 'idle' &&
+    (snapshot.tab?.notes.length ?? 0) > 0
+  );
+}
+
 export interface TakeSessionDeps {
   db: Pick<TakeDb, 'getTake' | 'getTab' | 'patchTake'>;
   analysis: Pick<

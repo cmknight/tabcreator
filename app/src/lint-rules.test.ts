@@ -73,6 +73,39 @@ describe('ESLint layering (spine AD-1)', () => {
     },
   );
 
+  it.each(['ui', 'session', 'storage'])(
+    'allows %s/ importing dev/hooks/ statically, but not dynamically or dev/ beside it',
+    async (layer) => {
+      expect(
+        await restrictedImports(`src/${layer}/x.ts`, "export { h } from '../dev/hooks/h';\n"),
+      ).toBe(0);
+      expect(
+        await lintRules(`src/${layer}/x.ts`, "export const h = import('../dev/hooks/h');\n"),
+      ).toContain('no-restricted-syntax');
+      expect(
+        await restrictedImports(`src/${layer}/x.ts`, "export { p } from '../dev/hookspage';\n"),
+      ).toBe(1);
+      expect(await restrictedImports(`src/${layer}/x.ts`, "export { p } from '../dev';\n")).toBe(1);
+    },
+  );
+
+  it.each(['model', 'audio', 'engine'])('rejects %s/ importing dev/hooks/', async (layer) => {
+    expect(
+      await restrictedImports(`src/${layer}/x.ts`, "export { h } from '../dev/hooks/h';\n"),
+    ).toBe(1);
+  });
+
+  it('allows dev/hooks/ values from model/ and types from any layer, but no other values', async () => {
+    const rule = '@typescript-eslint/no-restricted-imports';
+    const file = 'src/dev/hooks/x.ts';
+    expect(await lintRules(file, "export { AppError } from '../../model/errors';\n")).toEqual([]);
+    expect(await lintRules(file, "export type { TakeDb } from '../../storage/db';\n")).toEqual([]);
+    for (const layer of ['ui', 'session', 'storage', 'audio', 'engine']) {
+      expect(await lintRules(file, `export { x } from '../../${layer}/x';\n`)).toContain(rule);
+    }
+    expect(await lintRules(file, "export { useState } from 'react';\n")).toContain(rule);
+  });
+
   it('rejects src/App.tsx importing dev/ statically or without the DEV guard', async () => {
     expect(
       await restrictedImports('src/App.tsx', "export { P } from './dev/StorageTestPage';\n"),

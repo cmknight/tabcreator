@@ -36,6 +36,32 @@ test('announcements land in the matching region', async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+// Refactor sweep (3.12 deferral): the shared `visuallyHidden` class (a11y/visually-hidden.module.css)
+// hides its content on screen, at most 1×1 and clipped, but leaves it in the accessibility tree.
+// The live regions use it; jsdom has no layout, so it is checked here.
+test('the visually hidden class: 1×1 and clipped on screen, still in the accessibility tree', async ({
+  page,
+}) => {
+  const errors = await openPage(page);
+  await page.getByRole('button', { name: 'Announce polite' }).click();
+  await expect(polite(page)).toHaveText('Polite test message');
+
+  const box = await polite(page).boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.width).toBeLessThanOrEqual(1);
+  expect(box!.height).toBeLessThanOrEqual(1);
+  const style = await polite(page).evaluate((el) => {
+    const s = getComputedStyle(el);
+    return { position: s.position, overflow: s.overflow, clipPath: s.clipPath };
+  });
+  expect(style).toEqual({ position: 'absolute', overflow: 'hidden', clipPath: 'inset(50%)' });
+
+  // Still exposed: found by role, with its text in the accessibility tree.
+  await expect(page.getByRole('status').filter({ hasText: 'Polite test message' })).toHaveCount(1);
+  await expect(polite(page)).toMatchAriaSnapshot('- status: Polite test message');
+  expect(errors).toEqual([]);
+});
+
 test('a toast shows bottom-centre, is announced and goes after 4 s', async ({ page }) => {
   const errors = await openPage(page);
   // Before the click: the toast's timer starts before click() resolves.

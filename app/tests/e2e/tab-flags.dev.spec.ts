@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { collectErrors } from './helpers';
+import { collectErrors, recordButton, stopButton, timer } from './helpers';
 import { FIXTURE, expectNoSeriousAxe, goLive } from './mic-helpers';
 import {
   focusedNote,
@@ -15,8 +15,6 @@ import {
 // test per row of the plan's I/O matrix, in the `dev` project (the fake mic and the seeding
 // import of the dev server's storage module).
 
-const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', exact: true });
-const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop', exact: true });
 const statusCounts = (page: Page) => page.getByTestId('tab-status-line').locator('p');
 const nextToCheck = (page: Page) => page.getByRole('button', { name: 'Next to check' });
 const barLines = (page: Page) => page.getByRole('button', { name: 'Bar lines' });
@@ -33,7 +31,7 @@ const flaggedId = (i: number) => `note-${String(i).padStart(2, '0')}`;
 async function recordTake(page: Page): Promise<string> {
   await recordButton(page).click();
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('timer')).toHaveText('0:03', { timeout: 6_000 });
+  await expect(timer(page)).toHaveText('0:03', { timeout: 6_000 });
   await stopButton(page).click();
   await expect(page).toHaveURL(/#\/tab\/[^/]+$/, { timeout: 15_000 });
   return decodeURIComponent(new URL(page.url()).hash.slice('#/tab/'.length));

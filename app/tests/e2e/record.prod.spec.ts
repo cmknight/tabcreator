@@ -1,17 +1,16 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { recordButton, stopButton, timer } from './helpers';
 import { watchHygiene } from './hygiene';
 import { goLive } from './mic-helpers';
+import { rawFileExists, readTab, readTake } from './storage-helpers';
 
 // The production-mic lane (`prod-mic` project): the production build, with Chromium's fake
 // capture device looping testdata/synth/c_major_scale_pos1_noisy.wav as the microphone, the
 // permission granted and Chrome's own autoplay policy.
 
 const ASSETS = join(import.meta.dirname, '..', '..', 'dist', 'assets');
-
-const recordButton = (page: Page) => page.getByRole('button', { name: 'Record', exact: true });
-const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop', exact: true });
 
 // Story 3.4: recording loads the recorder worklet from its own same-origin JS file, under the
 // production CSP, with no violation.
@@ -38,7 +37,7 @@ test('Record then Stop loads the worklet as a same-origin script with no CSP vio
   await expect(recordButton(page)).toBeVisible();
   await recordButton(page).click();
   // The timer runs only once the worklet is loaded and the capture started.
-  await expect(page.getByRole('timer')).toHaveText('0:01', { timeout: 5_000 });
+  await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
   await stopButton(page).click();
   await expect(page).toHaveURL(/#\/tab\/[^/]+$/, { timeout: 15_000 });
   hygiene.expectClean();
@@ -73,7 +72,7 @@ test('Space starts a take within 100 ms, and Space again stops it and opens its 
   expect(latencyMs).toBeGreaterThanOrEqual(0);
   expect(latencyMs).toBeLessThanOrEqual(100);
 
-  await expect(page.getByRole('timer')).toHaveText('0:01', { timeout: 5_000 });
+  await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
   // The page did not scroll on Space.
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   await page.keyboard.press('Space');
@@ -95,45 +94,28 @@ test('a take runs to the 5:00 cap, stops itself, and its compressed copy is at m
   await goLive(page, null);
   await expect(recordButton(page)).toBeVisible();
   await recordButton(page).click();
-  await expect(page.getByRole('timer')).toHaveText('0:01', { timeout: 5_000 });
+  await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
 
   await expect(page.getByTestId('near-limit')).toHaveText('30 seconds left', {
     timeout: 4.75 * 60_000,
   });
-  await expect(page.getByRole('timer')).toHaveText(/^4:(29|3[0-5])$/);
+  await expect(timer(page)).toHaveText(/^4:(29|3[0-5])$/);
   await expect(page).toHaveURL(/#\/tab\/[^/]+$/, { timeout: 60_000 });
   const id = decodeURIComponent(new URL(page.url()).hash.slice('#/tab/'.length));
 
-  const readSaved = () =>
-    page.evaluate(async (takeId) => {
-      const take = await new Promise<{
-        status: string;
-        stopReason?: string;
-        durationMs: number;
-      } | null>((resolve, reject) => {
-        const open = indexedDB.open('tabcreator');
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const db = open.result;
-          const get = db.transaction('takes').objectStore('takes').get(takeId);
-          get.onsuccess = () => {
-            resolve(get.result ?? null);
-            db.close();
-          };
-          get.onerror = () => reject(get.error);
-        };
-      });
+  const readSaved = async () => {
+    const take = await readTake<{ status: string; stopReason?: string; durationMs: number }>(
+      page,
+      id,
+    );
+    const compressedBytes = await page.evaluate(async (takeId) => {
       const root = await navigator.storage.getDirectory();
       const file = await (await root.getDirectoryHandle('audio')).getFileHandle(`${takeId}.webm`);
-      let rawExists: boolean;
-      try {
-        await (await root.getDirectoryHandle('raw')).getFileHandle(`${takeId}.f32`);
-        rawExists = true;
-      } catch {
-        rawExists = false;
-      }
-      return { take, compressedBytes: (await file.getFile()).size, rawExists };
+      return (await file.getFile()).size;
     }, id);
+    const rawExists = await rawFileExists(page, id);
+    return { take, compressedBytes, rawExists };
+  };
 
   // Story 5.6: the Tab screen analyses the take; wait for it to be analysed and its raw file gone.
   await expect
@@ -170,7 +152,7 @@ test('Record 3 s, Stop: the tab shows within 2 s; the take is analysed and its r
   await goLive(page, null);
   await expect(recordButton(page)).toBeVisible();
   await recordButton(page).click();
-  await expect(page.getByRole('timer')).toHaveText('0:03', { timeout: 8_000 });
+  await expect(timer(page)).toHaveText('0:03', { timeout: 8_000 });
 
   // Timed from before the click, so the click itself counts against the 2 s.
   const stoppedAt = Date.now();
@@ -183,37 +165,15 @@ test('Record 3 s, Stop: the tab shows within 2 s; the take is analysed and its r
   expect((await firstPre.textContent())!.split('\n')[0]).toMatch(/^e\|/);
 
   const id = decodeURIComponent(new URL(page.url()).hash.slice('#/tab/'.length));
-  const stored = await page.evaluate(async (takeId) => {
-    const read = <T>(store: 'takes' | 'tabs') =>
-      new Promise<T | null>((resolve, reject) => {
-        const open = indexedDB.open('tabcreator');
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const db = open.result;
-          const get = db.transaction(store).objectStore(store).get(takeId);
-          get.onsuccess = () => {
-            resolve((get.result as T | undefined) ?? null);
-            db.close();
-          };
-          get.onerror = () => reject(get.error);
-        };
-      });
-    const take = await read<{
+  const stored = {
+    take: await readTake<{
       status: string;
       analysisVersion: string | null;
       warnings?: { tuningOffsetCents: number; belowRangeNotes: number };
-    }>('takes');
-    const tab = await read<{ notes: unknown[] }>('tabs');
-    let rawExists: boolean;
-    try {
-      const root = await navigator.storage.getDirectory();
-      await (await root.getDirectoryHandle('raw')).getFileHandle(`${takeId}.f32`);
-      rawExists = true;
-    } catch {
-      rawExists = false;
-    }
-    return { take, tab, rawExists };
-  }, id);
+    }>(page, id),
+    tab: await readTab<{ notes: unknown[] }>(page, id),
+    rawExists: await rawFileExists(page, id),
+  };
 
   expect(stored.take?.status).toBe('analyzed');
   expect(stored.take?.analysisVersion).not.toBeNull();

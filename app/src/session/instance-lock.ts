@@ -28,7 +28,14 @@
 // marker, and the reloaded page's start grant waits the same way (for what is left of the
 // fallback).
 
+import {
+  devIgnoreReleaseRequests,
+  devKeepConnectionListener,
+  devTraceInstance,
+  installInstanceTestHooks,
+} from '../dev/hooks/instance';
 import { engineClient } from '../engine/engine-client';
+import { quietly } from '../model/quietly';
 import { db, type ConnectionState } from '../storage/db';
 import { HANDOVER_WAIT_MS, recordingSession } from './recording-session';
 
@@ -253,20 +260,11 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
     });
   }
 
-  /** Runs `step`; a failure (thrown or rejected) does not stop the steps after it. */
-  async function attempt(step: () => unknown): Promise<void> {
-    try {
-      await step();
-    } catch {
-      // The later steps run regardless (a take that could not be saved stays for recovery).
-    }
-  }
-
   /** Settles when `step` does, or after `HANDOVER_WAIT_MS`, whichever comes first. */
   function withDeadline(step: () => Promise<unknown>): Promise<void> {
     return new Promise<void>((resolve) => {
       const timer = deps.setTimeout(resolve, HANDOVER_WAIT_MS);
-      void attempt(step).then(() => {
+      void quietly(step).then(() => {
         deps.clearTimeout(timer);
         resolve();
       });
@@ -278,9 +276,9 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
     if (!holding || releasing) return;
     releasing = true;
     await withDeadline(deps.releaseForHandover);
-    await attempt(deps.cancelAll);
-    await attempt(deps.closeDb);
-    await attempt(deps.fenceWrites);
+    await quietly(deps.cancelAll);
+    await quietly(deps.closeDb);
+    await quietly(deps.fenceWrites);
     fenced = true;
     holding = false;
     const release = releaseHeld;
@@ -450,11 +448,6 @@ export function createInstanceLock(deps: InstanceLockDeps): InstanceLock {
   };
 }
 
-/** Dev only: the e2e hooks' state (`window.__instanceTest`). */
-let devIgnoreReleaseRequests = false;
-let devConnectionListener: ((state: ConnectionState) => void) | null = null;
-const devEvents: InstanceTestEvent[] = [];
-
 /** The app-wide lock; `main.tsx` starts it before the first render. */
 export const instanceLock: InstanceLock = createInstanceLock({
   locks: typeof navigator !== 'undefined' ? navigator.locks : undefined,
@@ -464,7 +457,7 @@ export const instanceLock: InstanceLock = createInstanceLock({
   closeDb: () => db.close(),
   fenceWrites: () => db.fenceWrites(),
   onConnectionState: (listener) => {
-    if (import.meta.env.DEV) devConnectionListener = listener;
+    if (import.meta.env.DEV) devKeepConnectionListener(listener);
     return db.onConnectionState(listener);
   },
   reload: () => location.reload(),
@@ -472,7 +465,7 @@ export const instanceLock: InstanceLock = createInstanceLock({
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   // The scan is a no-op once the store has been handed over (this tab lost the lock meanwhile).
   onHeld: scanWhenReady(() => {
-    if (import.meta.env.DEV) devEvents.push({ event: 'scan', at: Date.now() });
+    if (import.meta.env.DEV) devTraceInstance('scan');
     return recordingSession.scanForRecovery();
   }),
   storage: (() => {
@@ -487,45 +480,13 @@ export const instanceLock: InstanceLock = createInstanceLock({
   // Production builds replace the conditions with `false`, so the hooks tree-shake out.
   ...(import.meta.env.DEV
     ? {
-        ignoreReleaseRequests: () => devIgnoreReleaseRequests,
-        trace: (event: InstanceTestEvent['event']) => devEvents.push({ event, at: Date.now() }),
+        ignoreReleaseRequests: devIgnoreReleaseRequests,
+        trace: devTraceInstance,
       }
     : {}),
 });
 
-/** Dev only: one event noted for the e2e tests, with its wall-clock time. */
-export interface InstanceTestEvent {
-  event: 'released-posted' | 'released-heard' | 'scan';
-  at: number;
-}
-
-/** Dev only: the e2e hooks on `window.__instanceTest` (absent from production builds). */
-export interface InstanceTestHooks {
-  /** From now on this tab ignores `release-request`, so "Use here" elsewhere has to steal. */
-  ignoreReleaseRequests(): void;
-  /** Reports a database connection state to the lock, as `db.ts` would (`blocked`, `open`). */
-  reportConnectionState(state: ConnectionState): void;
-  /** The `released` messages posted and heard, and the recovery scans run, in order. */
-  events(): InstanceTestEvent[];
-}
-
-declare global {
-  interface Window {
-    __instanceTest?: InstanceTestHooks;
-  }
-}
-
-if (import.meta.env.DEV && typeof window !== 'undefined') {
-  window.__instanceTest = {
-    ignoreReleaseRequests() {
-      devIgnoreReleaseRequests = true;
-    },
-    reportConnectionState(state) {
-      devConnectionListener?.(state);
-    },
-    events: () => [...devEvents],
-  };
-}
+if (import.meta.env.DEV && typeof window !== 'undefined') installInstanceTestHooks();
 
 // Dev only. main.tsx imports this module, so Vite turns an edit here or in anything it imports
 // into a full reload already; this is the backstop should a hot update ever re-run it in place.
