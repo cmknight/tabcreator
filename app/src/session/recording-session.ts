@@ -81,22 +81,12 @@ import { createTunerWatch, type TunerDisplay } from './tuner-watch';
 export { TUNER_POLL_MS } from '../audio/tuner';
 export type { TunerDisplay } from './tuner-watch';
 export type { RecoveredTake } from './recording-recovery';
-export type { TakeLimits } from '../model/take-limits';
-export type {
-  CountInPrefs,
-  HandoverTake,
-  MicNotice,
-  MicState,
-  RecordingSnapshot,
-  RecordingState,
-} from './recording-types';
 export { takeTitle } from './take-lifecycle';
 
 /** The count-in tempo range, BPM (EXPERIENCE.md Count-in controls). */
 export const COUNT_IN_BPM_MIN = 40;
 export const COUNT_IN_BPM_MAX = 240;
 const DEFAULT_COUNT_IN: CountInPrefs = { on: false, bpm: 100 };
-export { MAX_TAKE_MS, WARN_LEAD_MS } from '../model/take-limits';
 /**
  * How long a handover waits for this store's release (`releaseForHandover`), ms: the instance
  * lock cuts it off then (instance-lock.ts re-exports it), and the unload guard disarms.

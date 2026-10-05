@@ -1,6 +1,8 @@
 // Dev-only instance-lock hooks (stories 3.10, 5.3): the e2e tests' `window.__instanceTest` and
 // the state behind it. session/instance-lock.ts calls these only inside `import.meta.env.DEV`,
 // so production builds tree-shake this module.
+// Every export also falls back to the production behaviour (no hook) outside dev builds, so a
+// call missing its guard changes nothing in production.
 
 import type { ConnectionState } from '../../storage/db';
 
@@ -32,21 +34,25 @@ const events: InstanceTestEvent[] = [];
 
 /** Whether this tab ignores `release-request` (`ignoreReleaseRequests` was called). */
 export function devIgnoreReleaseRequests(): boolean {
+  if (!import.meta.env.DEV) return false;
   return ignoringReleaseRequests;
 }
 
 /** Keeps the lock's connection-state listener, for `reportConnectionState`. */
 export function devKeepConnectionListener(listener: (state: ConnectionState) => void): void {
+  if (!import.meta.env.DEV) return;
   connectionListener = listener;
 }
 
 /** Notes an event for `events()`, with the time now. */
 export function devTraceInstance(event: InstanceTestEvent['event']): void {
+  if (!import.meta.env.DEV) return;
   events.push({ event, at: Date.now() });
 }
 
 /** Installs `window.__instanceTest`. */
 export function installInstanceTestHooks(): void {
+  if (!import.meta.env.DEV) return;
   window.__instanceTest = {
     ignoreReleaseRequests() {
       ignoringReleaseRequests = true;

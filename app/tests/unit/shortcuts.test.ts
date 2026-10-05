@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RecordingSnapshot } from '../../src/session/recording-session';
+import type { RecordingSnapshot } from '../../src/session/recording-types';
 import {
   cancelCountIn,
   dispatchShortcut,

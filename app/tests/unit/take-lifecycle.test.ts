@@ -4,8 +4,8 @@ import {
   createRecordingMachine,
   enterState,
   RECORDING_TRANSITIONS,
-  type RecordingState,
 } from '../../src/session/take-lifecycle';
+import type { RecordingState } from '../../src/session/recording-types';
 
 // The take lifecycle's recording state machine: every change goes through the transition table,
 // and one not in it is refused with the state unchanged.

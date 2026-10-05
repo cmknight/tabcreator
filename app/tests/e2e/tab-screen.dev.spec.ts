@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { layoutTab } from '../../src/model/tab-render';
 import { collectErrors } from './helpers';
 import { expectNoSeriousAxe } from './mic-helpers';
+import { readTake } from './storage-helpers';
 import {
   focusedNote,
   longestLine,
@@ -9,7 +10,6 @@ import {
   noteButton,
   noteButtons,
   openSeededTab,
-  readTake,
   selectedNote,
   tabArea,
   widthChars,
@@ -237,6 +237,12 @@ test('title field: arrows and Esc typed there leave the selection; Esc cancels t
   expect(await selectedNote(page)).toBe(second);
 });
 
+/** The take fields the rename test reads. */
+interface StoredTitle {
+  title: string;
+  updatedAt: string;
+}
+
 test('rename: type + Enter saves the title (take-session); empty reverts with no write', async ({
   page,
 }) => {
@@ -247,8 +253,9 @@ test('rename: type + Enter saves the title (take-session); empty reverts with no
   await field.press('Enter');
   await expect(h1(page)).toHaveText('Riff in A');
   await expect(renameButton(page)).toBeFocused();
-  await expect.poll(async () => (await readTake(page, id)).title).toBe('Riff in A');
-  const saved = await readTake(page, id);
+  await expect.poll(async () => (await readTake<StoredTitle>(page, id))?.title).toBe('Riff in A');
+  const saved = await readTake<StoredTitle>(page, id);
+  expect(saved).not.toBeNull();
 
   await renameButton(page).click();
   await field.fill('   ');
@@ -257,7 +264,7 @@ test('rename: type + Enter saves the title (take-session); empty reverts with no
   await page.waitForTimeout(200);
   expect(await readTake(page, id)).toMatchObject({
     title: 'Riff in A',
-    updatedAt: saved.updatedAt,
+    updatedAt: saved!.updatedAt,
   });
 
   // It survives a reload: it was written to storage.

@@ -1,11 +1,8 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StringNo } from '../../src/model/types';
-import {
-  recordingSession,
-  TUNER_POLL_MS,
-  type RecordingSnapshot,
-} from '../../src/session/recording-session';
+import { recordingSession, TUNER_POLL_MS } from '../../src/session/recording-session';
+import type { RecordingSnapshot } from '../../src/session/recording-types';
 import { Tuner } from '../../src/ui/screens/Tuner';
 
 // The Tuner's rendering of one reading (plan I/O matrix: off by 12, flat, beyond range), with

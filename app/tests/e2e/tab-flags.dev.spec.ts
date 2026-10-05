@@ -247,6 +247,9 @@ test('dismiss: a dismissed tuning banner is back when the take is reopened', asy
 
   await page.getByRole('link', { name: 'Library' }).click();
   await expect(page).toHaveURL(/#\/library$/);
+  // Wait for the Library screen itself: two quick hash changes can render only the second,
+  // and the Tab screen (with its dismissal) would never unmount.
+  await expect(page.getByRole('heading', { level: 1, name: 'Library' })).toBeVisible();
   await page.goto(`./#/tab/${encodeURIComponent(id)}`);
   await expect(warning(page, 'tuning')).toContainText('about 45 cents flat');
   expect(errors).toEqual([]);

@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { recordingSession, type RecordingSnapshot } from '../../src/session/recording-session';
+import { recordingSession } from '../../src/session/recording-session';
+import type { RecordingSnapshot } from '../../src/session/recording-types';
 import { MicNotices } from '../../src/ui/components/MicNotices';
 import { MicSelect } from '../../src/ui/components/MicSelect';
 import { ToastHost } from '../../src/ui/components/ToastHost';

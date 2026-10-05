@@ -72,9 +72,6 @@ import type { OpenedInput } from './input-derivation';
 import type { RecordingSnapshot, RecordingState } from './recording-types';
 import { type ClipCounter, createClipCounter, isTooShort, saveTake } from './take-save';
 
-export type { RecordingState } from './recording-types';
-export type { TakeLimits } from '../model/take-limits';
-
 /**
  * The recording state's transitions: from each state, the states it may move to. The forward
  * path is idle → count-in → starting → recording → stopping → idle; a count-in, a start or an

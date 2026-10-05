@@ -6,6 +6,7 @@ import {
   activeTakeSession,
   capTitle,
   createTakeSession,
+  isTabShown,
   setActiveTakeSession,
   type TakeSessionDeps,
 } from '../../src/session/take-session';
@@ -764,5 +765,35 @@ describe('the active take session', () => {
     expect(activeTakeSession()).toBe(session);
     setActiveTakeSession(null);
     expect(activeTakeSession()).toBeNull();
+  });
+});
+
+// Refactor sweep: the one "tab shown" condition, shared by the Tab screen and its shortcuts.
+describe('isTabShown', () => {
+  const tab = (notes: number) =>
+    ({
+      takeId: 't1',
+      notes: Array.from({ length: notes }, (_, i) => ({ id: `n${i}` })),
+    }) as unknown as Tab;
+  const idle = { kind: 'idle' } as const;
+  it.each([
+    ['no snapshot', null, false],
+    ['the take is missing', { missing: true as const, analysis: idle, tab: tab(3) }, false],
+    ['no tab yet', { analysis: idle, tab: null }, false],
+    [
+      'an analysis running',
+      { analysis: { kind: 'running', progress: 0.5 } as const, tab: tab(3) },
+      false,
+    ],
+    [
+      'an analysis failed',
+      { analysis: { kind: 'failed', code: 'analysis-failed' } as const, tab: tab(3) },
+      false,
+    ],
+    ['an analysis cancelled', { analysis: { kind: 'cancelled' } as const, tab: tab(3) }, false],
+    ['a tab with no notes', { analysis: idle, tab: tab(0) }, false],
+    ['an analysed tab with notes', { analysis: idle, tab: tab(3) }, true],
+  ])('%s', (_name, snapshot, shown) => {
+    expect(isTabShown(snapshot as Parameters<typeof isTabShown>[0])).toBe(shown);
   });
 });

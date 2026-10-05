@@ -2,6 +2,8 @@
 // is true, recovery's re-encode (`encodePcm`) rejects, so Open falls back to the WAV encoder in a
 // real browser. session/recording-session.ts wraps `encodePcm` with it only inside
 // `import.meta.env.DEV`, so production builds tree-shake this module.
+// Every export also falls back to the production behaviour (no hook) outside dev builds, so a
+// call missing its guard changes nothing in production.
 
 import { AppError } from '../../model/errors';
 
@@ -13,6 +15,7 @@ interface EncodeFailHook {
 export function devEncodePcm(
   encodePcm: (samples: Float32Array, sampleRate: number) => Promise<Blob>,
 ): (samples: Float32Array, sampleRate: number) => Promise<Blob> {
+  if (!import.meta.env.DEV) return encodePcm;
   return (samples, sampleRate) =>
     (globalThis as EncodeFailHook).__encodePcmFailHook
       ? Promise.reject(new AppError('storage-failed', 'The encode failed (dev hook)'))

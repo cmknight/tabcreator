@@ -27,11 +27,8 @@
 // exception (see `guarded`).
 
 import { useEffect } from 'react';
-import {
-  recordingSession,
-  type RecordingSession,
-  type RecordingSnapshot,
-} from '../../session/recording-session';
+import { recordingSession, type RecordingSession } from '../../session/recording-session';
+import type { RecordingSnapshot } from '../../session/recording-types';
 import { activePlayback, type PlaybackController } from '../../session/playback';
 import { activeTakeSession, isTabShown, type TakeSession } from '../../session/take-session';
 import { parseRoute, type Route } from '../router';

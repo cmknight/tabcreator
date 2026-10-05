@@ -3,13 +3,13 @@ title: 'Refactor sweep'
 type: 'refactor'
 ticket: '11'
 created: '2026-10-04'
-status: 'in-progress'
+status: 'built'
 baseline_revision: '4568c989dc0dd008f557efcad1d6e78c1ddfa734'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -136,12 +136,12 @@ Every item, done or deferred (baseline 4568c98):
    - `recordButton`, `stopButton`, `timer` in `tests/e2e/helpers.ts`; the local copies in eight specs and every inline `getByRole('timer')` / Record / Stop locator replaced.
    - `countGetUserMedia` now also logs each call (`gumLog`: device constraint and earlier live tracks), replacing mic-select's `recordGum`; `goLiveLogged` no longer needs the `before` hook.
    - `tests/unit/helpers.ts`: `deferred` (was in analysis, recording-recovery, recording-take) and `flush` (engine-client, settings-session, recording-session, recording-take). **Deferred:** the two `setup` functions (recording-session.test.ts, recording-take.test.ts) are not copies — different fakes, inputs and return values — so merging them is a rewrite of two harnesses, not a move. Owner: Dev, if a later test sweep wants one harness.
-4. **Dev hooks into `dev/` — done.** New `src/dev/hooks/`: `storage-full.ts` (`__storageFullHook`), `recording.ts` (`__recordingClock`, `readDevLimits`), `analysis.ts` (`?holdAnalysis`, `?slowAnalysis`, `__analysisFailHook`, `__commitStorageFullHook`, the dev engine and db wrappers), `instance.ts` (`__instanceTest` and its state), `playback.ts` (`__playbackTrace`), `recovery.ts` (new, item 10). Production modules import them statically and call them only inside `import.meta.env.DEV`. `MAX_TAKE_MS`, `WARN_LEAD_MS` and `TakeLimits` moved to `model/take-limits.ts` (re-exported by recording-session / take-lifecycle) so the hook imports only model/. ESLint: ui/, session/ and storage/ may import `dev/hooks/` statically (a regex pattern keeps the rest of dev/ banned); dev/hooks/ may import values from model/ only (types from any layer, via `@typescript-eslint/no-restricted-imports`); lint-rules tests added. CI grep extended with `__recordingClock|__instanceTest|__encodePcmFailHook`; the production build has none of the hook strings. Names, query strings and behaviour unchanged.
+4. **Dev hooks into `dev/` — done.** New `src/dev/hooks/`: `storage-full.ts` (`__storageFullHook`), `recording.ts` (`__recordingClock`, `readDevLimits`), `analysis.ts` (`?holdAnalysis`, `?slowAnalysis`, `__analysisFailHook`, `__commitStorageFullHook`, the dev engine and db wrappers), `instance.ts` (`__instanceTest` and its state), `playback.ts` (`__playbackTrace`), `recovery.ts` (new, item 10). Production modules import them statically and call them only inside `import.meta.env.DEV`. `MAX_TAKE_MS`, `WARN_LEAD_MS` and `TakeLimits` moved to `model/take-limits.ts` (their one home; every importer points there) so the hook imports only model/. Each hook export also returns the production behaviour outside DEV. dev/hooks/ may not import other dev/ modules, and no `dev/hooks/../` path escapes the exception. ESLint: ui/, session/ and storage/ may import `dev/hooks/` statically (a regex pattern keeps the rest of dev/ banned); dev/hooks/ may import values from model/ only (types from any layer, via `@typescript-eslint/no-restricted-imports`); lint-rules tests added. CI grep extended with `__recordingClock|__instanceTest|__encodePcmFailHook`; the production build has none of the hook strings. Names, query strings and behaviour unchanged.
 5. **Copy key shape — done.** `global.micError.<code>.<part>` → `global.micError<Code><Part>` (e.g. `global.micErrorMicLostTitle`); `micErrorKey(code, part)` in `ui/mic-error.ts`; MicGate and MicErrorAnnouncer use it. Text unchanged.
 6. **Visually hidden — done.** `a11y-plumbing.dev.spec.ts`: the polite region (the shared class) is at most 1×1, absolute, overflow hidden, `clip-path: inset(50%)`, and still found by role with its text in the aria snapshot.
 7. **Tab screen duplicates — done.** `isTabShown(snapshot)` in `session/take-session.ts`, used by `Tab.tsx` and both Tab shortcut groups (Tab.tsx also checks `take`/`tab` for type narrowing; the session never has a tab without its take). `Tab.tsx` passes its `labels` to `TabArea` (new required prop); TabArea derives its label map and first note from them instead of recomputing `noteLabels`/`playedOrder`. The tab-screen unit test passes `labels={noteLabels(NOTES)}` (prop moved, assertions unchanged).
 8. **Storage-full banner — done.** `ui/components/StorageFullBannerView.tsx` (text, Library link, optional Retry); Record's `StorageFullBanner` and the Tab screen's `FailureBanner` use it. One `global.goToLibrary` string replaces `record.storageFullLibrary` / `tab.storageFullLibrary`. The link uses `StorageFullBanner.module.css` `.link`; Tab.module.css's `.link` (its extra underline and focus ring equal the browser default and theme.css's global `:focus-visible`) is removed, so computed styles are unchanged.
-9. **Type-only cycle — done.** `session/recording-types.ts` holds `RecordingSnapshot`, `RecordingState`, `MicState`, `MicNotice`, `CountInPrefs`, `HandoverTake`; recording-session and take-lifecycle re-export them. An import-graph check over app/src (type imports included) finds no cycle; at baseline it found strings ↔ format and recording-session ↔ take-lifecycle.
+9. **Type-only cycle — done.** `session/recording-types.ts` holds `RecordingSnapshot`, `RecordingState`, `MicState`, `MicNotice`, `CountInPrefs`, `HandoverTake` (their one home; no re-exports, every importer points there). An import-graph check over app/src (type imports included) finds no cycle; at baseline it found strings ↔ format and recording-session ↔ take-lifecycle.
 10. **Deferred tests — done.**
     - `recovery.dev.spec.ts`: with `window.__encodePcmFailHook` (dev/hooks/recovery.ts, wrapped around `encodePcm` behind DEV in recording-session.ts), Open rebuilds the take as `audio/wav` (file `audio/<id>.wav`), and its Tab analyses it.
     - `tests/unit/settings-reload.test.tsx`: Settings with the engine `unavailable` and the recording store busy; Reload does not reload and the `global.reloadBusy` toast shows.
@@ -160,6 +160,38 @@ Every item, done or deferred (baseline 4568c98):
 
 ## Review Triage Log
 
+### 2026-10-04 — Review pass
+- verdicts: 28 findings — high 0, medium 0, low 25, false 2, maybe-false 1
+- findings:
+  - `low` `patch` (verification-gap) createCompressedOutput's MediaRecorder-throws path (now the only track cleanup) is untested — patched: a unit test with a throwing stub (tracks stopped, mic-failed).
+  - `low` `patch` (edge) dev/hooks/ may import sibling dev/ modules — patched: lint forbids it, with tests.
+  - `low` `patch` (edge) the DEV_EXCEPT_HOOKS regex lets a `..` escape through — patched: rejected, with a test.
+  - `low` `patch` (edge) StorageFullBannerView can emit a literal `undefined` class — patched.
+  - `low` `reject` (edge) TabArea's labels can disagree with notes — Tab.tsx is the only caller and derives both from the same notes.
+  - `maybe-false` `reject` (edge) gumLog may now include native getUserMedia calls before the fake mic installs — the mic-select assertions pass; if true it would be low (an extra log entry).
+  - `low` `reject` (edge) the shared readers resolve null where the old inline readers rejected — every caller asserts a value, so a missing database still fails the test, at the assertion.
+  - `low` `reject` (edge) claim: the dev fake mic now reports NotAllowedError when resume() rejects — dev-only, recorded in Implementation Notes.
+  - `low` `reject` (edge) claim: assertions weakened by null-resolving readers — same as the readers finding.
+  - `false` `reject` (blind) the Tab storage-full link lost its underline — no CSS resets text-decoration, so the anchor keeps the browser's underline, and theme.css's global :focus-visible gives the ring.
+  - `low` `patch` (blind) the literal `undefined` class — same as the edge finding.
+  - `low` `patch` (blind) the shared view depends on Record's stylesheet — patched: its own CSS module. A generic error-banner view was rejected (beyond the agreed scope).
+  - `low` `patch` (blind) nothing checks dev/hooks calls are DEV-guarded — patched: in-module DEV guards in every hook.
+  - `low` `patch` (blind) the lint rule doesn't stop dev/hooks importing the rest of dev/ — same as the edge lint findings.
+  - `low` `patch` (blind) the new shared modules have no unit tests — patched: isTabShown, quietly, within/resumeWithin and createCompressedOutput tests.
+  - `low` `patch` (blind) old paths kept as re-exports — patched: importers moved, re-exports removed.
+  - `low` `reject` (blind) import order is inconsistent — no lint rule enforces it; no named harm.
+  - `low` `patch` (blind) tab-helpers' readTake hides null and duplicates storage-helpers' — patched: removed in favour of the shared reader.
+  - `low` `patch` (blind) the WAV-fallback e2e is weaker than its neighbours — patched: errors asserted, hook cleared, no webm left, raw gone.
+  - `low` `patch` (blind) settings-reload covers one branch — patched: not-busy and analysing cases.
+  - `low` `reject` (blind) TabArea takes labels and notes separately — same as the edge labels finding.
+  - `low` `patch` (blind) the visually-hidden test pins implementation values — patched: behavioural checks only.
+  - `low` `patch` (intent) CI green claimed from local runs, with an uncommitted test fix — the fix is committed with the sweep, and CI is checked on push.
+  - `false` `reject` (intent) A8's spacing tokens and live-region observers are reclassified, not done — the agreed scope defers them with reasons (design decision; observers not identical), as the Verify line allows.
+  - `low` `reject` (intent) earlier epics' sweep-routed rows aren't listed — epics 3 and 4 ran their own sweeps (done); this sweep covers stories 1–10 and 12 of this epic plus A8.
+  - `low` `reject` (intent) the slider item sits in the "closed as fixed" list though it was a decision — its fix is a plan edit; recorded as a user decision in the epic Notes.
+  - `low` `patch` (intent) behaviour equivalence argued in notes, not pinned by tests (link style, track teardown, isTabShown) — the teardown and isTabShown tests patched; the link style is the false finding above.
+  - `low` `reject` (intent) tree-shaking is checked by hook names, not module content — the in-module DEV guards (patched) make an unguarded call harmless, and the names cover every hook.
+
 ## Design Notes
 
 **Why stop at these items.** The ticket takes cleanup only. Items that change behaviour, copy or design, or that belong to a document owner, are listed as deferred with their owner rather than folded in.
@@ -171,3 +203,48 @@ Every item, done or deferred (baseline 4568c98):
 - `PATH="$HOME/.cargo/bin:$PATH" npx -y pnpm@12.6.0 --filter app exec playwright test --project=dev --project=chromium` -- expected: pass
 - `PATH="$HOME/.cargo/bin:$PATH" npx -y pnpm@12.6.0 --filter app exec playwright test --project=prod-mic` -- expected: pass
 - `PATH="$HOME/.cargo/bin:$PATH" npx -y pnpm@12.6.0 build && ! grep -rqE '__test|StorageTestPage|UiTestPage|maxTakeMs|warnLeadMs|__storageFullHook|__analysisFailHook|__commitStorageFullHook|slowAnalysis|holdAnalysis|__playbackTrace' app/dist` -- expected: exit 0 (match CI's exact pattern after any additions: CI now also greps `__recordingClock|__instanceTest|__encodePcmFailHook`)
+
+## Auto Run Result
+
+**Summary:** the epic's refactor sweep. All 10 scoped items are done, with two sub-parts deferred (their reasons are in Implementation Notes):
+- the two unit `setup` harnesses build different fakes, so merging them would be a rewrite;
+- `take-lifecycle.ts`'s `attempt` has different semantics.
+
+**What changed:**
+- **Cycles:**
+  - strings↔format, broken by `ui/number-format.ts`;
+  - lifecycle↔recording-session, broken by `session/recording-types.ts`.
+- **Audio duplicates:** `createCompressedOutput`, `resumeWithin` (`audio/context-resume.ts`) and `model/quietly.ts`.
+- **Shared e2e helpers:** `storage-helpers.ts`, shared locators and a merged getUserMedia log; shared unit `deferred`/`flush`.
+- **Dev hooks:** moved into `src/dev/hooks/`, each with in-module DEV guards. Lint rules keep production layers to `dev/hooks/` only and stop hooks reaching other `dev/` modules. The CI grep is extended.
+- **Mic-error copy keys:** reshaped to `global.micError<Code><Part>`.
+- **Tab screen:** `isTabShown` shared by the screen and its shortcuts; labels computed once.
+- **Storage-full banner:** `StorageFullBannerView`, with its own CSS, shared by Record and Tab.
+- **Re-exports:** removed, so each moved name has one home.
+- **Tests:**
+  - new: the WAV-fallback recovery e2e, the Settings Reload component test, and a behavioural visually-hidden e2e;
+  - unit tests for the new shared modules.
+- **Closed as already fixed:** with their commits, in Implementation Notes.
+- **Out of scope:** carried forward with owners.
+- **Also included:** a stabilisation of `tab-flags.dev.spec.ts` "dismiss…reopened", which failed on CI for 5.10. It now waits for the Library screen before reopening, so two quick hash changes can't skip the unmount.
+
+**Review:** thorough (4 lenses), 28 findings.
+- **Patched (all low):**
+  - lint holes in `dev/hooks`;
+  - in-module DEV guards;
+  - the banner view's class and CSS;
+  - tests for the new shared modules and the recorder's failure path;
+  - re-exports removed;
+  - the duplicate `readTake` removed;
+  - the WAV e2e tightened;
+  - Settings Reload branches;
+  - a behavioural visually-hidden check.
+- **Rejected:** with reasons, including the false "lost underline" finding (no CSS reset exists).
+
+**Follow-up review:** not recommended.
+
+**Verification:**
+- lint, typecheck, format:check and test pass (1124).
+- Dev and chromium e2e: one run failed one test, then two full runs passed 163/163. The flake was likely instance "steal mid-take" timing or tuner; watch CI.
+- prod-mic: 4/4.
+- The production build passes the dev-hook grep.

@@ -1,0 +1,7 @@
+/* Storage full (DESIGN.md banner-error, as Settings' engine banner): the shared error banner
+   (banner.module.css) with a link to the Library; no Dismiss. Used on Record and Tab. */
+.link {
+  flex: none;
+  color: var(--color-primary);
+  font-weight: 500;
+}

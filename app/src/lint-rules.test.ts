@@ -86,6 +86,12 @@ describe('ESLint layering (spine AD-1)', () => {
         await restrictedImports(`src/${layer}/x.ts`, "export { p } from '../dev/hookspage';\n"),
       ).toBe(1);
       expect(await restrictedImports(`src/${layer}/x.ts`, "export { p } from '../dev';\n")).toBe(1);
+      expect(
+        await restrictedImports(
+          `src/${layer}/x.ts`,
+          "export { P } from '../dev/hooks/../StorageTestPage';\n",
+        ),
+      ).toBe(1);
     },
   );
 
@@ -104,6 +110,23 @@ describe('ESLint layering (spine AD-1)', () => {
       expect(await lintRules(file, `export { x } from '../../${layer}/x';\n`)).toContain(rule);
     }
     expect(await lintRules(file, "export { useState } from 'react';\n")).toContain(rule);
+  });
+
+  it.each([
+    '../fake-mic',
+    '../StorageTestPage',
+    './../fake-mic',
+    './sub/../../fake-mic',
+    '../../dev/fake-mic',
+    '../../dev/hooks/../UiTestPage',
+  ])('rejects dev/hooks/ importing the other dev/ module %s', async (specifier) => {
+    expect(await lintRules('src/dev/hooks/x.ts', `export { x } from '${specifier}';\n`)).toContain(
+      '@typescript-eslint/no-restricted-imports',
+    );
+  });
+
+  it('allows dev/hooks/ importing its own siblings', async () => {
+    expect(await lintRules('src/dev/hooks/x.ts', "export { y } from './y';\n")).toEqual([]);
   });
 
   it('rejects src/App.tsx importing dev/ statically or without the DEV guard', async () => {

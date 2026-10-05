@@ -19,8 +19,16 @@ import tseslint from 'typescript-eslint';
  * model/ only (types from anywhere), so it never forms an import cycle (see `devHooksConfigs`).
  */
 const dir = (/** @type {string} */ name) => [`**/${name}`, `**/${name}/**`];
-/** A `dev` path segment not followed by `hooks/`: dev/ but not dev/hooks/. */
-const DEV_EXCEPT_HOOKS = '(^|/)dev(/(?!hooks/)|$)';
+/**
+ * A `dev` path segment not followed by `hooks/`, or followed by `hooks/` and then a `..`
+ * segment: dev/ but not dev/hooks/ (no `dev/hooks/../x` way out of it).
+ */
+const DEV_EXCEPT_HOOKS = '(^|/)dev(/(?!hooks/)|/hooks/(.*/)?\\.\\.(/|$)|$)';
+/**
+ * From a file in src/dev/hooks/: any other dev/ module (`../x`, `./../x`, or a path through
+ * dev/ outside hooks/), so a hook never pulls the fake mic or a test page into the layers.
+ */
+const DEV_HOOKS_SIBLING = `^(\\./(.*/)?\\.\\.(/|$)|\\.\\./(?!\\.\\./))|${DEV_EXCEPT_HOOKS}`;
 /** The layers that may import dev/hooks/ statically. */
 const DEV_HOOK_LAYERS = ['ui', 'session', 'storage'];
 const react = ['react', 'react/**', 'react-dom', 'react-dom/**'];
@@ -102,6 +110,10 @@ const devHooksConfigs = [
               group: [...['ui', 'session', 'storage', 'audio', 'engine'].flatMap(dir), ...react],
               allowTypeImports: true,
               message: 'dev/hooks/ may import values from model/ only (types from any layer).',
+            },
+            {
+              regex: DEV_HOOKS_SIBLING,
+              message: 'dev/hooks/ may not import other dev/ modules (the fake mic, test pages).',
             },
           ],
         },

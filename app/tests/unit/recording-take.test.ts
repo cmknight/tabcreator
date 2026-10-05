@@ -7,15 +7,14 @@ import { reloadUnlessBusy } from '../../src/session/app-reload';
 import {
   createRecordingSession,
   HANDOVER_WAIT_MS,
-  MAX_TAKE_MS,
   takeTitle,
-  WARN_LEAD_MS,
   type RecordingDeps,
 } from '../../src/session/recording-session';
 import type { RawWriter } from '../../src/storage/audio-store';
 import { loadPrefs, updatePrefs } from '../../src/storage/prefs';
 import { COUNT_IN_LEAD_S } from '../../src/audio/metronome';
 import { readDevLimits } from '../../src/dev/hooks/recording';
+import { MAX_TAKE_MS, WARN_LEAD_MS } from '../../src/model/take-limits';
 import { deferred, flush } from './helpers';
 
 // Stories 3.4 and 3.6: record() and stop('user') in the recording store, and the count-in, with a

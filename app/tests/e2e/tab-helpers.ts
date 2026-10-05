@@ -1,6 +1,5 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import type { Note, StringNo, Take } from '../../src/model/types';
-import { readTake as readStoredTake } from './storage-helpers';
 
 // Helpers for the Tab screen specs (story "Tab screen, reflow and selection"): seed an analysed
 // take with a tab straight into storage through the dev server's storage module (the same
@@ -146,10 +145,3 @@ export function selectedNote(page: Page): Promise<string | null> {
 export function focusedNote(page: Page): Promise<string | null> {
   return page.evaluate(() => document.activeElement?.getAttribute('data-note-id') ?? null);
 }
-
-/** Reads the take record from IndexedDB with a connection of the test's own. */
-export const readTake = (page: Page, id: string) =>
-  readStoredTake<{ title: string; updatedAt: string }>(page, id) as Promise<{
-    title: string;
-    updatedAt: string;
-  }>;

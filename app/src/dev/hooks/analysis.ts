@@ -3,6 +3,8 @@
 // - `?holdAnalysis`: no analysis ever starts (e2e tests read a stopped take's raw file).
 // - `?slowAnalysis=<ms>`: every engine analyze is delayed by that long.
 // - `window.__analysisFailHook` / `window.__commitStorageFullHook`: forced failures.
+// Every export also falls back to the production behaviour (no hook) outside dev builds, so a
+// call missing its guard changes nothing in production.
 
 import type { EngineClient } from '../../engine/engine-client';
 import { AppError } from '../../model/errors';
@@ -15,7 +17,7 @@ type DevDb = Pick<TakeDb, 'getTake' | 'getTab' | 'commitAnalysis'>;
 
 /** Whether the URL asks to hold analysis (`?holdAnalysis`). */
 export function devHold(): boolean {
-  if (typeof location === 'undefined') return false;
+  if (!import.meta.env.DEV || typeof location === 'undefined') return false;
   return new URLSearchParams(location.search).has('holdAnalysis');
 }
 
@@ -24,7 +26,7 @@ export function devHold(): boolean {
  * reload mid-analysis (story 5.7). 0 when absent.
  */
 export function devSlowMs(): number {
-  if (typeof location === 'undefined') return 0;
+  if (!import.meta.env.DEV || typeof location === 'undefined') return 0;
   const ms = Number(new URLSearchParams(location.search).get('slowAnalysis'));
   return Number.isFinite(ms) && ms > 0 ? ms : 0;
 }
@@ -46,6 +48,7 @@ const devHooks = () => globalThis as AnalysisDevHooks;
  * analyze is cancelled by `cancel`, as a queued request is by the engine client.
  */
 export function devEngine(engine: EngineClient, slowMs: number): DevEngine {
+  if (!import.meta.env.DEV) return engine;
   const delays = new Map<string, () => void>();
   return {
     async analyze(takeId, pcm, sampleRate, input, onProgress) {
@@ -78,6 +81,7 @@ export function devEngine(engine: EngineClient, slowMs: number): DevEngine {
 
 /** The database with `__commitStorageFullHook` applied. */
 export function devDb(store: TakeDb): DevDb {
+  if (!import.meta.env.DEV) return store;
   return {
     getTake: (id) => store.getTake(id),
     getTab: (id) => store.getTab(id),

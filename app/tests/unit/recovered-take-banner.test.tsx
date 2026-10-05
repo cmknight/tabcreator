@@ -1,10 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  recordingSession,
-  type RecordingSnapshot,
-  type RecoveredTake,
-} from '../../src/session/recording-session';
+import { recordingSession, type RecoveredTake } from '../../src/session/recording-session';
+import type { RecordingSnapshot } from '../../src/session/recording-types';
 import { formatClockTime, formatElapsed } from '../../src/ui/format';
 import { RecoveredTakeBanners } from '../../src/ui/components/RecoveredTakeBanner';
 

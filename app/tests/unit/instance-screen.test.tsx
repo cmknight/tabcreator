@@ -1,11 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { instanceLock } from '../../src/session/instance-lock';
-import {
-  recordingSession,
-  type HandoverTake,
-  type RecordingSnapshot,
-} from '../../src/session/recording-session';
+import { recordingSession } from '../../src/session/recording-session';
+import type { HandoverTake, RecordingSnapshot } from '../../src/session/recording-types';
 import { InstanceScreen } from '../../src/ui/components/InstanceScreen';
 import { strings } from '../../src/ui/strings';
 

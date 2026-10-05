@@ -2,6 +2,8 @@
 // only inside `import.meta.env.DEV`, so production builds tree-shake this module.
 // - `window.__recordingClock` (story 3.6): the last count-in's times on the audio clock.
 // - `?maxTakeMs=<n>&warnLeadMs=<n>` (story 3.7): the take length limits override.
+// Every export also falls back to the production behaviour (no hook) outside dev builds, so a
+// call missing its guard changes nothing in production.
 
 import { MAX_TAKE_MS, WARN_LEAD_MS, type TakeLimits } from '../../model/take-limits';
 
@@ -22,11 +24,13 @@ declare global {
 
 /** Clears the clock, so it never describes an earlier count-in. */
 export function clearRecordingClock(): void {
+  if (!import.meta.env.DEV) return;
   delete window.__recordingClock;
 }
 
 /** Notes a count-in's click time and capture start. */
 export function setRecordingClock(clickTime: number, captureStart: number): void {
+  if (!import.meta.env.DEV) return;
   window.__recordingClock = { clickTime, captureStart };
 }
 
@@ -39,6 +43,7 @@ const DEV_MIN_CAP_MS = 1000;
  * `DEV_MIN_CAP_MS` and the lead at most the cap. Read once, when the store is created.
  */
 export function readDevLimits(search: string): TakeLimits {
+  if (!import.meta.env.DEV) return { capMs: MAX_TAKE_MS, leadMs: WARN_LEAD_MS };
   const params = new URLSearchParams(search);
   const read = (name: string, fallback: number) => {
     const value = Number(params.get(name) ?? NaN);

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { instanceLock, type InstanceState } from '../../session/instance-lock';
-import { recordingSession, type HandoverTake } from '../../session/recording-session';
+import { recordingSession } from '../../session/recording-session';
+import type { HandoverTake } from '../../session/recording-types';
 import { strings } from '../strings';
 import buttons from './buttons.module.css';
 import styles from './InstanceScreen.module.css';

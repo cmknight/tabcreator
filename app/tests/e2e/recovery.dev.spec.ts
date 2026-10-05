@@ -101,7 +101,7 @@ test('Open with the re-encode failing: the take is rebuilt as WAV and analyses',
   page,
 }) => {
   test.setTimeout(90_000);
-  await goLive(page);
+  const errors = await goLive(page);
   await reloadMidTake(page, '0:02');
   await expect(banners(page)).toHaveCount(1, { timeout: SCAN_WAIT_MS });
   const [take] = await readTakes(page);
@@ -112,6 +112,9 @@ test('Open with the re-encode failing: the take is rebuilt as WAV and analyses',
   });
   await banners(page).first().getByRole('button', { name: 'Open' }).click();
   await expect(page).toHaveURL(new RegExp(`#/tab/${take!.id}$`), { timeout: 20_000 });
+  await page.evaluate(() => {
+    (window as unknown as { __encodePcmFailHook: boolean }).__encodePcmFailHook = false;
+  });
   const [saved] = await readTakes(page);
   expect(saved).toMatchObject({
     id: take!.id,
@@ -125,6 +128,9 @@ test('Open with the re-encode failing: the take is rebuilt as WAV and analyses',
   await expect
     .poll(async () => (await readTakes(page))[0], { timeout: 30_000 })
     .toMatchObject({ id: take!.id, status: 'analyzed', audioMime: 'audio/wav' });
+  // Only the WAV copy is left: no webm, and the raw file was deleted after the analysis.
+  await expect.poll(() => opfsFiles(page)).toEqual([`audio/${take!.id}.wav`]);
+  expect(errors).toEqual([]);
 });
 
 test('Discard: the take, its raw and compressed files go; focus moves to the h1', async ({

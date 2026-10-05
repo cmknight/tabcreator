@@ -1,6 +1,8 @@
 // Dev-only playback trace (story 5.10): each change of the playing cursor to a note appends
 // `{ noteId, mediaMs }` to `window.__playbackTrace` (the e2e timing check). ui/use-playback.ts
 // calls it only inside `import.meta.env.DEV`, so production builds tree-shake this module.
+// Every export also falls back to the production behaviour (no hook) outside dev builds, so a
+// call missing its guard changes nothing in production.
 
 /** One entry of the cursor trace. */
 export interface PlaybackTraceEntry {
@@ -18,5 +20,6 @@ declare global {
 
 /** Appends one cursor change to the trace. */
 export function tracePlayback(noteId: string, mediaMs: number): void {
+  if (!import.meta.env.DEV) return;
   (window.__playbackTrace ??= []).push({ noteId, mediaMs });
 }

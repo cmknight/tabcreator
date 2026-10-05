@@ -1,12 +1,4 @@
-/* Storage full (DESIGN.md banner-error, as Settings' engine banner): the shared error banner
-   (banner.module.css) with a link to the Library; no Dismiss. `.link` is StorageFullBannerView's
-   (Record and Tab); `.banner` is Record's spacing. */
+/* Record's storage-full banner spacing; the banner itself is StorageFullBannerView. */
 .banner {
   margin-block-end: var(--space-4);
-}
-
-.link {
-  flex: none;
-  color: var(--color-primary);
-  font-weight: 500;
 }
