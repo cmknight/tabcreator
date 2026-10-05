@@ -3,7 +3,7 @@ title: 'String moves, delete, insert and confirm'
 type: 'feature'
 ticket: '3'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: '843a06d294e19860d30bb51edf8a0da4290a9f61'
 route: 'full'
 route_source: 'auto'
