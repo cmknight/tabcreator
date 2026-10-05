@@ -13,6 +13,7 @@ import { noteLabels, TabArea } from '../../src/ui/components/TabArea';
 import { Tab } from '../../src/ui/screens/Tab';
 import { announce } from '../../src/ui/a11y/announcer';
 import { reloadOrExplain } from '../../src/ui/reload-or-explain';
+import { dispatchShortcut } from '../../src/ui/a11y/shortcuts';
 import { strings } from '../../src/ui/strings';
 import { dismissToast, getToast } from '../../src/ui/toast';
 import type { SettingsSnapshot } from '../../src/session/settings-session';
@@ -55,11 +56,14 @@ const note = (i: number, string: Note['string'], fret: number): Note => ({
   lowConfidence: false,
 });
 
-/** A snapshot; `selectedNoteId` defaults to null. */
-type Snap = Omit<TakeSnapshot, 'selectedNoteId'> & { selectedNoteId?: string | null };
+/** A snapshot; `selectedNoteId` and `lastFocusedNoteId` default to null. */
+type Snap = Omit<TakeSnapshot, 'selectedNoteId' | 'lastFocusedNoteId'> & {
+  selectedNoteId?: string | null;
+  lastFocusedNoteId?: string | null;
+};
 
 function mockSession(initial: Snap) {
-  let snapshot: TakeSnapshot = { selectedNoteId: null, ...initial };
+  let snapshot: TakeSnapshot = { selectedNoteId: null, lastFocusedNoteId: null, ...initial };
   const listeners = new Set<() => void>();
   const session: TakeSession = {
     subscribe: vi.fn((listener: () => void) => {
@@ -74,6 +78,10 @@ function mockSession(initial: Snap) {
     retryCommit: vi.fn(),
     select: vi.fn((id: string | null) => {
       snapshot = { ...snapshot, selectedNoteId: id };
+      listeners.forEach((l) => l());
+    }),
+    focusNote: vi.fn((id: string) => {
+      snapshot = { ...snapshot, lastFocusedNoteId: id };
       listeners.forEach((l) => l());
     }),
     selectNext: vi.fn(),
@@ -507,6 +515,26 @@ describe('Tab screen tab area, header and selection', () => {
     expect(document.activeElement).toBe(noteButton('n1'));
   });
 
+  it('focus moved to the title field before a reflow stays there (no restore to the note)', () => {
+    // Timers only: the blur's animation-frame check must not run before the reflow, as when a
+    // resize lands in the frame after focus moved.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { create, session } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    const old = noteButton('n30');
+    act(() => old.focus());
+    fireEvent.click(screen.getByRole('button', { name: 'Rename take' }));
+    const field = screen.getByRole('textbox', { name: 'Take title' });
+    expect(document.activeElement).toBe(field);
+    measureWidth = 200;
+    act(() => resize?.());
+    act(() => vi.advanceTimersByTime(100));
+    expect(screen.getByRole('application').getAttribute('data-width-chars')).toBe('25');
+    expect(old.isConnected).toBe(false); // the note's button was re-created
+    expect(document.activeElement).toBe(field);
+    expect(session.rename).not.toHaveBeenCalled();
+  });
+
   it('after Esc the focused note keeps the tab stop; a reflow keeps focus on it, unselected', () => {
     vi.useFakeTimers();
     const { create, session, set } = analysed('n30');
@@ -760,9 +788,58 @@ describe('Tab screen flags, warnings and bar lines', () => {
     render(<Tab takeId="t1" createSession={create} />);
     act(() => document.querySelector<HTMLButtonElement>('[data-note-id="n3"]')!.focus());
     expect(session.getSnapshot().selectedNoteId).toBe('n3');
+    expect(session.getSnapshot().lastFocusedNoteId).toBe('n3');
     act(() => session.select(null)); // Esc
     fireEvent.click(screen.getByRole('button', { name: 'Next to check' }));
-    expect(session.selectNextFlagged).toHaveBeenCalledWith('n3');
+    // The session starts from its own record of the last focused note, as N does.
+    expect(session.selectNextFlagged).toHaveBeenCalledWith();
+  });
+
+  it('Esc, then focus on Play: N and the Next to check button pick the same note', async () => {
+    const readAudio = vi.fn(() => Promise.resolve(new Blob(['x'], { type: 'audio/webm' })));
+    vi.stubGlobal(
+      'URL',
+      Object.assign(Object.create(URL), {
+        createObjectURL: vi.fn(() => 'blob:take'),
+        revokeObjectURL: vi.fn(),
+      }),
+    );
+    try {
+      const mock = open(TAKE, flaggedNotes(10, [1, 6]));
+      // As the real session: after the selection, else after the last focused note, wrapping.
+      vi.mocked(mock.session.selectNextFlagged).mockImplementation((from) => {
+        const snap = mock.session.getSnapshot();
+        const current = snap.selectedNoteId ?? from ?? snap.lastFocusedNoteId;
+        const at = current === null ? -1 : Number(current.slice(1));
+        mock.session.select(`n${[1, 6].find((i) => i > at) ?? 1}`);
+      });
+      render(<Tab takeId="t1" createSession={mock.create} readAudio={readAudio} />);
+      await act(async () => {});
+      act(() => document.querySelector<HTMLButtonElement>('[data-note-id="n3"]')!.focus());
+      const play = screen.getByRole('button', { name: 'Play' });
+      const pick = (how: () => void) => {
+        act(() => mock.session.select(null)); // Esc
+        act(() => play.focus());
+        act(how);
+        return mock.session.getSnapshot().selectedNoteId;
+      };
+      window.location.hash = '#/tab/t1';
+      const byKey = pick(() => {
+        const event = new KeyboardEvent('keydown', { key: 'n', bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'target', { value: play });
+        dispatchShortcut(event, 'tab');
+      });
+      // N focused n6; put the last focused note back to n3 for the button's turn.
+      act(() => document.querySelector<HTMLButtonElement>('[data-note-id="n3"]')!.focus());
+      const byButton = pick(() =>
+        fireEvent.click(screen.getByRole('button', { name: 'Next to check' })),
+      );
+      expect(byKey).toBe('n6');
+      expect(byButton).toBe(byKey);
+    } finally {
+      window.location.hash = '';
+      vi.unstubAllGlobals();
+    }
   });
 
   it('a re-analysis that changes the counts is announced when the status line comes back', () => {
@@ -979,6 +1056,33 @@ describe('Tab screen flags, warnings and bar lines', () => {
     fireEvent.click(toggle);
     expect(settings.setBarLines).toHaveBeenLastCalledWith(true);
     expect(shown()).toEqual(expected(notes, 120));
+  });
+
+  it('focus moved from a note to Bar lines stays on the toggle when it re-lays the tab out', () => {
+    const settings = fakeSettings(true);
+    const notes = flaggedNotes(12, []).map((n, i) => ({ ...n, startMs: 1000 + i * 600 }));
+    // A note whose system changes with the bar lines, so its button is re-created.
+    const systemOf = (id: string, bpm?: number) =>
+      layoutTab(notes, 20, bpm).systems.findIndex((sys) => sys.cells.some((c) => c.noteId === id));
+    const moving = notes.find((n) => systemOf(n.id, 120) !== systemOf(n.id))!.id;
+    const { create } = open({ ...TAKE, countInBpm: 120 }, notes);
+    render(<Tab takeId="t1" createSession={create} settings={settings} />);
+    const old = document.querySelector<HTMLButtonElement>(`[data-note-id="${moving}"]`)!;
+    act(() => old.focus());
+    const toggle = screen.getByRole('button', { name: 'Bar lines' });
+    act(() => toggle.focus());
+    fireEvent.click(toggle);
+    expect(old.isConnected).toBe(false);
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  it('the take deleted elsewhere while a note has focus: focus goes to the h1, not <body>', () => {
+    const { create, set } = open(TAKE, flaggedNotes(5, []));
+    render(<Tab takeId="t1" createSession={create} />);
+    act(() => document.querySelector<HTMLButtonElement>('[data-note-id="n2"]')!.focus());
+    set({ take: null, tab: null, selectedNoteId: null, missing: true });
+    expect(screen.getByText(strings['tab.notFound'])).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }));
   });
 
   it('no Bar lines button without a count-in, or with no notes', () => {

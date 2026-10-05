@@ -75,3 +75,4 @@ Not in this epic: the CI budget gate (AD-17), which is epic Offline, accessibili
   - epic Library and export reuses `overlays.ts`, the Confirm dialog (entry 6) and the Tab toolbar;
   - epic Offline, accessibility and budgets reuses entry 5's 500-note measurement for its AD-17 gate.
 - Decision: entry 9 (Detection retro R2) added when epic Detection engine closed (user, 2026-10-04). It is an engine-only lane alongside 1 → 3 → …; the sweep (8) waits on it.
+- Carried from 5.8's follow-up review (2026-10-04), for story 8.3: the shortcut guard leaves Enter on a focused note native, so Enter = Confirm needs a note-button exception like Space's; and the dispatcher and TabArea's focus-follow need a modal-open check once `ui/a11y/overlays.ts` lands (N must not select behind a dialog, Esc must close the dialog first).

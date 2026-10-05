@@ -11,13 +11,27 @@ review: 'thorough'
 review_source: 'auto'
 lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
-followup_review_recommended: true
+followup_review_recommended: false
 context:
   - '{project-root}/_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md'
   - '{project-root}/_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/mockups/tab.html'
   - '{project-root}/_bmad-output/initiative-tabcreator-v1/epic-tab-view-and-editor/story-analysis-states-plan.md'
 warnings: ['oversized']
 deferred:
+  - summary: >-
+      Enter on a focused note button stays native (the guard exempts only Space), so epic 8's Enter = Confirm can't fire with focus on a note.
+    evidence: |-
+      shortcuts.ts guarded() leaves Enter on buttons native; the note-button exception covers Space only. Needs an Enter exception when story 8.3 adds Confirm.
+    location: >-
+      app/src/ui/a11y/shortcuts.ts guarded()
+    severity: low
+  - summary: >-
+      The shortcut dispatcher and TabArea's focus-follow don't know about modal dialogs.
+    evidence: |-
+      With overlays (story 8.3's popover, the ? dialog, the confirm dialog), N would select a note behind a modal and pull focus out of it, and Esc would clear the selection instead of closing the dialog.
+    location: >-
+      app/src/ui/a11y/shortcuts.ts dispatchShortcut; app/src/ui/components/TabArea.tsx
+    severity: low
   - summary: >-
       The page scrolls sideways at 320 px because the shell's top navigation bar is wider than that; the tab itself fits.
     evidence: |-
@@ -162,6 +176,15 @@ deferred:
 
 ## Plan Change Log
 
+- **Follow-up review fixes (after 5.9–5.11).**
+  - The reflow restore refocuses a note only when focus fell to `<body>`, and drops a claim whose note has no button.
+  - The Tab focus rescue also keys on `missing` and on whether the tab is shown.
+  - One record of the last-focused note, `TakeSession.lastFocusedNoteId`, is set by `focusNote`. The arrows, `N`, Next to check and the tab stop all start from it.
+  - Esc clears the selection from anywhere on the screen except text fields and the toolbar.
+  - A per-shortcut `repeat` opt-in is used only by the Tab ←/→.
+  - The area instructions now mention Space, N and P.
+  - Selectors are shared in `ui/a11y/selectors.ts`.
+
 - **Review fixes.**
   - With nothing selected, ←/→ step from the focused note (`selectNext(from)` and `selectPrev(from)`, passed by the shortcut handler). The roving tab stop falls back to the last-focused note before the first. A reflow refocuses the note that had focus, by id, without selecting it.
   - ←/→ act only with focus inside `[role="application"]`. Esc acts only with focus there or on the body. All three need the tab to be shown (idle, not missing, notes > 0).
@@ -208,6 +231,36 @@ deferred:
   - `low` `reject` (intent) the 320 px page check is skipped and the font isn't re-measured on zoom — the 320 px part is deferred above; zoom changes the container width, which re-lays out.
   - `false` `reject` (intent) Esc is registered on the tab route, not globally — it behaves the same on this screen; the count-in Esc keeps priority.
   - `false` `reject` (intent) axe covers only the analysed tab — the Verify line names that state.
+
+### 2026-10-04 — Follow-up review pass (keyboard and focus model, after 5.9–5.11)
+- scope: the full diff since the baseline (410 kB, 54 files) was too large for useful lenses; the review was scoped to the keyboard and focus surface the follow-up recommendation named — shortcuts.ts, TabArea, TakeHeader, Tab, take-session, use-playback, TabStatusLine and their tests (150 kB).
+- verdicts: 25 findings — high 0, medium 3, low 18, false 4, maybe-false 0
+- findings:
+  - `medium` `patch` (verification-gap) nothing checks that a reflow leaves focus alone once it has left the tab area — patched with the edge stale-claim finding: restore only when focus is lost; tests for the title field and the Bar lines toggle.
+  - `medium` `patch` (verification-gap other) the rAF-delayed claim clear leaves a window where a layout change pulls focus back — same root cause.
+  - `low` `patch` (blind) N and Next to check start from different "focused note" records — patched: one last-focused id on the take session.
+  - `low` `patch` (blind) Esc is narrower than EXPERIENCE's Global rule — patched: clears the selection from anywhere but text fields and the toolbar.
+  - `low` `patch` (blind) holding ←/→ moves only one note — patched: a per-shortcut repeat opt-in for the Tab arrows.
+  - `low` `patch` (blind) focus falls to <body> when the focused note disappears with the analysis state unchanged — patched: the rescue key includes missing and the shown tab.
+  - `low` `patch` (blind) the area's instructions omit Space, N and P — patched.
+  - `low` `reject` (blind) aria-pressed misdescribes a selection — carried: rejected in the first pass (the plan's choice), code unchanged.
+  - `low` `defer` (blind) Enter on a focused note stays native, which will block epic 8's Enter = Confirm — the guard needs a note-button exception for Enter when Confirm lands (story 8.3).
+  - `low` `defer` (blind) the dispatcher and focus-follow don't know about modal dialogs — needed when `ui/a11y/overlays.ts` lands (story 8.3).
+  - `low` `reject` (blind) the toolbar has no roving arrow keys — carried from 5.9's pass: arrives with its other buttons in epic 8 and epic 6.
+  - `low` `patch` (blind) two focused-note lookups use different scopes, and TEXT_FIELD is defined twice — patched: one shared selectors module.
+  - `low` `reject` (blind) the skip link can do nothing before the first measure — the link and the note buttons appear in the same layout pass; no reachable gap shown.
+  - `low` `reject` (edge) rename B then C, C fails before B succeeds, shows the original title — needs two overlapping renames with an out-of-order failure; storage still holds a valid title.
+  - `low` `patch` (edge) focus drops to <body> when the take goes missing — same as the blind rescue finding.
+  - `low` `reject` (edge) Next to check loses focus when the count drops to 0 — the count only changes on re-analysis today; epic 8's edits will revisit (noted for 8.1).
+  - `medium` `patch` (edge) a stale focus claim for a removed id steals focus later — same root cause as the verification-gap finding.
+  - `low` `reject` (edge) blur on a window switch commits the rename — carried: rejected in the first pass.
+  - `low` `reject` (edge) a user scrolling the playing note away isn't followed until the next note — keep-in-view is per note change by design (500 ms cap).
+  - `low` `patch` (edge) claim: Esc doesn't clear from the h1, Play, Next to check or Note list toggle — same as the blind Esc finding.
+  - `false` `reject` (intent) arrows act only in the tab area (reading B) — the first pass's deliberate patch, following EXPERIENCE ("arrows move within it").
+  - `low` `patch` (intent) Esc scope narrower than the intent — same as the blind Esc finding.
+  - `false` `reject` (intent) the toolbar exclusion is redundant for arrows — harmless and still needed for N, Space and P.
+  - `false` `reject` (intent) the skip link and tab stop use the last focused note after Esc — the first pass's patch for Esc then →; consistent with roving focus.
+  - `false` `reject` (intent) restored focus after a reflow doesn't select — the first pass's patch; a reflow must not change the selection.
 
 ## Design Notes
 
@@ -275,4 +328,26 @@ deferred:
 **Verification:**
 - lint, typecheck, format:check and test pass (1003).
 - Dev e2e for tab-screen, tab-states and decode: 22/22.
+- prod-mic: 4/4.
+
+## Auto Run Result (follow-up review, 2026-10-04)
+
+**Scope:** the keyboard and focus model only (roving focus, reflow refocus, shortcut scope), reviewed as one diff against the current code, because the full diff since 5.8 spans the rest of the epic. Thorough, 4 lenses, 25 findings: 3 medium, 18 low, 4 false.
+
+**Patched:**
+- **Medium:** the reflow refocus could pull focus back to a note after the user had moved on, which mid-rename stole focus from the title field and saved a half-typed title. It now restores focus only when focus fell to the page body, and drops the claim otherwise.
+- **Medium:** `N`, Next to check and the tab stop started from different notes. Take-session now holds one `lastFocusedNoteId` (set by `focusNote`), and all three start from it.
+- **Medium:** Esc cleared the selection only from the tab area; EXPERIENCE makes it Global. It now clears it from anywhere on the Tab screen except text fields and the toolbar.
+- **Low:**
+  - focus is rescued to the h1 when the take goes missing;
+  - held ←/→ repeat (a per-shortcut `repeat` opt-in);
+  - `tab.areaInstructions` names Space, N and P;
+  - the focus selectors are shared in `ui/a11y/selectors.ts`.
+- **Deferred to story 8.3** (noted in epic Tab editing): an Enter exception on note buttons for Confirm, and making the shortcuts and focus-follow aware of modal dialogs.
+
+**Follow-up review: not recommended.** No high finding was patched; the mediums are covered by new unit tests that fail on the old code.
+
+**Verification:**
+- lint, typecheck, format:check and test pass (1132).
+- Dev and chromium e2e: 163/163 after reruns. The 8 first-run failures were all audio-timing specs (level meter, count-in, playback cursor, fake mic, banner styles, decode, instance), none in the tab screen; 6 passed on rerun and the last 2 passed alone with one worker.
 - prod-mic: 4/4.

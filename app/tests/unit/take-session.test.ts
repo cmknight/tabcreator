@@ -101,6 +101,7 @@ describe('take session', () => {
       loading: false,
       analysis: { kind: 'idle' },
       selectedNoteId: null,
+      lastFocusedNoteId: null,
     });
     expect(h.deps.analysis.ensureAnalysed).not.toHaveBeenCalled();
   });
@@ -197,6 +198,7 @@ describe('take session', () => {
       loading: false,
       analysis: { kind: 'idle' },
       selectedNoteId: null,
+      lastFocusedNoteId: null,
       missing: true,
     });
   });
@@ -530,6 +532,28 @@ describe('take session selection', () => {
     expect(session.getSnapshot().selectedNoteId).toBe('a');
   });
 
+  it('focusNote records the last focused note; the arrows start from it with nothing selected', async () => {
+    const { session } = await open();
+    session.focusNote('nope'); // unknown: ignored
+    expect(session.getSnapshot().lastFocusedNoteId).toBeNull();
+    session.focusNote('b');
+    expect(session.getSnapshot().lastFocusedNoteId).toBe('b');
+    session.selectNext();
+    expect(session.getSnapshot().selectedNoteId).toBe('c');
+    session.select(null);
+    session.selectPrev();
+    expect(session.getSnapshot().selectedNoteId).toBe('a');
+  });
+
+  it('the last focused note is cleared when its note is gone', async () => {
+    const { h, session } = await open();
+    session.focusNote('b');
+    vi.mocked(h.deps.db.getTab).mockResolvedValue({ ...TAB3, notes: [NOTES[0]!, NOTES[1]!] });
+    session.analyse(); // not recorded: re-reads the tab, which lost b
+    await settle();
+    expect(session.getSnapshot().lastFocusedNoteId).toBeNull();
+  });
+
   it('an unchanged selection publishes nothing', async () => {
     const { session } = await open();
     session.select('a');
@@ -632,6 +656,15 @@ describe('take session next to check', () => {
     session.select(null);
     session.selectNextFlagged('gone'); // an unknown note: from the start
     expect(session.getSnapshot().selectedNoteId).toBe('b');
+  });
+
+  it('with nothing given, starts after the last focused note (after Esc, focus moved to Play)', async () => {
+    const session = await open(NOTES);
+    session.focusNote('c'); // a note button took focus, selecting it
+    session.select('c');
+    session.select(null); // Esc; focus then moves to Play, which records nothing
+    session.selectNextFlagged(); // N and the Next to check button both call it so
+    expect(session.getSnapshot().selectedNoteId).toBe('d');
   });
 
   it('a lone flagged note stays selected; none flagged does nothing', async () => {

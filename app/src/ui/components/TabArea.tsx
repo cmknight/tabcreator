@@ -12,7 +12,8 @@
 // note's, else the last focused note's (after Esc cleared the selection), else the first.
 // Focusing or clicking a note selects it; a selection moved elsewhere (the arrow shortcuts)
 // moves focus onto the new note, unless focus is in a text field. When a reflow re-creates the
-// focused note's button, focus goes to that note's new button without selecting it.
+// focused note's button and focus fell to <body>, focus goes to that note's new button without
+// selecting it.
 //
 // Story "Flags, warnings and bar lines on screen": a low-confidence note's button shows the
 // check fill and dotted underline (DESIGN.md tab-note-check) and its label ends ", check this
@@ -28,6 +29,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { midiName, playedOrder } from '../../model/notes';
 import { layoutTab } from '../../model/tab-render';
 import type { Note } from '../../model/types';
+import { TEXT_FIELD } from '../a11y/selectors';
 import hidden from '../a11y/visually-hidden.module.css';
 import { strings } from '../strings';
 import styles from './TabArea.module.css';
@@ -43,8 +45,6 @@ const FALLBACK_LINE_HEIGHT = 21.6;
 export const REFLOW_DEBOUNCE_MS = 100;
 /** The playing note is scrolled into view at most this often (EXPERIENCE.md Playback). */
 export const KEEP_IN_VIEW_MS = 500;
-
-const TEXT_FIELD = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
 
 export interface NoteLabel {
   id: string;
@@ -99,7 +99,12 @@ export interface TabAreaProps {
   onSelect(noteId: string): void;
   /** The area's element id (the skip link's target). */
   id?: string;
-  /** Called with a note's id whenever its button takes focus (Next to check starts after it). */
+  /**
+   * The note whose button last had focus (the session's `lastFocusedNoteId`): the tab stop while
+   * nothing is selected.
+   */
+  lastFocusedNoteId?: string | null;
+  /** Called with a note's id whenever its button takes focus (the session records it). */
   onFocusNote?(noteId: string): void;
   /** The note playback is on (the playing outline), or null. */
   playingNoteId?: string | null;
@@ -127,6 +132,7 @@ export function TabArea({
   selectedNoteId,
   onSelect,
   id,
+  lastFocusedNoteId = null,
   onFocusNote,
   playingNoteId = null,
   playing = false,
@@ -174,10 +180,9 @@ export function TabArea({
     [notes],
   );
   const firstId = labels[0]?.id ?? null;
-  /** The note last focused: the tab stop (and the arrows' start) while nothing is selected. */
-  const [current, setCurrent] = useState<string | null>(null);
   const tabStop =
-    selectedNoteId ?? (current !== null && labelById.has(current) ? current : firstId);
+    selectedNoteId ??
+    (lastFocusedNoteId !== null && labelById.has(lastFocusedNoteId) ? lastFocusedNoteId : firstId);
 
   const buttons = useRef(new Map<string, HTMLButtonElement>());
   /** The note button that had focus, until focus really leaves it (not a reflow re-creating it). */
@@ -198,11 +203,20 @@ export function TabArea({
       return;
     }
     // A reflow re-created the focused note button: focus goes to that note's new one, without
-    // selecting it (Esc may have cleared the selection).
+    // selecting it (Esc may have cleared the selection) — but only when focus was really lost
+    // (it is on <body>), never taken back from where the player moved it since. A claim for a
+    // note with no button any more (deleted) is dropped.
     const had = focused.current;
     if (had && !had.el.isConnected) {
       const target = buttons.current.get(had.id);
-      if (!target || active === target) return;
+      if (!target) {
+        focused.current = null;
+        return;
+      }
+      if (active !== null && active !== document.body) {
+        if (active !== target) focused.current = null;
+        return;
+      }
       restoring.current = true;
       try {
         target.focus();
@@ -298,7 +312,6 @@ export function TabArea({
                   }}
                   onFocus={(e) => {
                     focused.current = { el: e.currentTarget, id: cell.noteId };
-                    setCurrent(cell.noteId);
                     onFocusNote?.(cell.noteId);
                     if (!restoring.current) onSelect(cell.noteId);
                   }}

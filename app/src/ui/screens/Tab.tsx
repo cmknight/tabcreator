@@ -202,8 +202,6 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
   const dismissed = dismissedFor.warnings === take?.warnings ? dismissedFor.kinds : NONE_DISMISSED;
   /** The status line last shown on this visit (see TabStatusLine). */
   const lastStatusLine = useRef<string | null>(null);
-  /** The note that last had focus in the tab area: where Next to check starts, like `N`. */
-  const lastFocusedNote = useRef<string | null>(null);
   const notes = tab?.notes;
   const labels = useMemo(() => (notes ? noteLabels(notes) : []), [notes]);
   // `take` is set whenever the tab is shown; checked here too so the render below can use it.
@@ -233,7 +231,8 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
     };
   }, [session]);
 
-  // A state change can remove the focused control (Cancel, Analyse, Retry). Focus then moves to
+  // A state change can remove the focused control (Cancel, Analyse, Retry, or with the take
+  // deleted, anything on the tab). Focus then moves to
   // the new state's primary button (Analyse after a cancel) or to the h1, never to <body>.
   // `focusInside` stays true when focus leaves to nothing, as when the focused control unmounts.
   const sectionRef = useRef<HTMLElement>(null);
@@ -241,9 +240,11 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
   const analyseButton = useRef<HTMLButtonElement>(null);
   const focusInside = useRef(false);
   const cancelled = analysis.kind === 'cancelled';
+  // `missing` and whether the tab is shown count too: a take deleted elsewhere removes the
+  // focused note, pencil or status-line button without changing the analysis state.
   const stateKey = `${analysis.kind}:${analysis.kind === 'running' && !!analysis.saving}:${
     analysis.kind === 'failed' ? analysis.code : ''
-  }`;
+  }:${!!missing}:${showTab}`;
   useLayoutEffect(() => {
     if (!focusInside.current) return;
     const active = document.activeElement;
@@ -335,9 +336,8 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
             countInBpm={barLines ? take.countInBpm : undefined}
             selectedNoteId={selectedNoteId}
             onSelect={(id) => session.select(id)}
-            onFocusNote={(id) => {
-              lastFocusedNote.current = id;
-            }}
+            lastFocusedNoteId={snapshot.lastFocusedNoteId}
+            onFocusNote={(id) => session.focusNote(id)}
             playingNoteId={playback.playingNoteId}
             playing={playback.playing}
             onNoteClick={(id) => {
@@ -416,7 +416,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
           notes={tab.notes}
           lastLineRef={lastStatusLine}
           onNextToCheck={() => {
-            session.selectNextFlagged(lastFocusedNote.current);
+            session.selectNextFlagged();
             focusSelectedNote(session.getSnapshot().selectedNoteId);
           }}
         />

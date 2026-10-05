@@ -217,7 +217,7 @@ export const strings = {
   'tab.area': 'Tab',
   /** The tab area's instructions, read through aria-describedby. */
   'tab.areaInstructions':
-    'Use Tab to reach the notes, Left and Right arrows to move between notes, Escape to clear the selection.',
+    'Use Tab to reach the notes, Left and Right arrows to move between notes, Escape to clear the selection, Space to play or pause, N to go to the next note to check, and P to play from the selected note.',
   /** One system's accessible name: "Tab system 1 of 3". */
   'tab.system': (i: number, n: number) => `Tab system ${i} of ${n}`,
   /**

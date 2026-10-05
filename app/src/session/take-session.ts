@@ -44,6 +44,12 @@ export interface TakeSnapshot {
   analysis: TakeAnalysisState;
   /** The selected note's id, or null; always a note of `tab` (US-6.3). */
   selectedNoteId: string | null;
+  /**
+   * The note whose button last had focus, or null; always a note of `tab`. The one record of
+   * "the focused note": with nothing selected, ← / →, `N` and Next to check start from it, and it
+   * holds the tab area's tab stop.
+   */
+  lastFocusedNoteId: string | null;
   /** Present when the take does not exist (never did, or was deleted while open). */
   missing?: true;
 }
@@ -96,21 +102,23 @@ export interface TakeSession {
    * run; analyses again when none is held (a reload lost it).
    */
   retryCommit(): void;
+  /** Records that this note's button took focus (`lastFocusedNoteId`); an unknown id is ignored. */
+  focusNote(noteId: string): void;
   /** Selects the note with this id (null clears the selection); an unknown id clears it. */
   select(noteId: string | null): void;
   /**
    * Selects the next note in played order, stopping at the last. With nothing selected it steps
-   * from `from` (the focused note), or else selects the first.
+   * from `from` (default: the last focused note), or else selects the first.
    */
   selectNext(from?: string | null): void;
   /**
    * Selects the previous note in played order, stopping at the first. With nothing selected it
-   * steps from `from` (the focused note), or else selects the last.
+   * steps from `from` (default: the last focused note), or else selects the last.
    */
   selectPrev(from?: string | null): void;
   /**
    * Next to check (`N`): selects the next low-confidence note after the selection (or, with
-   * nothing selected, after `from`, the focused note; else from the start), in played order,
+   * nothing selected, after `from`, default the last focused note; else from the start), in played order,
    * wrapping to the first. Does nothing when no note is flagged.
    */
   selectNextFlagged(from?: string | null): void;
@@ -143,6 +151,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     loading: true,
     analysis: { kind: 'idle' },
     selectedNoteId: null,
+    lastFocusedNoteId: null,
   };
   const listeners = new Set<() => void>();
   let active = false;
@@ -174,6 +183,10 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     const selected = snapshot.selectedNoteId;
     if (selected !== null && !snapshot.tab?.notes.some((n) => n.id === selected)) {
       snapshot = { ...snapshot, selectedNoteId: null };
+    }
+    const focused = snapshot.lastFocusedNoteId;
+    if (focused !== null && !snapshot.tab?.notes.some((n) => n.id === focused)) {
+      snapshot = { ...snapshot, lastFocusedNoteId: null };
     }
     for (const l of [...listeners]) l();
   }
@@ -298,6 +311,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
         loading: false,
         analysis: { kind: 'idle' },
         selectedNoteId: null,
+        lastFocusedNoteId: null,
         missing: true,
       });
       return;
@@ -336,7 +350,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   function step(step: 1 | -1, from?: string | null) {
     const notes = playedOrder(snapshot.tab?.notes ?? []);
     if (notes.length === 0) return;
-    const current = snapshot.selectedNoteId ?? from ?? null;
+    const current = snapshot.selectedNoteId ?? from ?? snapshot.lastFocusedNoteId;
     const at = notes.findIndex((n) => n.id === current);
     const index =
       at < 0
@@ -350,7 +364,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   function nextFlagged(from?: string | null) {
     const notes = playedOrder(snapshot.tab?.notes ?? []);
     if (!notes.some((n) => n.lowConfidence)) return;
-    const current = snapshot.selectedNoteId ?? from ?? null;
+    const current = snapshot.selectedNoteId ?? from ?? snapshot.lastFocusedNoteId;
     const at = notes.findIndex((n) => n.id === current);
     const after = notes.slice(at + 1).find((n) => n.lowConfidence);
     select((after ?? notes.find((n) => n.lowConfidence)!).id);
@@ -413,6 +427,11 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       follow(deps.analysis.retryCommit(takeId), 1, true);
     },
 
+    focusNote(noteId) {
+      if (noteId === snapshot.lastFocusedNoteId) return;
+      if (!snapshot.tab?.notes.some((n) => n.id === noteId)) return;
+      publish({ lastFocusedNoteId: noteId });
+    },
     select,
     selectNext: (from) => step(1, from),
     selectPrev: (from) => step(-1, from),

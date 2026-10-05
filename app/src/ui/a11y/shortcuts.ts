@@ -8,10 +8,12 @@
 // text field (input, textarea, select, contenteditable), nor on an element where the key has a
 // native action (Space on a button or checkbox, Enter on those or a link), so its own action
 // runs exactly once. A handled key's default (Space scrolling the page) is prevented, and
-// auto-repeat is ignored: holding a key fires once.
+// auto-repeat is ignored (holding a key fires once) unless the entry opts in with `repeat`: only
+// the Tab screen's ← / →, so holding one walks the notes.
 //
 // The Tab screen's keys (story "Tab screen, reflow and selection", US-6.3): ← / → move the note
-// selection and Esc clears it. Their handlers reach the open screen's session through
+// selection (from inside the tab area) and Esc clears it (from anywhere on the screen, as
+// EXPERIENCE.md lists it Global). Their handlers reach the open screen's session through
 // `activeTakeSession()` (session/take-session.ts), which the Tab screen sets while mounted. They
 // do nothing while focus is inside a `role="toolbar"`, which owns its arrow keys (ARIA toolbar
 // pattern). The count-in Esc comes first in the list, so it keeps priority.
@@ -32,6 +34,7 @@ import type { RecordingSnapshot } from '../../session/recording-types';
 import { activePlayback, type PlaybackController } from '../../session/playback';
 import { activeTakeSession, isTabShown, type TakeSession } from '../../session/take-session';
 import { parseRoute, type Route } from '../router';
+import { NOTE_BUTTON, TAB_AREA, TEXT_FIELD, TOOLBAR } from './selectors';
 import { strings } from '../strings';
 
 export interface Shortcut {
@@ -47,18 +50,17 @@ export interface Shortcut {
    * (default: always).
    */
   when?: (target: EventTarget | null) => boolean;
+  /** Whether auto-repeat fires it again (default: a held key fires once). */
+  repeat?: boolean;
 }
 
 /** The latency mark set at a handled Space keydown on Record (story 3.5, Done when 1). */
 export const RECORD_KEYDOWN_MARK = 'record-keydown';
 
-const TEXT_FIELD = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
 /** Elements Space activates natively (links do not: Space on a link only scrolls). */
 const SPACE_ACTION = 'button, summary, [role="button"], [role="checkbox"], [role="switch"]';
 /** Elements Enter activates natively. */
 const ENTER_ACTION = `${SPACE_ACTION}, a[href], [role="link"]`;
-/** A note button in the tab area: Space there is Play / Pause, not a press. */
-const NOTE_BUTTON = '[role="application"] [data-note-id]';
 
 /**
  * On the Tab screen this also settles Space and Enter on a focused toolbar button (or the skip
@@ -149,17 +151,12 @@ export function cancelCountIn(store: Pick<RecordingSession, 'getSnapshot' | 'sto
 
 /** Whether `target` is inside the tab area (`role="application"`). */
 function inTabArea(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest('[role="application"]') !== null;
+  return target instanceof Element && target.closest(TAB_AREA) !== null;
 }
 
 /** Whether `target` is inside a toolbar, which owns its arrow keys (and Esc). */
 function inToolbar(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest('[role="toolbar"]') !== null;
-}
-
-/** The focused note's id, when focus is on a note button. */
-function focusedNoteId(): string | null {
-  return document.activeElement?.getAttribute('data-note-id') ?? null;
+  return target instanceof Element && target.closest(TOOLBAR) !== null;
 }
 
 /**
@@ -169,9 +166,9 @@ function focusedNoteId(): string | null {
  */
 export function focusSelectedNote(selectedNoteId: string | null): void {
   if (selectedNoteId === null) return;
-  const button = [
-    ...document.querySelectorAll<HTMLElement>('[role="application"] [data-note-id]'),
-  ].find((el) => el.getAttribute('data-note-id') === selectedNoteId);
+  const button = [...document.querySelectorAll<HTMLElement>(NOTE_BUTTON)].find(
+    (el) => el.getAttribute('data-note-id') === selectedNoteId,
+  );
   if (button && document.activeElement !== button) button.focus();
 }
 
@@ -184,9 +181,10 @@ type SelectionSession = Pick<
  * ← / → (previous / next note) and Esc (clear the selection) on the Tab screen, acting on the
  * session `session()` returns (the mounted screen's), and only while its tab is shown (analysed,
  * with notes). "Tab enters the tab area; arrows move within it" (EXPERIENCE.md Tab view): the
- * arrows apply only with focus inside the tab area, and step from the focused note when none is
- * selected. Esc applies while a note is selected, with focus in the tab area or on the body;
- * never with focus in a toolbar. `N` selects and focuses the next note to check (wrapping), from
+ * arrows apply only with focus inside the tab area (held down, they repeat), and step from the
+ * last focused note (the session's `lastFocusedNoteId`) when none is selected. Esc applies while
+ * a note is selected, from anywhere on the screen (EXPERIENCE.md: Global) but a text field (the
+ * guard) or a toolbar. `N` selects and focuses the next note to check (wrapping), from
  * anywhere on the screen but the toolbar, while at least one note is flagged.
  */
 export function tabSelectionShortcuts(
@@ -201,21 +199,22 @@ export function tabSelectionShortcuts(
       route: 'tab',
       description: strings['tab.shortcutPrevNote'],
       when: arrows,
-      handler: () => session()?.selectPrev(focusedNoteId()),
+      repeat: true,
+      handler: () => session()?.selectPrev(),
     },
     {
       key: 'ArrowRight',
       route: 'tab',
       description: strings['tab.shortcutNextNote'],
       when: arrows,
-      handler: () => session()?.selectNext(focusedNoteId()),
+      repeat: true,
+      handler: () => session()?.selectNext(),
     },
     {
       key: 'Escape',
       route: 'tab',
       description: strings['tab.shortcutClearSelection'],
       when: (target) =>
-        (inTabArea(target) || target === document.body) &&
         !inToolbar(target) &&
         tabShown() &&
         (session()?.getSnapshot().selectedNoteId ?? null) !== null,
@@ -235,7 +234,7 @@ export function tabSelectionShortcuts(
       handler: () => {
         const s = session();
         if (!s) return;
-        s.selectNextFlagged(focusedNoteId());
+        s.selectNextFlagged();
         focusSelectedNote(s.getSnapshot().selectedNoteId);
       },
     },
@@ -321,7 +320,7 @@ export function dispatchShortcut(
   );
   if (!entry || guarded(event.target, event.key)) return false;
   event.preventDefault();
-  if (!event.repeat) entry.handler();
+  if (!event.repeat || entry.repeat) entry.handler();
   return true;
 }
 

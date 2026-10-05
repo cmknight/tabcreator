@@ -354,18 +354,23 @@ describe('the Tab selection shortcuts', () => {
         })),
       },
       selectedNoteId,
+      lastFocusedNoteId: null,
       analysis: { kind: 'idle' },
       ...over,
     } as unknown as TakeSnapshot;
     return {
       getSnapshot: () => snapshot,
+      /** As the tab area does when a note button takes focus. */
+      focusNote: (id: string) => {
+        snapshot = { ...snapshot, lastFocusedNoteId: id };
+      },
       select: vi.fn(),
       selectNext: vi.fn(),
       selectPrev: vi.fn(),
-      // As the real session: the next flagged note after the selection, else after `from`,
-      // else from the start, wrapping.
+      // As the real session: the next flagged note after the selection, else after `from` (default
+      // the last focused note), else from the start, wrapping.
       selectNextFlagged: vi.fn((from?: string | null) => {
-        const current = snapshot.selectedNoteId ?? from ?? null;
+        const current = snapshot.selectedNoteId ?? from ?? snapshot.lastFocusedNoteId;
         const at = current === null ? -1 : Number(current.slice(1));
         const next = flagged.find((i) => i > at) ?? flagged[0];
         if (next !== undefined) snapshot = { ...snapshot, selectedNoteId: `n${next}` };
@@ -428,11 +433,12 @@ describe('the Tab selection shortcuts', () => {
     install(session);
     const buttons = area(3);
     expect(press(document.body, 'n').defaultPrevented).toBe(true);
-    expect(session.selectNextFlagged).toHaveBeenCalledWith(null);
+    expect(session.selectNextFlagged).toHaveBeenCalledWith();
     expect(document.activeElement).toBe(buttons[2]);
     buttons[0]!.focus();
+    session.focusNote('n0');
     press(buttons[0]!, 'n');
-    expect(session.selectNextFlagged).toHaveBeenLastCalledWith('n0');
+    expect(session.selectNextFlagged).toHaveBeenLastCalledWith();
     expect(document.activeElement).toBe(buttons[2]);
     press(add('button'), 'n'); // e.g. Next to check itself
     expect(session.selectNextFlagged).toHaveBeenCalledTimes(3);
@@ -443,8 +449,9 @@ describe('the Tab selection shortcuts', () => {
     install(session);
     const buttons = area(4);
     buttons[1]!.focus();
+    session.focusNote('n1');
     expect(press(buttons[1]!, 'N').defaultPrevented).toBe(true);
-    expect(session.selectNextFlagged).toHaveBeenCalledWith('n1');
+    expect(session.selectNextFlagged).toHaveBeenCalledWith();
     expect(session.getSnapshot().selectedNoteId).toBe('n2');
     expect(document.activeElement).toBe(buttons[2]);
     press(buttons[2]!, 'n'); // wraps
@@ -474,15 +481,33 @@ describe('the Tab selection shortcuts', () => {
     expect(running.selectNextFlagged).not.toHaveBeenCalled();
   });
 
-  it('in the tab area → selects the next note, ← the previous, from the focused note', () => {
+  it('in the tab area → selects the next note, ← the previous (the session starts from its last focused note)', () => {
     const session = fakeSession(null);
     install(session);
     const button = note('n1');
     const right = press(button, 'ArrowRight');
     const left = press(button, 'ArrowLeft');
-    expect(session.selectNext).toHaveBeenCalledWith('n1');
-    expect(session.selectPrev).toHaveBeenCalledWith('n1');
+    expect(session.selectNext).toHaveBeenCalledWith();
+    expect(session.selectPrev).toHaveBeenCalledWith();
     expect(right.defaultPrevented && left.defaultPrevented).toBe(true);
+  });
+
+  it("holding ← / → repeats; Record's Space and the other entries still fire once", () => {
+    const session = fakeSession('n1');
+    install(session);
+    const button = note('n1');
+    press(button, 'ArrowRight');
+    press(button, 'ArrowRight', { repeat: true });
+    press(button, 'ArrowRight', { repeat: true });
+    press(button, 'ArrowLeft', { repeat: true });
+    expect(session.selectNext).toHaveBeenCalledTimes(3);
+    expect(session.selectPrev).toHaveBeenCalledTimes(1);
+    press(document.body, 'Escape', { repeat: true });
+    expect(session.select).not.toHaveBeenCalled();
+    expect(SHORTCUTS.filter((s) => s.repeat).map((s) => [s.route, s.key])).toEqual([
+      ['tab', 'ArrowLeft'],
+      ['tab', 'ArrowRight'],
+    ]);
   });
 
   it.each([
@@ -500,15 +525,17 @@ describe('the Tab selection shortcuts', () => {
     expect(session.selectPrev).not.toHaveBeenCalled();
   });
 
-  it('Esc clears a selection from the tab area or the body; with none it is left to the page', () => {
+  it('Esc clears a selection from anywhere on the screen (Global); with none it is left to the page', () => {
     const session = fakeSession('n1');
     install(session);
     expect(press(document.body, 'Escape').defaultPrevented).toBe(true);
     expect(press(note('n1'), 'Escape').defaultPrevented).toBe(true);
-    expect(session.select).toHaveBeenCalledTimes(2);
+    // From Play (a button outside the tab area) and from a link (the skip link) too.
+    const play = add('button', { 'aria-label': 'Play' });
+    expect(press(play, 'Escape').defaultPrevented).toBe(true);
+    expect(press(add('a', { href: '#/tab/t1' }), 'Escape').defaultPrevented).toBe(true);
+    expect(session.select).toHaveBeenCalledTimes(4);
     expect(session.select).toHaveBeenCalledWith(null);
-    expect(press(add('button'), 'Escape').defaultPrevented).toBe(false);
-    expect(session.select).toHaveBeenCalledTimes(2);
     remove();
     const none = fakeSession(null);
     install(none);
