@@ -3,7 +3,7 @@ title: 'Tab screen, reflow and selection'
 type: 'feature'
 ticket: '8'
 created: '2026-10-04'
-status: 'built'
+status: done
 baseline_revision: '56afbe84a3f45bb7294cd8308c62738798f1817c'
 route: 'full'
 route_source: 'auto'
