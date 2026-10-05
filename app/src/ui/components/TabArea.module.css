@@ -1,0 +1,75 @@
+/* The tab area (DESIGN.md Tab system, Tab note states, Focus ring): one surface box per system,
+   the lines as text with a note button over each note's characters. */
+.area {
+  display: grid;
+  gap: var(--space-4);
+  min-inline-size: 0;
+}
+
+.system {
+  position: relative;
+  min-inline-size: 0;
+  padding: var(--space-4);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--font-tab);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+/* The measuring box: a system's width and padding, no height and nothing visible. */
+.measure {
+  block-size: 0;
+  margin: 0;
+  padding-block: 0;
+  overflow: hidden;
+  white-space: pre;
+  visibility: hidden;
+  border-block-width: 0;
+}
+
+/* The grid gap does not apply to the zero-height measuring box. */
+.measure + .system {
+  margin-block-start: calc(-1 * var(--space-4));
+}
+
+.probe {
+  white-space: pre;
+}
+
+.inner {
+  position: relative;
+}
+
+.lines {
+  margin: 0;
+  font: inherit;
+  white-space: pre;
+}
+
+/* A note: transparent over its digits, so the text shows through. */
+.note {
+  position: absolute;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+/* The focus ring sits outside the selection outline with a surface gap (DESIGN.md Focus ring). */
+.note:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 4px var(--color-surface),
+    0 0 0 calc(4px + var(--space-focus-ring)) var(--color-primary);
+}
+
+/* Selected (DESIGN.md tab-note-selected): a solid primary outline, distinct from the ring. */
+.note[aria-pressed='true'],
+.note[aria-pressed='true']:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 0;
+}

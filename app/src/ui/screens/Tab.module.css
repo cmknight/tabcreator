@@ -1,4 +1,6 @@
-/* The Tab screen (stories 5.6, 5.7): the analysis states, then the tab's systems as text. */
+/* The Tab screen (stories 5.6, 5.7, and "Tab screen, reflow and selection"): the analysis
+   states, the skip link, the toolbar container and the note list. The tab itself is
+   components/TabArea. */
 
 /* The error banners (components/banner.module.css) sit above the title. */
 .banner {
@@ -70,14 +72,46 @@
 }
 
 .systems {
-  margin-block-start: var(--space-6);
+  margin-block-start: var(--space-4);
   min-inline-size: 0;
 }
 
-/* One system: scrolls inside its container on narrow screens, never the page. */
-.system {
-  margin: 0 0 var(--space-4);
-  overflow-x: auto;
-  max-inline-size: 100%;
-  font: var(--font-tab);
+/* "Skip to tab": the screen's first focusable element, visible only while focused. */
+.skipLink {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.skipLink:focus {
+  position: static;
+  display: inline-block;
+  inline-size: auto;
+  block-size: auto;
+  margin-block-end: var(--space-2);
+  overflow: visible;
+  clip-path: none;
+  color: var(--color-primary);
+  font: var(--font-ui);
+  text-decoration: underline;
+}
+
+/* The toolbar container; its buttons come with later stories. */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.noteListToggle {
+  margin-block-start: var(--space-4);
+}
+
+.noteList {
+  margin: var(--space-3) 0 0;
+  padding-inline-start: var(--space-6);
+  font: var(--font-ui);
 }

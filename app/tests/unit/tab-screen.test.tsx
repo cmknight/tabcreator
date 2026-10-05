@@ -1,8 +1,13 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppErrorCode } from '../../src/model/errors';
 import type { Note, Tab as TabRecord, Take } from '../../src/model/types';
-import type { TakeSession, TakeSnapshot } from '../../src/session/take-session';
+import { layoutTab } from '../../src/model/tab-render';
+import {
+  activeTakeSession,
+  type TakeSession,
+  type TakeSnapshot,
+} from '../../src/session/take-session';
 import { Tab } from '../../src/ui/screens/Tab';
 import { announce } from '../../src/ui/a11y/announcer';
 import { reloadOrExplain } from '../../src/ui/reload-or-explain';
@@ -46,8 +51,11 @@ const note = (i: number, string: Note['string'], fret: number): Note => ({
   lowConfidence: false,
 });
 
-function mockSession(initial: TakeSnapshot) {
-  let snapshot = initial;
+/** A snapshot; `selectedNoteId` defaults to null. */
+type Snap = Omit<TakeSnapshot, 'selectedNoteId'> & { selectedNoteId?: string | null };
+
+function mockSession(initial: Snap) {
+  let snapshot: TakeSnapshot = { selectedNoteId: null, ...initial };
   const listeners = new Set<() => void>();
   const session: TakeSession = {
     subscribe: vi.fn((listener: () => void) => {
@@ -60,6 +68,13 @@ function mockSession(initial: TakeSnapshot) {
     cancel: vi.fn(),
     analyse: vi.fn(),
     retryCommit: vi.fn(),
+    select: vi.fn((id: string | null) => {
+      snapshot = { ...snapshot, selectedNoteId: id };
+      listeners.forEach((l) => l());
+    }),
+    selectNext: vi.fn(),
+    selectPrev: vi.fn(),
+    rename: vi.fn(() => Promise.resolve()),
   };
   /** Publishes a new snapshot to the screen. */
   const set = (next: Partial<TakeSnapshot>) =>
@@ -131,7 +146,10 @@ describe('Tab screen', () => {
     render(<Tab takeId="t1" createSession={create} />);
     expect(screen.getByText(strings['tab.analysisFailed'])).toBeTruthy();
     expect(screen.queryByRole('progressbar')).toBeNull();
-    expect(screen.getAllByRole('button').map((b) => b.textContent)).toEqual([strings['tab.retry']]);
+    // Retry, and the header's Rename take: nothing else.
+    expect(
+      screen.getAllByRole('button').map((b) => b.getAttribute('aria-label') ?? b.textContent),
+    ).toEqual([strings['tab.retry'], strings['tab.rename']]);
     fireEvent.click(screen.getByRole('button', { name: strings['tab.retry'] }));
     expect(session.analyse).toHaveBeenCalledTimes(1);
   });
@@ -164,13 +182,13 @@ describe('Tab screen', () => {
 // Story 5.7 (US-4.5, EXPERIENCE.md Analysis progress and the Tab states).
 describe('Tab screen analysis states', () => {
   const RECORDED: Take = { ...TAKE, status: 'recorded' };
-  const runningAt = (progress: number): TakeSnapshot => ({
+  const runningAt = (progress: number): Snap => ({
     take: RECORDED,
     tab: null,
     loading: false,
     analysis: { kind: 'running', progress },
   });
-  const failed = (code: AppErrorCode): TakeSnapshot => ({
+  const failed = (code: AppErrorCode): Snap => ({
     take: RECORDED,
     tab: null,
     loading: false,
@@ -345,5 +363,307 @@ describe('Tab screen saving and focus', () => {
     render(<Tab takeId="t1" createSession={create} />);
     set({ analysis: { kind: 'failed', code: 'analysis-failed' } });
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+// Story "Tab screen, reflow and selection" (US-6.2, US-6.3, US-8.2).
+describe('Tab screen tab area, header and selection', () => {
+  /** 8 px per character (the probe is 100 characters wide). */
+  const CHAR = 8;
+  let measureWidth = 400;
+  let resize: (() => void) | null = null;
+
+  const rect = (width: number) =>
+    ({ width, height: 0, top: 0, left: 0, right: width, bottom: 0, x: 0, y: 0 }) as DOMRect;
+
+  beforeEach(() => {
+    measureWidth = 400;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.tagName === 'SPAN' && this.textContent === '-'.repeat(100)) return rect(100 * CHAR);
+      if (this.parentElement?.getAttribute('role') === 'application' && this.tagName === 'DIV') {
+        if (this.getAttribute('aria-hidden') === 'true') return rect(measureWidth);
+      }
+      return rect(0);
+    });
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(cb: () => void) {
+          resize = cb;
+        }
+        observe() {}
+        disconnect() {
+          resize = null;
+        }
+      },
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  // 40 notes, 250 ms apart, over the strings; the 12th in played order is note 11.
+  const notes = Array.from({ length: 40 }, (_, i) =>
+    i === 11
+      ? { ...note(i, 2, 3), midi: 62, startMs: 4250, endMs: 4400 }
+      : { ...note(i, ((i % 6) + 1) as Note['string'], i % 13), startMs: i * 375 },
+  );
+  const TAB40: TabRecord = { takeId: 't1', notes, updatedAt: TAKE.updatedAt, deletedStartMs: [] };
+  const analysed = (selectedNoteId: string | null = null) =>
+    mockSession({
+      take: TAKE,
+      tab: TAB40,
+      loading: false,
+      analysis: { kind: 'idle' },
+      selectedNoteId,
+    });
+
+  const noteButton = (id: string) =>
+    document.querySelector<HTMLButtonElement>(`[data-note-id="${id}"]`)!;
+
+  it('lays the tab out to the measured width; each note button sits over its characters', () => {
+    const { create } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    const area = screen.getByRole('application', { name: 'Tab' });
+    // 400 px / 8 px per character (jsdom applies no padding).
+    expect(area.getAttribute('data-width-chars')).toBe('50');
+    const layout = layoutTab(notes, 50, TAKE.countInBpm);
+    const groups = screen.getAllByRole('group', { name: /^Tab system/ });
+    expect(groups).toHaveLength(layout.systems.length);
+    layout.systems.forEach((system, i) => {
+      const group = groups[i]!;
+      expect(group.getAttribute('aria-label')).toBe(`Tab system ${i + 1} of ${groups.length}`);
+      const pre = group.querySelector('pre')!;
+      expect(pre.getAttribute('aria-hidden')).toBe('true');
+      expect(pre.textContent).toBe(system.lines.join('\n'));
+      for (const line of system.lines) expect(line.length).toBeLessThanOrEqual(50);
+      for (const cell of system.cells) {
+        const button = group.querySelector<HTMLButtonElement>(`[data-note-id="${cell.noteId}"]`)!;
+        expect(parseFloat(button.style.left)).toBeCloseTo(cell.col * CHAR);
+        expect(parseFloat(button.style.width)).toBeCloseTo(cell.width * CHAR);
+        // No computed line height in jsdom: the 16 px × 1.35 fallback.
+        expect(parseFloat(button.style.top)).toBeCloseTo((cell.string - 1) * 21.6);
+      }
+    });
+  });
+
+  it('a narrow area never goes below 20 characters', () => {
+    measureWidth = 50;
+    const { create } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    expect(screen.getByRole('application').getAttribute('data-width-chars')).toBe('20');
+  });
+
+  it('the area is described by its instructions; every note is labelled', () => {
+    const { create } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    const area = screen.getByRole('application', { name: 'Tab' });
+    const described = document.getElementById(area.getAttribute('aria-describedby')!)!;
+    expect(described.textContent).toBe(strings['tab.areaInstructions']);
+    expect(noteButton('n11').getAttribute('aria-label')).toBe(
+      'Note 12: B string, fret 3, D4, at 4.25 seconds',
+    );
+    expect(noteButton('n0').getAttribute('aria-label')).toBe(
+      'Note 1: high E string, fret 0, C4, at 0.00 seconds',
+    );
+    expect(noteButton('n5').getAttribute('aria-label')).toMatch(/^Note 6: low E string, fret 5, /);
+    expect(screen.getAllByRole('button', { name: /^Note \d+:/ })).toHaveLength(40);
+  });
+
+  it('roving focus: one note in the tab order; a click selects; the selection is pressed', () => {
+    const { create, session } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    const stops = [...document.querySelectorAll('[data-note-id]')].filter(
+      (b) => b.getAttribute('tabindex') === '0',
+    );
+    expect(stops.map((b) => b.getAttribute('data-note-id'))).toEqual(['n0']);
+    fireEvent.click(noteButton('n7'));
+    expect(session.select).toHaveBeenCalledWith('n7');
+    expect(noteButton('n7').getAttribute('aria-pressed')).toBe('true');
+    expect(noteButton('n7').tabIndex).toBe(0);
+    expect(noteButton('n0').tabIndex).toBe(-1);
+    expect(noteButton('n0').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('focusing a note selects it; a selection moved by the arrows moves focus', () => {
+    const { create, session, set } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    act(() => noteButton('n0').focus());
+    expect(session.select).toHaveBeenCalledWith('n0');
+    set({ selectedNoteId: 'n1' });
+    expect(document.activeElement).toBe(noteButton('n1'));
+    // Cleared (Esc): focus stays where it is.
+    set({ selectedNoteId: null });
+    expect(document.activeElement).toBe(noteButton('n1'));
+  });
+
+  it('after Esc the focused note keeps the tab stop; a reflow keeps focus on it, unselected', () => {
+    vi.useFakeTimers();
+    const { create, session, set } = analysed('n30');
+    render(<Tab takeId="t1" createSession={create} />);
+    act(() => noteButton('n30').focus());
+    set({ selectedNoteId: null }); // Esc
+    expect(noteButton('n30').tabIndex).toBe(0);
+    expect(noteButton('n0').tabIndex).toBe(-1);
+    vi.mocked(session.select).mockClear();
+    measureWidth = 200;
+    act(() => resize?.());
+    act(() => vi.advanceTimersByTime(100));
+    expect(screen.getByRole('application').getAttribute('data-width-chars')).toBe('25');
+    expect(document.activeElement).toBe(noteButton('n30'));
+    expect(session.select).not.toHaveBeenCalled();
+    expect(session.getSnapshot().selectedNoteId).toBeNull();
+    expect(noteButton('n30').tabIndex).toBe(0);
+  });
+
+  it('registers its session as the active one while mounted', () => {
+    const { create, session } = analysed();
+    const { unmount } = render(<Tab takeId="t1" createSession={create} />);
+    expect(activeTakeSession()).toBe(session);
+    unmount();
+    expect(activeTakeSession()).toBeNull();
+  });
+
+  it('reflows on resize (debounced 100 ms) and keeps the selected note selected and focused', () => {
+    vi.useFakeTimers();
+    const { create } = analysed('n30');
+    render(<Tab takeId="t1" createSession={create} />);
+    act(() => noteButton('n30').focus());
+    const area = screen.getByRole('application');
+    const before = screen.getAllByRole('group').length;
+    measureWidth = 200;
+    act(() => resize?.());
+    act(() => vi.advanceTimersByTime(99));
+    expect(area.getAttribute('data-width-chars')).toBe('50');
+    act(() => vi.advanceTimersByTime(1));
+    expect(area.getAttribute('data-width-chars')).toBe('25');
+    expect(screen.getAllByRole('group').length).toBeGreaterThan(before);
+    for (const pre of area.querySelectorAll('pre')) {
+      for (const line of pre.textContent!.split('\n')) expect(line.length).toBeLessThanOrEqual(25);
+    }
+    expect(noteButton('n30').getAttribute('aria-pressed')).toBe('true');
+    expect(document.activeElement).toBe(noteButton('n30'));
+  });
+
+  it('the header: title, Rename take, and the date with the duration', () => {
+    const createdAt = new Date(2026, 8, 27, 21, 14).toISOString();
+    const { create } = mockSession({
+      take: { ...TAKE, createdAt, durationMs: 13_400 },
+      tab: TAB40,
+      loading: false,
+      analysis: { kind: 'idle' },
+    });
+    render(<Tab takeId="t1" createSession={create} />);
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Take 3');
+    expect(screen.getByRole('button', { name: 'Rename take' })).toBeTruthy();
+    expect(screen.getByTestId('tab-meta').textContent).toBe('Sun 27 Sep 2026, 21:14 · 0:13');
+  });
+
+  it('rename: Enter saves and focus returns to the pencil', () => {
+    const { create, session } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Rename take' }));
+    const field = screen.getByRole('textbox', { name: 'Take title' }) as HTMLInputElement;
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe('Take 3');
+    fireEvent.change(field, { target: { value: 'Riff in A' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+    expect(session.rename).toHaveBeenCalledTimes(1);
+    expect(session.rename).toHaveBeenCalledWith('Riff in A');
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Rename take' }));
+  });
+
+  it('rename: the field holds 100 code points, never half an emoji', () => {
+    const { create } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Rename take' }));
+    const field = screen.getByRole('textbox', { name: 'Take title' }) as HTMLInputElement;
+    fireEvent.change(field, { target: { value: 'x'.repeat(99) + '🎸🎸' } });
+    expect(field.value).toBe('x'.repeat(99) + '🎸');
+  });
+
+  it('rename: an Enter that ends an IME composition does not save', () => {
+    const { create, session } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Rename take' }));
+    const field = screen.getByRole('textbox', { name: 'Take title' });
+    fireEvent.change(field, { target: { value: 'にほ' } });
+    fireEvent.keyDown(field, { key: 'Enter', isComposing: true });
+    expect(session.rename).not.toHaveBeenCalled();
+    expect(screen.getByRole('textbox', { name: 'Take title' })).toBeTruthy();
+    fireEvent.keyDown(field, { key: 'Enter' });
+    expect(session.rename).toHaveBeenCalledWith('にほ');
+  });
+
+  it('rename: leaving the screen mid-edit saves the draft, once', () => {
+    const { create, session } = analysed();
+    const { unmount } = render(<Tab takeId="t1" createSession={create} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Rename take' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Take title' }), {
+      target: { value: 'Half typed' },
+    });
+    unmount();
+    expect(session.rename).toHaveBeenCalledTimes(1);
+    expect(session.rename).toHaveBeenCalledWith('Half typed');
+  });
+
+  it('rename: Escape cancels, blur saves', () => {
+    const { create, session } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Rename take' }));
+    let field = screen.getByRole('textbox', { name: 'Take title' });
+    fireEvent.change(field, { target: { value: 'Nope' } });
+    fireEvent.keyDown(field, { key: 'Escape' });
+    expect(session.rename).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Rename take' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename take' }));
+    field = screen.getByRole('textbox', { name: 'Take title' });
+    fireEvent.change(field, { target: { value: 'Blurred' } });
+    fireEvent.blur(field);
+    expect(session.rename).toHaveBeenCalledWith('Blurred');
+  });
+
+  it('the skip link comes first and moves focus to the selected note, else the first', () => {
+    const { create, set } = analysed();
+    const { container } = render(<Tab takeId="t1" createSession={create} />);
+    const focusable = container.querySelectorAll('a[href], button, input, [tabindex="0"]');
+    const skip = screen.getByRole('link', { name: 'Skip to tab' });
+    expect(focusable[0]).toBe(skip);
+    fireEvent.click(skip);
+    expect(document.activeElement).toBe(noteButton('n0'));
+    act(() => noteButton('n0').blur());
+    set({ selectedNoteId: 'n20' });
+    act(() => (document.activeElement as HTMLElement).blur());
+    fireEvent.click(skip);
+    expect(document.activeElement).toBe(noteButton('n20'));
+  });
+
+  it('an empty toolbar under the header', () => {
+    const { create } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    const toolbar = screen.getByRole('toolbar', { name: 'Tab tools' });
+    expect(toolbar.children).toHaveLength(0);
+  });
+
+  it('Note list view: a toggle that shows the same labels in played order', () => {
+    const { create } = analysed();
+    render(<Tab takeId="t1" createSession={create} />);
+    const toggle = screen.getByRole('button', { name: 'Note list view' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(screen.queryByTestId('tab-note-list')).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    const items = [...screen.getByTestId('tab-note-list').querySelectorAll('li')].map(
+      (li) => li.textContent,
+    );
+    const ordered = [...notes].sort((a, b) => a.startMs - b.startMs);
+    expect(items).toEqual(ordered.map((n) => noteButton(n.id).getAttribute('aria-label')));
+    expect(items[11]).toBe('Note 12: B string, fret 3, D4, at 4.25 seconds');
   });
 });

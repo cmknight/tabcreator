@@ -8,8 +8,10 @@ import {
   RECORD_KEYDOWN_MARK,
   recordToggle,
   SHORTCUTS,
+  tabSelectionShortcuts,
   type Shortcut,
 } from '../../src/ui/a11y/shortcuts';
+import type { TakeSnapshot } from '../../src/session/take-session';
 
 /** A cancelable keydown dispatched on `target` (bubbling to window). */
 function press(target: EventTarget, key: string, init: KeyboardEventInit = {}): KeyboardEvent {
@@ -35,10 +37,11 @@ describe('the registry', () => {
     expect(space[0]).toMatchObject({ route: 'record', description: 'Record / stop' });
   });
 
-  it('registers Esc as a global entry: Cancel count-in', () => {
+  it("registers Esc as a global entry: Cancel count-in, ahead of the Tab screen's Esc", () => {
     const esc = SHORTCUTS.filter((s) => s.key === 'Escape');
-    expect(esc).toHaveLength(1);
+    expect(esc).toHaveLength(2);
     expect(esc[0]).toMatchObject({ route: 'global', description: 'Cancel count-in' });
+    expect(esc[1]).toMatchObject({ route: 'tab', description: 'Clear note selection' });
   });
 });
 
@@ -316,5 +319,199 @@ describe('Space on Record', () => {
       t.toggle();
       expect(t.record).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// Story "Tab screen, reflow and selection" (US-6.3): ← / → and Esc on the Tab screen.
+describe('the Tab selection shortcuts', () => {
+  function fakeSession(
+    selectedNoteId: string | null,
+    notes = 3,
+    over: Partial<Pick<TakeSnapshot, 'analysis' | 'missing'>> = {},
+  ) {
+    const snapshot = {
+      tab: { notes: Array.from({ length: notes }, (_, i) => ({ id: `n${i}` })) },
+      selectedNoteId,
+      analysis: { kind: 'idle' },
+      ...over,
+    } as unknown as TakeSnapshot;
+    return {
+      getSnapshot: () => snapshot,
+      select: vi.fn(),
+      selectNext: vi.fn(),
+      selectPrev: vi.fn(),
+    };
+  }
+
+  let remove: () => void = () => {};
+  afterEach(() => {
+    remove();
+    document.body.innerHTML = '';
+    window.location.hash = '';
+  });
+
+  function install(session: ReturnType<typeof fakeSession> | null, hash = '#/tab/t1') {
+    window.location.hash = hash;
+    const recording = cancelCountIn({
+      getSnapshot: () =>
+        ({ mic: 'live', recording: 'idle', countIn: { on: false, bpm: 100 } }) as RecordingSnapshot,
+      stop: vi.fn(() => Promise.resolve()),
+    });
+    remove = installShortcuts(window, [recording, ...tabSelectionShortcuts(() => session)]);
+  }
+
+  /** A note button inside a tab area, focused. */
+  function note(id: string): HTMLButtonElement {
+    const area = add('div', { role: 'application', 'aria-label': 'Tab' });
+    const button = document.createElement('button');
+    button.setAttribute('data-note-id', id);
+    area.append(button);
+    button.focus();
+    return button;
+  }
+
+  it('registers ← / → / Esc on the tab route with descriptions', () => {
+    const tab = SHORTCUTS.filter((s) => s.route === 'tab');
+    expect(tab.map((s) => [s.key, s.description])).toEqual([
+      ['ArrowLeft', 'Previous note'],
+      ['ArrowRight', 'Next note'],
+      ['Escape', 'Clear note selection'],
+    ]);
+  });
+
+  it('in the tab area → selects the next note, ← the previous, from the focused note', () => {
+    const session = fakeSession(null);
+    install(session);
+    const button = note('n1');
+    const right = press(button, 'ArrowRight');
+    const left = press(button, 'ArrowLeft');
+    expect(session.selectNext).toHaveBeenCalledWith('n1');
+    expect(session.selectPrev).toHaveBeenCalledWith('n1');
+    expect(right.defaultPrevented && left.defaultPrevented).toBe(true);
+  });
+
+  it.each([
+    ['the body', () => document.body],
+    ['the skip link', () => add('a', { href: '#/tab/t1' })],
+    ['a button outside the tab area', () => add('button')],
+  ])('the arrows do nothing from %s', (_, make) => {
+    const session = fakeSession('n1');
+    install(session);
+    const target = make();
+    for (const key of ['ArrowLeft', 'ArrowRight']) {
+      expect(press(target, key).defaultPrevented).toBe(false);
+    }
+    expect(session.selectNext).not.toHaveBeenCalled();
+    expect(session.selectPrev).not.toHaveBeenCalled();
+  });
+
+  it('Esc clears a selection from the tab area or the body; with none it is left to the page', () => {
+    const session = fakeSession('n1');
+    install(session);
+    expect(press(document.body, 'Escape').defaultPrevented).toBe(true);
+    expect(press(note('n1'), 'Escape').defaultPrevented).toBe(true);
+    expect(session.select).toHaveBeenCalledTimes(2);
+    expect(session.select).toHaveBeenCalledWith(null);
+    expect(press(add('button'), 'Escape').defaultPrevented).toBe(false);
+    expect(session.select).toHaveBeenCalledTimes(2);
+    remove();
+    const none = fakeSession(null);
+    install(none);
+    expect(press(document.body, 'Escape').defaultPrevented).toBe(false);
+    expect(none.select).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['running', { analysis: { kind: 'running', progress: 0.5 } }],
+    ['failed', { analysis: { kind: 'failed', code: 'analysis-failed' } }],
+    ['missing', { missing: true }],
+  ] as const)('nothing while the tab is not shown (%s)', (_, over) => {
+    const session = fakeSession('n1', 3, over as Partial<TakeSnapshot>);
+    install(session);
+    const button = note('n1');
+    for (const key of ['ArrowLeft', 'ArrowRight', 'Escape']) {
+      expect(press(button, key).defaultPrevented).toBe(false);
+    }
+    expect(press(document.body, 'Escape').defaultPrevented).toBe(false);
+    expect(session.selectNext).not.toHaveBeenCalled();
+    expect(session.select).not.toHaveBeenCalled();
+  });
+
+  it('nothing from the title field (a text field)', () => {
+    const session = fakeSession('n1');
+    install(session);
+    const input = add('input', { type: 'text' });
+    for (const key of ['ArrowLeft', 'ArrowRight', 'Escape']) {
+      expect(press(input, key).defaultPrevented).toBe(false);
+    }
+    expect(session.selectNext).not.toHaveBeenCalled();
+    expect(session.selectPrev).not.toHaveBeenCalled();
+    expect(session.select).not.toHaveBeenCalled();
+  });
+
+  it('nothing while focus is inside the toolbar', () => {
+    const session = fakeSession('n1');
+    install(session);
+    const toolbar = add('div', { role: 'toolbar', 'aria-label': 'Tab tools' });
+    const button = toolbar.appendChild(document.createElement('button'));
+    for (const key of ['ArrowLeft', 'ArrowRight', 'Escape']) {
+      expect(press(button, key).defaultPrevented).toBe(false);
+    }
+    expect(session.selectNext).not.toHaveBeenCalled();
+    expect(session.selectPrev).not.toHaveBeenCalled();
+    expect(session.select).not.toHaveBeenCalled();
+  });
+
+  it('Space and Enter on a toolbar button keep their native action: a tab-route entry never fires', () => {
+    window.location.hash = '#/tab/t1';
+    const handler = vi.fn();
+    remove = installShortcuts(window, [
+      { key: ' ', route: 'tab', description: 'x', handler },
+      { key: 'Enter', route: 'tab', description: 'y', handler },
+    ]);
+    const toolbar = add('div', { role: 'toolbar', 'aria-label': 'Tab tools' });
+    const button = toolbar.appendChild(document.createElement('button'));
+    expect(press(button, ' ').defaultPrevented).toBe(false);
+    expect(press(button, 'Enter').defaultPrevented).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+    // The same entries do fire with focus on the body: the guard, not the route, held them.
+    press(document.body, ' ');
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('nothing on another route, with no open session, or with no notes', () => {
+    const session = fakeSession('n1');
+    install(session, '#/record');
+    press(note('n1'), 'ArrowRight');
+    press(document.body, 'Escape');
+    remove();
+    install(null);
+    expect(press(note('n1'), 'ArrowRight').defaultPrevented).toBe(false);
+    remove();
+    const empty = fakeSession(null, 0);
+    install(empty);
+    expect(press(note('n1'), 'ArrowRight').defaultPrevented).toBe(false);
+    expect(session.selectNext).not.toHaveBeenCalled();
+    expect(session.select).not.toHaveBeenCalled();
+    expect(empty.selectNext).not.toHaveBeenCalled();
+  });
+
+  it('a count-in Esc keeps priority', () => {
+    window.location.hash = '#/tab/t1';
+    const session = fakeSession('n1');
+    const stop = vi.fn(() => Promise.resolve());
+    const countIn = cancelCountIn({
+      getSnapshot: () =>
+        ({
+          mic: 'live',
+          recording: 'count-in',
+          countIn: { on: true, bpm: 100 },
+        }) as RecordingSnapshot,
+      stop,
+    });
+    remove = installShortcuts(window, [countIn, ...tabSelectionShortcuts(() => session)]);
+    press(document.body, 'Escape');
+    expect(stop).toHaveBeenCalledWith('user');
+    expect(session.select).not.toHaveBeenCalled();
   });
 });

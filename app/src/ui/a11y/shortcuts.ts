@@ -9,6 +9,12 @@
 // native action (Space on a button or checkbox, Enter on those or a link), so its own action
 // runs exactly once. A handled key's default (Space scrolling the page) is prevented, and
 // auto-repeat is ignored: holding a key fires once.
+//
+// The Tab screen's keys (story "Tab screen, reflow and selection", US-6.3): ← / → move the note
+// selection and Esc clears it. Their handlers reach the open screen's session through
+// `activeTakeSession()` (session/take-session.ts), which the Tab screen sets while mounted. They
+// do nothing while focus is inside a `role="toolbar"`, which owns its arrow keys (ARIA toolbar
+// pattern). The count-in Esc comes first in the list, so it keeps priority.
 
 import { useEffect } from 'react';
 import {
@@ -16,6 +22,7 @@ import {
   type RecordingSession,
   type RecordingSnapshot,
 } from '../../session/recording-session';
+import { activeTakeSession, type TakeSession } from '../../session/take-session';
 import { parseRoute, type Route } from '../router';
 import { strings } from '../strings';
 
@@ -27,8 +34,11 @@ export interface Shortcut {
   /** What it does, as the `?` dialog lists it. */
   description: string;
   handler: () => void;
-  /** Whether it applies now; when false the key is not handled (default: always). */
-  when?: () => boolean;
+  /**
+   * Whether it applies now, given the keydown's target; when false the key is not handled
+   * (default: always).
+   */
+  when?: (target: EventTarget | null) => boolean;
 }
 
 /** The latency mark set at a handled Space keydown on Record (story 3.5, Done when 1). */
@@ -41,6 +51,10 @@ const SPACE_ACTION = 'button, summary, [role="button"], [role="checkbox"], [role
 const ENTER_ACTION = `${SPACE_ACTION}, a[href], [role="link"]`;
 
 /**
+ * On the Tab screen this also settles Space and Enter on a focused toolbar button (or the note
+ * buttons, the skip link, the Note list view toggle): they keep their native action (press the
+ * button, follow the link), and no `tab`-route Space or Enter shortcut fires there.
+ *
  * Whether `key` pressed with focus on `target` must be left to the page: focus is in a text
  * field, or on an element where the key has a native action (Space: a button or checkbox;
  * Enter: those and links).
@@ -114,6 +128,71 @@ export function cancelCountIn(store: Pick<RecordingSession, 'getSnapshot' | 'sto
   };
 }
 
+/** Whether `target` is inside the tab area (`role="application"`). */
+function inTabArea(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('[role="application"]') !== null;
+}
+
+/** Whether `target` is inside a toolbar, which owns its arrow keys (and Esc). */
+function inToolbar(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('[role="toolbar"]') !== null;
+}
+
+/** The focused note's id, when focus is on a note button. */
+function focusedNoteId(): string | null {
+  return document.activeElement?.getAttribute('data-note-id') ?? null;
+}
+
+type SelectionSession = Pick<TakeSession, 'getSnapshot' | 'select' | 'selectNext' | 'selectPrev'>;
+
+/**
+ * ← / → (previous / next note) and Esc (clear the selection) on the Tab screen, acting on the
+ * session `session()` returns (the mounted screen's), and only while its tab is shown (analysed,
+ * with notes). "Tab enters the tab area; arrows move within it" (EXPERIENCE.md Tab view): the
+ * arrows apply only with focus inside the tab area, and step from the focused note when none is
+ * selected. Esc applies while a note is selected, with focus in the tab area or on the body;
+ * never with focus in a toolbar.
+ */
+export function tabSelectionShortcuts(
+  session: () => SelectionSession | null = activeTakeSession,
+): Shortcut[] {
+  const tabShown = () => {
+    const snap = session()?.getSnapshot();
+    return (
+      !!snap && !snap.missing && snap.analysis.kind === 'idle' && (snap.tab?.notes.length ?? 0) > 0
+    );
+  };
+  const arrows = (target: EventTarget | null) =>
+    inTabArea(target) && !inToolbar(target) && tabShown();
+  return [
+    {
+      key: 'ArrowLeft',
+      route: 'tab',
+      description: strings['tab.shortcutPrevNote'],
+      when: arrows,
+      handler: () => session()?.selectPrev(focusedNoteId()),
+    },
+    {
+      key: 'ArrowRight',
+      route: 'tab',
+      description: strings['tab.shortcutNextNote'],
+      when: arrows,
+      handler: () => session()?.selectNext(focusedNoteId()),
+    },
+    {
+      key: 'Escape',
+      route: 'tab',
+      description: strings['tab.shortcutClearSelection'],
+      when: (target) =>
+        (inTabArea(target) || target === document.body) &&
+        !inToolbar(target) &&
+        tabShown() &&
+        (session()?.getSnapshot().selectedNoteId ?? null) !== null,
+      handler: () => session()?.select(null),
+    },
+  ];
+}
+
 /** Every shortcut in the app. */
 export const SHORTCUTS: readonly Shortcut[] = [
   {
@@ -123,6 +202,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     handler: recordToggle(recordingSession),
   },
   cancelCountIn(recordingSession),
+  ...tabSelectionShortcuts(),
 ];
 
 /**
@@ -141,7 +221,7 @@ export function dispatchShortcut(
     (s) =>
       s.key === event.key &&
       (s.route === 'global' || (route !== null && s.route === route)) &&
-      (s.when?.() ?? true),
+      (s.when?.(event.target) ?? true),
   );
   if (!entry || guarded(event.target, event.key)) return false;
   event.preventDefault();

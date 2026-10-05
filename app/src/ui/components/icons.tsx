@@ -26,3 +26,18 @@ export function ErrorIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/** The pencil: the Tab screen's Rename take button. */
+export function PencilIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M4 20h4L19 9l-4-4L4 16zM14 6l4 4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}

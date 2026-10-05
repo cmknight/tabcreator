@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../src/model/errors';
-import type { Tab, Take } from '../../src/model/types';
+import type { Note, Tab, Take } from '../../src/model/types';
 import type { AnalysisOutcome, ProgressListener } from '../../src/session/analysis';
-import { createTakeSession, type TakeSessionDeps } from '../../src/session/take-session';
+import {
+  activeTakeSession,
+  capTitle,
+  createTakeSession,
+  setActiveTakeSession,
+  type TakeSessionDeps,
+} from '../../src/session/take-session';
 import type { StorageEvent, StorageListener } from '../../src/storage/events';
 
 // Story 5.6 (spine AD-3, AD-5, AD-16): the take session against mocked storage and analysis.
@@ -44,6 +50,7 @@ function harness(take: Take | null, tab: Tab | null = null) {
     db: {
       getTake: vi.fn(async () => take),
       getTab: vi.fn(async () => tab),
+      patchTake: vi.fn(async (_id: string, patch: Partial<Take>) => ({ ...take!, ...patch })),
     },
     analysis: {
       ensureAnalysed: vi.fn((_take, onProgress, onSaving) => {
@@ -92,6 +99,7 @@ describe('take session', () => {
       tab: TAB,
       loading: false,
       analysis: { kind: 'idle' },
+      selectedNoteId: null,
     });
     expect(h.deps.analysis.ensureAnalysed).not.toHaveBeenCalled();
   });
@@ -187,6 +195,7 @@ describe('take session', () => {
       tab: null,
       loading: false,
       analysis: { kind: 'idle' },
+      selectedNoteId: null,
       missing: true,
     });
   });
@@ -448,5 +457,247 @@ describe('take session saving and Retry fallbacks (story 5.7 review)', () => {
       take: TAKE,
       analysis: { kind: 'running', progress: 0 },
     });
+  });
+});
+
+// Story "Tab screen, reflow and selection" (US-6.3): the selection, rename and the active session.
+describe('take session selection', () => {
+  const note = (id: string, startMs: number): Note => ({
+    id,
+    startMs,
+    endMs: startMs + 100,
+    midi: 60,
+    confidence: 0.9,
+    string: 2,
+    fret: 1,
+    locked: false,
+    lowConfidence: false,
+  });
+  // Stored out of played order: played order is a, b, c.
+  const NOTES = [note('c', 900), note('a', 100), note('b', 500)];
+  const TAB3: Tab = { ...TAB, notes: NOTES };
+
+  async function open() {
+    const h = harness(ANALYZED, TAB3);
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    return { h, session };
+  }
+
+  it('starts with nothing selected; select picks a note by id; an unknown id clears', async () => {
+    const { session } = await open();
+    expect(session.getSnapshot().selectedNoteId).toBeNull();
+    session.select('b');
+    expect(session.getSnapshot().selectedNoteId).toBe('b');
+    session.select('nope');
+    expect(session.getSnapshot().selectedNoteId).toBeNull();
+  });
+
+  it('next and previous follow played order and stop at the ends', async () => {
+    const { session } = await open();
+    const ids: (string | null)[] = [];
+    const step = (fn: () => void) => {
+      fn();
+      ids.push(session.getSnapshot().selectedNoteId);
+    };
+    step(session.selectNext); // none selected: the first
+    step(session.selectNext);
+    step(session.selectNext);
+    step(session.selectNext); // stops at the last
+    step(session.selectPrev);
+    step(session.selectPrev);
+    step(session.selectPrev); // stops at the first
+    expect(ids).toEqual(['a', 'b', 'c', 'c', 'b', 'a', 'a']);
+    session.select(null);
+    session.selectPrev(); // none selected: the last
+    expect(session.getSnapshot().selectedNoteId).toBe('c');
+  });
+
+  it('with nothing selected, next and previous step from the focused note', async () => {
+    const { session } = await open();
+    session.selectNext('b'); // Esc cleared b while it kept focus: → goes to c
+    expect(session.getSnapshot().selectedNoteId).toBe('c');
+    session.select(null);
+    session.selectPrev('b');
+    expect(session.getSnapshot().selectedNoteId).toBe('a');
+    session.select('a');
+    session.selectNext('c'); // a selection wins over the focused note
+    expect(session.getSnapshot().selectedNoteId).toBe('b');
+    session.select(null);
+    session.selectNext('gone'); // an unknown note: from the start
+    expect(session.getSnapshot().selectedNoteId).toBe('a');
+  });
+
+  it('an unchanged selection publishes nothing', async () => {
+    const { session } = await open();
+    session.select('a');
+    const listener = vi.fn();
+    session.subscribe(listener);
+    session.select('a');
+    session.selectPrev();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('with no notes the selection actions do nothing', async () => {
+    const h = harness(ANALYZED, TAB);
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    session.selectNext();
+    session.selectPrev();
+    expect(session.getSnapshot().selectedNoteId).toBeNull();
+  });
+
+  it('the selection is cleared when its note is gone (a re-analysis), kept otherwise', async () => {
+    const h = harness(TAKE);
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    h.finish({ take: ANALYZED, tab: TAB3 });
+    await settle();
+    session.select('b');
+    h.progress(0.5); // a publish that keeps the tab keeps the selection
+    expect(session.getSnapshot().selectedNoteId).toBe('b');
+    // Not recorded: analyse re-reads; the stored tab still has note b, then has lost it.
+    vi.mocked(h.deps.db.getTake).mockResolvedValue(ANALYZED);
+    vi.mocked(h.deps.db.getTab).mockResolvedValue(TAB3);
+    session.analyse();
+    await settle();
+    expect(session.getSnapshot()).toMatchObject({ tab: TAB3, selectedNoteId: 'b' });
+    vi.mocked(h.deps.db.getTab).mockResolvedValue({ ...TAB3, notes: [NOTES[0]!, NOTES[1]!] });
+    session.analyse();
+    await settle();
+    expect(session.getSnapshot().tab?.notes).toHaveLength(2);
+    expect(session.getSnapshot().selectedNoteId).toBeNull();
+  });
+
+  it('a deleted take clears the selection', async () => {
+    const { h, session } = await open();
+    session.select('a');
+    h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    expect(session.getSnapshot().selectedNoteId).toBeNull();
+  });
+});
+
+describe('take session rename', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  async function open() {
+    const h = harness(ANALYZED, TAB);
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    return { h, session };
+  }
+
+  it('trims, writes the title as take-session, and shows it at once', async () => {
+    const { h, session } = await open();
+    const done = session.rename('  Riff in A  ');
+    expect(session.getSnapshot().take?.title).toBe('Riff in A');
+    await done;
+    expect(h.deps.db.patchTake).toHaveBeenCalledWith('t1', { title: 'Riff in A' }, 'take-session');
+    // Its own take-put is skipped; the title stays.
+    h.emit({ type: 'take-put', takeId: 't1', writer: 'take-session' });
+    await settle();
+    expect(session.getSnapshot().take?.title).toBe('Riff in A');
+  });
+
+  it.each(['', '   ', 'Take 1', '  Take 1 '])('%j writes nothing', async (title) => {
+    const { h, session } = await open();
+    await session.rename(title);
+    expect(h.deps.db.patchTake).not.toHaveBeenCalled();
+    expect(session.getSnapshot().take?.title).toBe('Take 1');
+  });
+
+  it('keeps at most 100 characters', async () => {
+    const { h, session } = await open();
+    await session.rename('x'.repeat(150));
+    expect(h.deps.db.patchTake).toHaveBeenCalledWith(
+      't1',
+      { title: 'x'.repeat(100) },
+      'take-session',
+    );
+  });
+
+  it('cuts at 100 code points, never inside an emoji', async () => {
+    const { h, session } = await open();
+    await session.rename('x'.repeat(99) + '🎸🎸');
+    const title = 'x'.repeat(99) + '🎸';
+    expect(h.deps.db.patchTake).toHaveBeenCalledWith('t1', { title }, 'take-session');
+    expect(capTitle('a'.repeat(99) + '🎸b')).toBe('a'.repeat(99) + '🎸');
+    expect(capTitle('🎸')).toBe('🎸');
+  });
+
+  it('a take read while the rename is being written keeps the new title', async () => {
+    const h = harness(TAKE);
+    const session = createTakeSession('t1', h.deps);
+    session.subscribe(() => {});
+    await settle();
+    let write!: () => void;
+    vi.mocked(h.deps.db.patchTake).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          write = () => resolve({ ...ANALYZED, title: 'New' });
+        }),
+    );
+    const done = session.rename('New');
+    // The analysis commits a take read before the patch.
+    h.finish({ take: ANALYZED, tab: TAB });
+    await settle();
+    expect(session.getSnapshot().take).toMatchObject({ status: 'analyzed', title: 'New' });
+    write();
+    await done;
+    expect(session.getSnapshot().take?.title).toBe('New');
+  });
+
+  it('two renames that both fail revert to the stored title', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { h, session } = await open();
+    const rejects: (() => void)[] = [];
+    vi.mocked(h.deps.db.patchTake).mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejects.push(() => reject(new AppError('storage-failed', 'write')));
+        }),
+    );
+    const first = session.rename('One');
+    const second = session.rename('Two');
+    expect(session.getSnapshot().take?.title).toBe('Two');
+    rejects[0]!();
+    await first;
+    expect(session.getSnapshot().take?.title).toBe('Two');
+    rejects[1]!();
+    await second;
+    expect(session.getSnapshot().take?.title).toBe('Take 1');
+  });
+
+  it('a first rename saved, a second failed: reverts to the first', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { h, session } = await open();
+    await session.rename('One');
+    vi.mocked(h.deps.db.patchTake).mockRejectedValueOnce(new AppError('storage-failed', 'write'));
+    await session.rename('Two');
+    expect(session.getSnapshot().take?.title).toBe('One');
+  });
+
+  it('a failed write puts the old title back', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { h, session } = await open();
+    vi.mocked(h.deps.db.patchTake).mockRejectedValueOnce(new AppError('storage-failed', 'write'));
+    await session.rename('New');
+    expect(session.getSnapshot().take?.title).toBe('Take 1');
+  });
+});
+
+describe('the active take session', () => {
+  it('is set and cleared', () => {
+    const h = harness(ANALYZED, TAB);
+    const session = createTakeSession('t1', h.deps);
+    expect(activeTakeSession()).toBeNull();
+    setActiveTakeSession(session);
+    expect(activeTakeSession()).toBe(session);
+    setActiveTakeSession(null);
+    expect(activeTakeSession()).toBeNull();
   });
 });

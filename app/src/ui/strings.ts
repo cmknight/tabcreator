@@ -11,6 +11,16 @@ const STRING_NAMES: Readonly<Record<StringNo, string>> = {
   6: 'Low E',
 };
 
+/** The note labels' string names (US-6.2), `StringNo` 1 = high E … 6 = low E. */
+const TAB_STRING_NAMES: Readonly<Record<StringNo, string>> = {
+  1: 'high E',
+  2: 'B',
+  3: 'G',
+  4: 'D',
+  5: 'A',
+  6: 'low E',
+};
+
 /** Signed, rounded cents with U+2212 for minus: "+12", "−1", "0". */
 function signedCents(cents: number): string {
   return formatSigned(Math.round(cents));
@@ -198,6 +208,37 @@ export const strings = {
   'tab.saving': 'Saving…',
   /** Shown when the take does not exist. */
   'tab.notFound': 'Take not found',
+  /** The pencil button beside the title: switches it to a text field (DESIGN.md Inline-editable title). */
+  'tab.rename': 'Rename take',
+  /** The title field's accessible name while renaming. */
+  'tab.titleField': 'Take title',
+  /** The line under the title: recording date and time, then the duration. */
+  'tab.meta': (date: string, duration: string) => `${date} · ${duration}`,
+  /** The skip link, the screen's first focusable element (EXPERIENCE.md Accessibility floor). */
+  'tab.skipToTab': 'Skip to tab',
+  /** The toolbar's accessible name (its buttons come with later stories). */
+  'tab.toolbar': 'Tab tools',
+  /** The tab area's accessible name (`role="application"`). */
+  'tab.area': 'Tab',
+  /** The tab area's instructions, read through aria-describedby. */
+  'tab.areaInstructions':
+    'Use Tab to reach the notes, Left and Right arrows to move between notes, Escape to clear the selection.',
+  /** One system's accessible name: "Tab system 1 of 3". */
+  'tab.system': (i: number, n: number) => `Tab system ${i} of ${n}`,
+  /**
+   * A note's accessible name (US-6.2): "Note 12: B string, fret 3, D4, at 4.25 seconds". `n` is
+   * its 1-based place in played order, `seconds` its start with two decimals.
+   */
+  'tab.noteLabel': (n: number, string: StringNo, fret: number, pitch: string, seconds: string) =>
+    `Note ${n}: ${TAB_STRING_NAMES[string]} string, fret ${fret}, ${pitch}, at ${seconds} seconds`,
+  /** The toggle that shows every note's label as an ordered list (US-8.2). */
+  'tab.noteList': 'Note list view',
+  /** The ← shortcut's description in the keyboard shortcuts dialog. */
+  'tab.shortcutPrevNote': 'Previous note',
+  /** The → shortcut's description in the keyboard shortcuts dialog. */
+  'tab.shortcutNextNote': 'Next note',
+  /** The Tab screen's Esc shortcut's description in the keyboard shortcuts dialog. */
+  'tab.shortcutClearSelection': 'Clear note selection',
   'library.title': 'Library',
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */

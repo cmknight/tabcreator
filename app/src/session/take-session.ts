@@ -7,10 +7,16 @@
 // the retry of a `storage-full` commit. A run cancelled by the player stays cancelled for this
 // session; a new session (reopening the take) analyses a `recorded` take again. Edits and undo
 // come with later stories; `flush()` resolves at once because nothing is written yet.
+//
+// Story "Tab screen, reflow and selection" (US-6.2, US-6.3): the selected note, kept by id so it
+// survives reflow and re-renders (cleared when that note no longer exists), the rename of the
+// title (this store owns `title`, spine AD-14), and the one "active take session" slot through
+// which the shortcut registry reaches the open Tab screen's session.
 
 import { engineClient } from '../engine/engine-client';
 import { isAppError, type AppErrorCode } from '../model/errors';
 import { devWarn } from '../model/log';
+import { playedOrder } from '../model/notes';
 import type { Tab, Take } from '../model/types';
 import { db, type TakeDb } from '../storage/db';
 import { subscribe as subscribeStorage, type StorageListener } from '../storage/events';
@@ -33,12 +39,14 @@ export interface TakeSnapshot {
   /** True until the take and tab have been read. */
   loading: boolean;
   analysis: TakeAnalysisState;
+  /** The selected note's id, or null; always a note of `tab` (US-6.3). */
+  selectedNoteId: string | null;
   /** Present when the take does not exist (never did, or was deleted while open). */
   missing?: true;
 }
 
 export interface TakeSessionDeps {
-  db: Pick<TakeDb, 'getTake' | 'getTab'>;
+  db: Pick<TakeDb, 'getTake' | 'getTab' | 'patchTake'>;
   analysis: Pick<
     Analysis,
     'ensureAnalysed' | 'detach' | 'cancel' | 'retryCommit' | 'pendingCommit'
@@ -70,6 +78,32 @@ export interface TakeSession {
    * run; analyses again when none is held (a reload lost it).
    */
   retryCommit(): void;
+  /** Selects the note with this id (null clears the selection); an unknown id clears it. */
+  select(noteId: string | null): void;
+  /**
+   * Selects the next note in played order, stopping at the last. With nothing selected it steps
+   * from `from` (the focused note), or else selects the first.
+   */
+  selectNext(from?: string | null): void;
+  /**
+   * Selects the previous note in played order, stopping at the first. With nothing selected it
+   * steps from `from` (the focused note), or else selects the last.
+   */
+  selectPrev(from?: string | null): void;
+  /**
+   * Renames the take: trimmed, at most `TITLE_MAX` characters (code points). Empty or unchanged writes
+   * nothing. The new title shows at once; a failed write puts the old one back.
+   */
+  rename(title: string): Promise<void>;
+}
+
+/** The longest take title, in characters. */
+export const TITLE_MAX = 100;
+
+/** `title` cut to `TITLE_MAX` code points, so a surrogate pair (an emoji) is never split. */
+export function capTitle(title: string): string {
+  const points = Array.from(title);
+  return points.length <= TITLE_MAX ? title : points.slice(0, TITLE_MAX).join('');
 }
 
 const WRITER = 'take-session';
@@ -84,6 +118,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     tab: null,
     loading: true,
     analysis: { kind: 'idle' },
+    selectedNoteId: null,
   };
   const listeners = new Set<() => void>();
   let active = false;
@@ -94,8 +129,28 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   let runSeq = 0;
   let unsubscribeStorage: (() => void) | null = null;
 
-  function publish(patch: Partial<TakeSnapshot>) {
+  /** The title last read from or written to storage (a failed rename reverts to it). */
+  let storedTitle: string | null = null;
+  /** The title of the latest rename whose write has not settled; shown over any take read. */
+  let pendingTitle: string | null = null;
+  /** Counts renames; only the latest one's settlement clears or reverts the pending title. */
+  let renameSeq = 0;
+
+  function publish(patch: Partial<TakeSnapshot>, fromRename = false) {
+    // A take read from storage (load, analysis, re-read) may predate a rename still being
+    // written (its own take-put is skipped), so the pending title stays over it.
+    if (patch.take && !fromRename) {
+      storedTitle = patch.take.title;
+      if (pendingTitle !== null && patch.take.title !== pendingTitle) {
+        patch = { ...patch, take: { ...patch.take, title: pendingTitle } };
+      }
+    }
     snapshot = { ...snapshot, ...patch };
+    // The selection follows its note: cleared when the note is gone (deleted, re-analysed).
+    const selected = snapshot.selectedNoteId;
+    if (selected !== null && !snapshot.tab?.notes.some((n) => n.id === selected)) {
+      snapshot = { ...snapshot, selectedNoteId: null };
+    }
     for (const l of [...listeners]) l();
   }
 
@@ -193,7 +248,10 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     }
   }
 
-  /** Re-reads the fields this store does not own (spine AD-5): `title` and `audioMime`. */
+  /**
+   * Re-reads the fields other writers change (spine AD-5): `title` (the Library renames too) and
+   * `audioMime`. This store's own title writes are published by `rename`.
+   */
   async function rereadForeignFields() {
     try {
       const fresh = await deps.db.getTake(takeId);
@@ -215,6 +273,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
         tab: null,
         loading: false,
         analysis: { kind: 'idle' },
+        selectedNoteId: null,
         missing: true,
       });
       return;
@@ -239,6 +298,52 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     if (attached) {
       deps.analysis.detach(takeId, onProgress);
       attached = false;
+    }
+  }
+
+  function select(noteId: string | null) {
+    const next =
+      noteId !== null && snapshot.tab?.notes.some((n) => n.id === noteId) ? noteId : null;
+    if (next === snapshot.selectedNoteId) return;
+    publish({ selectedNoteId: next });
+  }
+
+  /** Moves the selection `step` notes along played order, stopping at the ends. */
+  function step(step: 1 | -1, from?: string | null) {
+    const notes = playedOrder(snapshot.tab?.notes ?? []);
+    if (notes.length === 0) return;
+    const current = snapshot.selectedNoteId ?? from ?? null;
+    const at = notes.findIndex((n) => n.id === current);
+    const index =
+      at < 0
+        ? step > 0
+          ? 0
+          : notes.length - 1
+        : Math.min(notes.length - 1, Math.max(0, at + step));
+    select(notes[index]!.id);
+  }
+
+  async function rename(raw: string) {
+    const take = snapshot.take;
+    if (!take || snapshot.missing) return;
+    const title = capTitle(raw.trim()).trim();
+    if (title === '' || title === take.title) return;
+    storedTitle ??= take.title;
+    const seq = ++renameSeq;
+    pendingTitle = title;
+    publish({ take: { ...take, title } }, true);
+    try {
+      await deps.db.patchTake(takeId, { title }, WRITER);
+      storedTitle = title;
+      if (seq === renameSeq) pendingTitle = null;
+    } catch (err) {
+      devWarn(`could not rename take ${takeId}`, err);
+      if (seq !== renameSeq) return; // a later rename decides what shows
+      pendingTitle = null;
+      const current = snapshot.take;
+      if (current && !snapshot.missing && storedTitle !== null && current.title !== storedTitle) {
+        publish({ take: { ...current, title: storedTitle } }, true);
+      }
     }
   }
 
@@ -274,7 +379,28 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       }
       follow(deps.analysis.retryCommit(takeId), 1, true);
     },
+
+    select,
+    selectNext: (from) => step(1, from),
+    selectPrev: (from) => step(-1, from),
+    rename,
   };
+}
+
+/** The session of the mounted Tab screen, for the shortcut registry (null: none open). */
+let activeSession: TakeSession | null = null;
+
+/**
+ * Registers the mounted Tab screen's session (null: none). The screen sets it on mount and
+ * clears it on unmount, so a shortcut handler never acts on a disposed session.
+ */
+export function setActiveTakeSession(session: TakeSession | null): void {
+  activeSession = session;
+}
+
+/** The mounted Tab screen's session, or null. */
+export function activeTakeSession(): TakeSession | null {
+  return activeSession;
 }
 
 /** A take session wired to the app's storage, engine client and analysis registry. */

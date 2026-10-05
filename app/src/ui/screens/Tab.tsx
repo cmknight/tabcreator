@@ -4,24 +4,41 @@
 // cancel, Analyse; while the result is saved, "Saving…" with no Cancel. A failure shows one error banner, chosen by its code: the engine failed to
 // load (Reload), storage full (a Library link and Retry, which saves the kept result), or
 // Analysis failed (Retry). An analysed take with no notes shows "No notes found" and three tips.
-// Warnings, the toolbar, selection, reflow and playback come with stories 5.8–5.10.
+//
+// Story "Tab screen, reflow and selection" (US-6.2, US-6.3, US-8.2): the header (the title,
+// renamed in place, the date and the duration), the "Skip to tab" link, the toolbar container
+// (its buttons come later), the "Note list view" toggle, and the tab area (components/TabArea),
+// which reflows to the window and carries the note selection. While mounted, the screen's
+// session is the active take session the ← / → / Esc shortcuts act on.
+// Warnings, the toolbar's buttons, the status line and playback come with later stories.
 
-import { useEffect, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { AppErrorCode } from '../../model/errors';
-import { layoutTab } from '../../model/tab-render';
-import type { TakeAnalysisState, TakeSession } from '../../session/take-session';
+import {
+  setActiveTakeSession,
+  activeTakeSession,
+  type TakeAnalysisState,
+  type TakeSession,
+} from '../../session/take-session';
 import { announce } from '../a11y/announcer';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
 import { ErrorIcon } from '../components/icons';
+import { noteLabels, TabArea } from '../components/TabArea';
+import { TakeHeader } from '../components/TakeHeader';
 import { reloadOrExplain } from '../reload-or-explain';
 import { strings } from '../strings';
 import { useTakeSession } from '../use-take-session';
 import styles from './Screen.module.css';
 import tabStyles from './Tab.module.css';
 
-/** The fixed text width of a system until reflow (story 5.8). */
-const TAB_WIDTH = 80;
+/** The tab area's element id: the skip link's target. */
+const TAB_AREA_ID = 'tab-area';
+
+/** Moves focus into the tab area: onto its note in the tab order (the selected, else the first). */
+function focusTabArea() {
+  document.getElementById(TAB_AREA_ID)?.querySelector<HTMLElement>('button[tabindex="0"]')?.focus();
+}
 
 /** The whole percentage shown for a progress fraction (the epsilon absorbs float error). */
 function percentOf(progress: number): number {
@@ -115,10 +132,19 @@ export interface TabProps {
 
 export function Tab({ takeId, createSession }: TabProps) {
   const { snapshot, session } = useTakeSession(takeId, createSession);
-  const { take, tab, analysis, missing } = snapshot;
-  const title = take?.title ?? strings['tab.title'];
-  const systems = tab && take ? layoutTab(tab.notes, TAB_WIDTH, take.countInBpm).systems : [];
+  const { take, tab, analysis, missing, selectedNoteId } = snapshot;
   useProgressAnnouncements(analysis);
+  const [noteList, setNoteList] = useState(false);
+  const notes = tab?.notes;
+  const labels = useMemo(() => (notes ? noteLabels(notes) : []), [notes]);
+
+  // The shortcut registry reaches this session while the screen is mounted.
+  useEffect(() => {
+    setActiveTakeSession(session);
+    return () => {
+      if (activeTakeSession() === session) setActiveTakeSession(null);
+    };
+  }, [session]);
 
   // A state change can remove the focused control (Cancel, Analyse, Retry). Focus then moves to
   // the new state's primary button (Analyse after a cancel) or to the h1, never to <body>.
@@ -196,18 +222,38 @@ export function Tab({ takeId, createSession }: TabProps) {
         </ul>
       </div>
     );
-  } else if (analysis.kind === 'idle' && systems.length > 0) {
+  } else if (analysis.kind === 'idle' && tab && take && tab.notes.length > 0) {
     body = (
-      <div className={tabStyles.systems} data-testid="tab-systems">
-        {systems.map((system, i) => (
-          // tabIndex: a system wider than the screen scrolls, and keyboard users can scroll it.
-          <pre key={i} className={tabStyles.system} tabIndex={0}>
-            {system.lines.join('\n')}
-          </pre>
-        ))}
-      </div>
+      <>
+        <button
+          type="button"
+          className={`${buttons.secondary} ${buttons.toggle} ${tabStyles.noteListToggle}`}
+          aria-pressed={noteList}
+          onClick={() => setNoteList((on) => !on)}
+        >
+          {strings['tab.noteList']}
+        </button>
+        {noteList && (
+          <ol className={tabStyles.noteList} data-testid="tab-note-list">
+            {labels.map((l) => (
+              <li key={l.id}>{l.label}</li>
+            ))}
+          </ol>
+        )}
+        <div className={tabStyles.systems}>
+          <TabArea
+            id={TAB_AREA_ID}
+            notes={tab.notes}
+            countInBpm={take.countInBpm}
+            selectedNoteId={selectedNoteId}
+            onSelect={(id) => session.select(id)}
+          />
+        </div>
+      </>
     );
   }
+  const showTab = !missing && analysis.kind === 'idle' && !!tab && !!take && tab.notes.length > 0;
+  const showToolbar = !missing && analysis.kind === 'idle' && !!tab && !!take;
 
   return (
     <section
@@ -222,12 +268,30 @@ export function Tab({ takeId, createSession }: TabProps) {
         if (next && !event.currentTarget.contains(next)) focusInside.current = false;
       }}
     >
+      {showTab && (
+        <a
+          className={tabStyles.skipLink}
+          href={`#/tab/${encodeURIComponent(takeId)}`}
+          onClick={(event) => {
+            event.preventDefault();
+            focusTabArea();
+          }}
+        >
+          {strings['tab.skipToTab']}
+        </a>
+      )}
       {!missing && analysis.kind === 'failed' && (
         <FailureBanner code={analysis.code} session={session} />
       )}
-      <h1 ref={titleRef} className={styles.title} tabIndex={-1}>
-        {missing ? strings['tab.title'] : title}
-      </h1>
+      <TakeHeader
+        fallbackTitle={strings['tab.title']}
+        take={missing ? null : take}
+        onRename={(t) => void session.rename(t)}
+        titleRef={titleRef}
+      />
+      {showToolbar && (
+        <div className={tabStyles.toolbar} role="toolbar" aria-label={strings['tab.toolbar']} />
+      )}
       {body}
     </section>
   );
