@@ -6,6 +6,7 @@ covers: [CAP-9, CAP-11, CAP-23, CAP-27, CAP-28]
 after: []
 assignee: ""
 risk: high
+status: done
 ---
 
 # Detection engine
@@ -63,4 +64,4 @@ Detection quality is proven by numbers in CI before any screen depends on it.
 - Decision: ring-over drops a pitch-change note only with ringing evidence — the earlier note could still be sounding (a short gap since it ended and/or a different string from the middle note) — with a trill fixture whose pull-off makes no flux peak; carried by retro action R2 (user, 2026-10-04).
 - Decision: glide notes are exempt from the octave fix; the glide cap marks low confidence for display only; carried by retro action R2 (user, 2026-10-04).
 - Touch point after the Tab epic split (2026-10-04): the app-side re-fit after locks, and recording human ground truth with the editor, now belong to epic Tab editing (8), not "epic Tab view and editor". Retro action R1 changes `engine/` under epic Analysis and tab view (entry 5.4).
-
+- Decision: closed as done with open items after the closure check (user, 2026-10-04). Every Done when item is met in evidence (thin fret margin: 137/168; ringing_overlap detects 2 of 12 notes). Retro R1 landed as story 5.4. R2 (notes.rs ordering and invariants, including this epic's ring-over and glide Decisions) is scheduled as epic Tab editing entry 9. R3–R6 stay tracked in the retrospective, unscheduled.

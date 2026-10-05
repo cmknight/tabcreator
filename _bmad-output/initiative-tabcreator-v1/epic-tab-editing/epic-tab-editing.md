@@ -2,7 +2,7 @@
 type: epic
 title: "Tab editing"
 parent: initiative-tabcreator-v1
-covers: [CAP-8, CAP-10, CAP-11, CAP-13, CAP-14, CAP-15]
+covers: [CAP-8, CAP-10, CAP-11, CAP-13, CAP-14, CAP-15, CAP-27, CAP-28]
 after: []
 assignee: ""
 risk: high
@@ -40,6 +40,7 @@ In scope:
 - The Tab screen's editing, its toolbar buttons (edit, undo, trim, settings), the settings panel and the trim strip with its `audio/` worker.
 - The analysis defaults on the Settings screen.
 - Memoising `model/tab-render.ts` (built by epic 5) when 8.5's measurement calls for it.
+- `engine/src/notes.rs` and `onset.rs`, for entry 9 (Detection retro R2) only.
 
 Each covered id, and the part this epic delivers:
 
@@ -50,6 +51,7 @@ Each covered id, and the part this epic delivers:
 | CAP-11 | The app-side re-fit after locks |
 | CAP-13 | Any edit or confirm clears the flag and updates the count |
 | CAP-14, CAP-15 | Editing, and undo/redo |
+| CAP-27, CAP-28 | Entry 9 only: note-building order (octave fix before range drops) and ring-over evidence (Detection retro R2) |
 
 Not in this epic: the CI budget gate (AD-17), which is epic Offline, accessibility and budgets'.
 
@@ -72,3 +74,4 @@ Not in this epic: the CI budget gate (AD-17), which is epic Offline, accessibili
 - Handoffs to other epics:
   - epic Library and export reuses `overlays.ts`, the Confirm dialog (entry 6) and the Tab toolbar;
   - epic Offline, accessibility and budgets reuses entry 5's 500-note measurement for its AD-17 gate.
+- Decision: entry 9 (Detection retro R2) added when epic Detection engine closed (user, 2026-10-04). It is an engine-only lane alongside 1 → 3 → …; the sweep (8) waits on it.

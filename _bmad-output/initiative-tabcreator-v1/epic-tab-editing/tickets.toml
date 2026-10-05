@@ -3,6 +3,19 @@
 # Status never lives here: an entry's plan beside it carries `status`.
 
 [[entry]]
+id = 9
+type = "story"
+title = "Note-building order and invariants (Detection retro R2)"
+description = "Lands Detection retro R2 in engine/src/notes.rs: glide-capped notes are exempt from the octave fix (SM1, user decision), the octave fix runs before the below-range and above-highest drops so a low-string octave slip is corrected rather than counted as drop tuning (SM2), emitted confidence stays at or above c after the octave fix's 0.8 factor or the note is re-filtered (SM3), one voiced-frame helper with the 0.05 floor serves onset.rs and notes.rs (SM4), and ring-over drops a pitch-change note only with ringing evidence, a short gap since the earlier note ended and/or a different string from the middle note (SM5, user decision), with a new trill fixture whose pull-off makes no flux peak; bumps engine_version() and regenerates the committed accuracy files."
+verify = "Unit tests reproduce SM1–SM5 (a 12-semitone glide keeps its octave, a low-string octave slip is corrected and not counted below range, no emitted note below c, a low-probability tail no longer extends a note, a soft trill return is kept) and fail on the old code; the release harness passes every gate, the new trill fixture's row is reported, and CI is green."
+covers = ["CAP-9", "CAP-27", "CAP-28"]
+after = ["5.11"]
+hitl = false
+risk = "medium"
+unknown = "Whether the ring-over recency window can be set without moving the gated rows (the 1-point main comparison applies)."
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-detection-engine/epic-detection-engine-retrospective.md, action R2 and findings SM1–SM6", "decision — _bmad-output/initiative-tabcreator-v1/epic-detection-engine/epic-detection-engine.md, Notes (ring-over evidence, glide exemption, 2026-10-04)"]
+
+[[entry]]
 id = 1
 type = "story"
 title = "Change a fret and undo it (tracer)"
@@ -97,6 +110,6 @@ title = "Refactor sweep"
 description = "Cleans up what the build records and deferred review findings of stories 1 to 7 name, after grepping every plan's triage log for sweep routings; scope is set when it starts and takes cleanup only."
 verify = "CI stays green and every item in the sweep's agreed scope is closed or explicitly deferred."
 covers = []
-after = [1, 2, 3, 4, 5, 6, 7]
+after = [1, 2, 3, 4, 5, 6, 7, 9]
 hitl = false
 risk = "low"

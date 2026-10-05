@@ -6,6 +6,7 @@ covers: [CAP-5, CAP-6, CAP-9, CAP-10, CAP-12, CAP-13, CAP-16, CAP-21, CAP-23, CA
 after: []
 assignee: ""
 risk: high
+status: done
 ---
 
 # Analysis and tab view
@@ -103,3 +104,4 @@ Not in this epic:
 - Decision: the sensitivity slider stays as is after the 5.4 retune (k and c span 0.25 and 0.10 across it; the gate spans 20 dB) — it still earns its place (user, 2026-10-04).
 - Decision: the new copy added by stories 5.2, 5.3 and 5.7 (save-failed, storage-full-unsaved, reload-busy, the lost tab's saved / not-saved lines, Saving…, and the analysis-state strings) is confirmed (user, 2026-10-04); EXPERIENCE.md is still to be updated to match.
 - Handoffs to epic 8, which waits on entry 11: take-session (6), layout cells (5), the single selection (8), the Tab toolbar container (8), settings-session prefs (9) and the No notes found tip (7), which epic 8 turns into a link to its settings panel.
+- Decision: closed as done after the closure check (user, 2026-10-04). Every Done when item has test evidence; caveats accepted: the 2 s check runs on the preview of the CI dist with the noisy fixture, and the sweep and noise rows are reported, not gated. Leftovers recorded with owners: the accessibility items in epic Offline, accessibility and budgets' Notes; the EXPERIENCE.md update and the recovery-metadata item (DS2) in deferred-work.md. Follow-up reviews: 5.2's is waived (unit-covered); 5.8's (the keyboard and focus model) runs before epic Tab editing starts.

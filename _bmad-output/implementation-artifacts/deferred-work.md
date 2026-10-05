@@ -22,3 +22,9 @@
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-detection-engine/story-unnotated-techniques-and-the-accuracy-gates-plan.md`
   summary: TabCreator-User-Stories.md US-4.6 (k, c formulas) and US-5.1 (FretWeights defaults) state the pre-tuning values — owner: product owner (spec text).
   evidence: Engine 0.5.0 uses k = 4.5 − 1.0·s, c = 0.55 − 0.4·s, FretWeights 0.15/1.0/0.3 (epic Notes Decision, 2026-10-03).
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-view-and-editor/story-handover-and-recovery-coordination-plan.md`
+  summary: EXPERIENCE.md does not yet carry the copy the user confirmed on 2026-10-04 (save-failed, storage-full-unsaved, reload-busy, the lost tab's saved / not-saved lines, Saving…, the analysis-state strings) or the in-shell update-blocked banner while a take is busy — owner: UX owner.
+  evidence: The strings live in app/src/ui/strings.ts; the confirmation is a Decision line in epic Analysis and tab view's Notes.
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-view-and-editor/story-take-save-robustness-plan.md`
+  summary: A recovered or re-offered take's durationMs and clipped come from its raw file even when it keeps a whole compressed copy (DS2 on the recovery path) — owner: epic Library and export (a recovery or Library story).
+  evidence: recording-recovery.ts rebuild derives both from readRaw; after raw append failures or an early storage-full the raw file is shorter than the compressed audio. audio/decode.ts (story 5.12) now provides the compressed copy's length. Medium, unverified.

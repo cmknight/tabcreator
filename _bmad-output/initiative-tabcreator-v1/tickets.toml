@@ -38,7 +38,7 @@ after = [{ epic = 3, needs = "recorded takes and raw audio" }, { epic = 4, needs
 id = 8
 slug = "epic-tab-editing"
 title = "Tab editing"
-covers = ["CAP-8", "CAP-10", "CAP-11", "CAP-13", "CAP-14", "CAP-15"]
+covers = ["CAP-8", "CAP-10", "CAP-11", "CAP-13", "CAP-14", "CAP-15", "CAP-27", "CAP-28"]
 after = [{ epic = 5, needs = "take-session, the Tab screen with its toolbar, selection, layout and settings-session prefs" }]
 
 [[epic]]

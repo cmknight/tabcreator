@@ -44,4 +44,7 @@ PWA config and service worker, `ui/a11y/`, dark mode, the capability check, CI b
   - `ui/a11y/overlays.ts` is built by epic Tab editing (entry 3), inside this epic's `ui/a11y/` scope;
   - epic Tab editing's 500-note edit-to-paint measurement (entry 5) feeds this epic's AD-17 CI gate;
   - Recording retro A4 (failure-stop and storage-full notices on any screen, Esc from a text field) and A5's remaining test gaps join this epic's final CAP-25 sweep (user, 2026-10-04).
-
+- Carried from epic Analysis and tab view at its close (user, 2026-10-04):
+  - the page scrolls sideways at 320 px because the shell's top navigation bar is wider than that (the tab itself fits; story 5.8);
+  - the Tab screen's state changes (analysis done, failed, take not found) are not announced and the progress bar has no aria-valuetext (story 5.6);
+  - the polite announcement queue has no cap or expiry (Recording retro, story 3.3).
