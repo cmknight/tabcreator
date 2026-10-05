@@ -3,7 +3,7 @@ title: 'Analysis settings and re-analysis'
 type: 'feature'
 ticket: '6'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: '57cd442a0455a8e81063f98aa4707da308cb0eb0'
 route: 'full'
 route_source: 'auto'
