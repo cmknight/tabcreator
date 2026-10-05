@@ -3,7 +3,7 @@ title: 'Playback with a following cursor'
 type: 'feature'
 ticket: '10'
 created: '2026-10-04'
-status: 'built'
+status: done
 baseline_revision: '917b4bc356c94026f4871dcfa7d20b90c3b6b83b'
 route: 'full'
 route_source: 'auto'
