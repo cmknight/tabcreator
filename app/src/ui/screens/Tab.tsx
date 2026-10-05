@@ -31,6 +31,13 @@
 // (disabled while the tab is not shown; Delete also with nothing selected), the edit popover
 // (components/EditPopover) a double-click on a note opens, and the announcements of a string
 // move, a delete, an insert and a confirm.
+//
+// Story "Re-fit feedback": the notes an edit's re-fit re-fingered are outlined (DESIGN.md
+// tab-note-refit) for REFIT_HOLD_MS, then fade out over REFIT_FADE_MS (with reduced motion they
+// disappear at once), and "<n> nearby notes re-fingered" is announced after the edit's own
+// announcement. A new edit's re-fit replaces the set (an edit that changed nothing leaves it);
+// undo, redo, a failed edit, the tab going away (the take missing, an analysis) and leaving the
+// screen clear it.
 
 import {
   useEffect,
@@ -64,7 +71,7 @@ import { EditPopover } from '../components/EditPopover';
 import { BarLinesIcon, DeleteIcon, ErrorIcon, InsertIcon } from '../components/icons';
 import { StorageFullBannerView } from '../components/StorageFullBannerView';
 import { PlaybackControls } from '../components/PlaybackControls';
-import { noteLabels, TabArea } from '../components/TabArea';
+import { noteLabels, reducedMotion, TabArea } from '../components/TabArea';
 import { TabStatusLine } from '../components/TabStatusLine';
 import { TakeHeader } from '../components/TakeHeader';
 import { TakeWarnings, type DismissibleWarning } from '../components/TakeWarnings';
@@ -264,6 +271,63 @@ function useMaxLengthToast(take: TakeSnapshot['take']) {
 /** How recently a max-length take must have been written for its open to toast. */
 export const MAX_LENGTH_TOAST_WINDOW_MS = 30_000;
 
+/** How long the re-fit outline is held before it fades (EXPERIENCE.md Note (in tab)). */
+export const REFIT_HOLD_MS = 1500;
+/** How long the re-fit outline takes to fade (matches the CSS transition). */
+export const REFIT_FADE_MS = 300;
+
+/** The re-fit outline: the notes it is on, and whether it is fading out. */
+interface RefitOutline {
+  ids: ReadonlySet<string>;
+  fading: boolean;
+}
+
+const NO_REFIT: RefitOutline = { ids: new Set(), fading: false };
+
+/**
+ * The re-fit outline's state and timer (story "Re-fit feedback"): `show` replaces the outlined
+ * set and restarts the timer, `clear` drops it at once. Cleared on unmount.
+ */
+function useRefitOutline() {
+  const [refit, setRefit] = useState<RefitOutline>(NO_REFIT);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [controls] = useState(() => {
+    const stop = () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+      timer.current = null;
+    };
+    return {
+      stop,
+      show(ids: readonly string[]) {
+        stop();
+        if (ids.length === 0) {
+          setRefit(NO_REFIT);
+          return;
+        }
+        setRefit({ ids: new Set(ids), fading: false });
+        timer.current = setTimeout(() => {
+          if (reducedMotion()) {
+            timer.current = null;
+            setRefit(NO_REFIT);
+            return;
+          }
+          setRefit((r) => ({ ...r, fading: true }));
+          timer.current = setTimeout(() => {
+            timer.current = null;
+            setRefit(NO_REFIT);
+          }, REFIT_FADE_MS);
+        }, REFIT_HOLD_MS);
+      },
+      clear() {
+        stop();
+        setRefit(NO_REFIT);
+      },
+    };
+  });
+  useEffect(() => controls.stop, [controls]);
+  return { refit, show: controls.show, clear: controls.clear };
+}
+
 /** No warning dismissed. */
 const NONE_DISMISSED: ReadonlySet<DismissibleWarning> = new Set();
 
@@ -298,6 +362,13 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
     ...(readAudio ? { readAudio } : {}),
   });
   const { controller } = playback;
+  const refitOutline = useRefitOutline();
+  const { show: showRefit, clear: clearRefit } = refitOutline;
+  // The outline goes with the tab: the take missing, an analysis.
+  const refit = showTab ? refitOutline.refit : NO_REFIT;
+  useEffect(() => {
+    if (!showTab) clearRefit();
+  }, [showTab, clearRefit]);
 
   // The Space and P shortcuts reach this screen's playback while its group is shown.
   useEffect(() => {
@@ -314,14 +385,23 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
       session.onEditEvent((event) => {
         const [message, politeness] = editAnnouncement(event);
         announce(message, politeness);
+        // A failed edit takes the outline away; an edit that changed nothing leaves it.
+        if (event.kind === 'failed') clearRefit();
+        if (event.kind === 'edit' && event.refingered) {
+          // A new re-fit replaces the outline (none: it goes); its news follows the edit's.
+          showRefit(event.refingered);
+          const n = event.refingered.length;
+          if (n > 0) announce(strings['tab.refingered'](n));
+        }
         // Undo and redo select the step's note; focus on a note follows it there.
         if (event.kind === 'undo' || event.kind === 'redo') {
+          clearRefit();
           if (document.activeElement?.closest(NOTE_BUTTON)) {
             focusSelectedNote(session.getSnapshot().selectedNoteId);
           }
         }
       }),
-    [session],
+    [session, showRefit, clearRefit],
   );
 
   // The shortcut registry reaches this session while the screen is mounted.
@@ -440,6 +520,8 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
             lastFocusedNoteId={snapshot.lastFocusedNoteId}
             onFocusNote={(id) => session.focusNote(id)}
             playingNoteId={playback.playingNoteId}
+            refitIds={refit.ids}
+            refitFading={refit.fading}
             playing={playback.playing}
             onNoteClick={(id) => {
               if (playback.playing) playback.seekToNote(id, false);

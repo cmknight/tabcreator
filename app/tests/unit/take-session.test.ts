@@ -946,7 +946,13 @@ describe('take session edits', () => {
     expect(session.getSnapshot().tab!.deletedStartMs).toBe(TAB5.deletedStartMs);
     expect(session.getSnapshot().selectedNoteId).toBe('b');
     expect(events).toEqual([
-      { kind: 'edit', label: { kind: 'setFret', fret: 5 }, string: 2, fret: 5 },
+      {
+        kind: 'edit',
+        label: { kind: 'setFret', fret: 5 },
+        string: 2,
+        fret: 5,
+        refingered: ['a', 'c'],
+      },
     ]);
     expect(session.canUndo()).toBe(true);
   });
@@ -1064,6 +1070,80 @@ describe('take session edits', () => {
     await session.redo(); // nothing to redo
     expect(session.getSnapshot().tab!.notes).toEqual(after.notes);
     expect(h.deps.mapFrets).toHaveBeenCalledTimes(1); // undo and redo never re-fit
+  });
+
+  // Story "Re-fit feedback": an edit reports the other notes its re-fit re-fingered.
+  it('re-fit feedback: neighbours the re-fit leaves are not reported', async () => {
+    // a and c already sit where the fake mapper puts them (the thickest string).
+    const settled: Tab = {
+      ...TAB5,
+      notes: [note('a', 0, 6, 24), NOTES[1]!, note('c', 600, 6, 17), ...NOTES.slice(3)],
+    };
+    const { session, events } = await open(settled);
+    await session.setFret('b', 5);
+    expect(events).toEqual([
+      { kind: 'edit', label: { kind: 'setFret', fret: 5 }, string: 2, fret: 5, refingered: [] },
+    ]);
+  });
+
+  it('re-fit feedback: a locked neighbour is never re-fingered; the target is not counted', async () => {
+    const locked: Tab = {
+      ...TAB5,
+      notes: [{ ...NOTES[0]!, locked: true }, ...NOTES.slice(1)],
+    };
+    const { session, events } = await open(locked);
+    await session.setFret('b', 5);
+    expect(events.at(-1)).toMatchObject({ kind: 'edit', refingered: ['c'] });
+  });
+
+  it('re-fit feedback: two digits within 400 ms report the whole step’s re-fit on the second', async () => {
+    const { session, events } = await open();
+    session.select('b');
+    session.typeDigit(1);
+    await tick(200);
+    session.typeDigit(2);
+    await tick(0);
+    // The second fit leaves a and c where the first put them; against the merged step's
+    // `before` (the Tab before the first digit) they are still re-fingered.
+    expect(events).toEqual([
+      {
+        kind: 'edit',
+        label: { kind: 'setFret', fret: 1 },
+        string: 2,
+        fret: 1,
+        refingered: ['a', 'c'],
+      },
+      {
+        kind: 'edit',
+        label: { kind: 'setFret', fret: 12 },
+        string: 2,
+        fret: 12,
+        refingered: ['a', 'c'],
+      },
+    ]);
+  });
+
+  it('re-fit feedback: a fret set to the fret it has reports no re-fingered list', async () => {
+    const { session, events } = await open();
+    session.select('b');
+    session.typeDigit(5);
+    await tick(500);
+    session.typeDigit(5);
+    await tick(0);
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({ kind: 'edit', label: { kind: 'setFret', fret: 5 } });
+    expect('refingered' in events[1]!).toBe(false);
+  });
+
+  it('re-fit feedback: undo and redo report nothing re-fingered', async () => {
+    const { session, events } = await open();
+    await session.setFret('b', 5);
+    await session.undo();
+    await session.redo();
+    expect(events.slice(-2)).toEqual([
+      { kind: 'undo', label: { kind: 'setFret', fret: 5 } },
+      { kind: 'redo', label: { kind: 'setFret', fret: 5 } },
+    ]);
   });
 
   it('a new edit clears redo', async () => {
@@ -1320,7 +1400,13 @@ describe('take session edits', () => {
       expect(noteOf(session, 'a')).toMatchObject({ string: 6, fret: 24 }); // phrase re-fitted
       expect(noteOf(session, 'd')).toBe(NOTES[3]);
       expect(events).toEqual([
-        { kind: 'edit', label: { kind: 'moveString', string: 2, fret: 3 }, string: 2, fret: 3 },
+        {
+          kind: 'edit',
+          label: { kind: 'moveString', string: 2, fret: 3 },
+          string: 2,
+          fret: 3,
+          refingered: ['a', 'c'],
+        },
       ]);
       expect(session.canUndo()).toBe(true);
       await session.moveStringBy(1); // ↓ back to the G string
@@ -1371,7 +1457,10 @@ describe('take session edits', () => {
         0, 600,
       ]);
       expect(noteOf(session, 'a')).toMatchObject({ string: 6 }); // re-fitted
-      expect(events).toEqual([{ kind: 'edit', label: { kind: 'delete' }, string: 2, fret: 1 }]);
+      // The deleted target is gone; its re-fitted neighbours are still reported.
+      expect(events).toEqual([
+        { kind: 'edit', label: { kind: 'delete' }, string: 2, fret: 1, refingered: ['a', 'c'] },
+      ]);
     });
 
     it('delete the last note in played order: the previous one is selected', async () => {
@@ -1437,7 +1526,9 @@ describe('take session edits', () => {
         lowConfidence: false,
       });
       expect(session.getSnapshot().selectedNoteId).toBe('new1');
-      expect(events).toEqual([{ kind: 'edit', label: { kind: 'insert' }, string: 3, fret: 0 }]);
+      expect(events).toEqual([
+        { kind: 'edit', label: { kind: 'insert' }, string: 3, fret: 0, refingered: ['p', 'q'] },
+      ]);
       // Undo removes it, and the selection with it.
       await session.undo();
       expect(session.getSnapshot().tab!.notes.map((n) => n.id)).toEqual(['p', 'q']);
@@ -1602,7 +1693,9 @@ describe('take session edits', () => {
       expect(noteOf(session, 'b')).toEqual({ ...NOTES[1], locked: true, lowConfidence: false });
       expect(session.getSnapshot().tab!.notes.filter((n) => n.lowConfidence)).toHaveLength(0);
       expect(h.deps.mapFrets).toHaveBeenCalledTimes(1);
-      expect(events).toEqual([{ kind: 'edit', label: { kind: 'confirm' }, string: 2, fret: 1 }]);
+      expect(events).toEqual([
+        { kind: 'edit', label: { kind: 'confirm' }, string: 2, fret: 1, refingered: ['a', 'c'] },
+      ]);
     });
 
     it('confirm an already confirmed note: no step, no announcement', async () => {

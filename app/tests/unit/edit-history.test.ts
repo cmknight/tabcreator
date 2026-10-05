@@ -11,6 +11,7 @@ import {
   HISTORY_LIMIT,
   pushStep,
   redoStep,
+  refingered,
   setFret,
   tabState,
   undoStep,
@@ -502,4 +503,43 @@ describe('property: 50 random edits of all five commands', () => {
       expect({ notes: original.notes, deletedStartMs: original.deletedStartMs }).toEqual(snapshot);
     },
   );
+});
+
+// Story "Re-fit feedback": which notes a re-fit re-fingered.
+describe('refingered', () => {
+  const a = note('a', 0, 5, 3);
+  const b = note('b', 300, 4, 2);
+  const c = note('c', 600, 3, 0);
+
+  it('lists the other notes whose string or fret changed, in order', () => {
+    const after = [a, note('b', 300, 5, 7), note('c', 600, 4, 5)];
+    expect(refingered([a, b, c], after, 'a')).toEqual(['b', 'c']);
+  });
+
+  it('counts one moved neighbour', () => {
+    expect(refingered([a, b, c], [a, note('b', 300, 5, 7), c], 'a')).toEqual(['b']);
+  });
+
+  it('is empty when the neighbours stay', () => {
+    expect(refingered([a, b, c], [note('a', 0, 6, 8), b, c], 'a')).toEqual([]);
+  });
+
+  it('excludes the target, even when it changed', () => {
+    const after = [note('a', 0, 6, 8), note('b', 300, 5, 7), c];
+    expect(refingered([a, b, c], after, 'a')).toEqual(['b']);
+  });
+
+  it('a fret change alone counts, other fields do not', () => {
+    const after = [a, { ...b, fret: 9 }, { ...c, locked: true, lowConfidence: true }];
+    expect(refingered([a, b, c], after, 'a')).toEqual(['b']);
+  });
+
+  it('reports the neighbours of a deleted target', () => {
+    expect(refingered([a, b, c], [note('a', 0, 6, 8), c], 'b')).toEqual(['a']);
+  });
+
+  it('ignores an inserted note (not in before)', () => {
+    const d = note('d', 400, 2, 1);
+    expect(refingered([a, b, c], [a, b, note('x', 350, 1, 0), d], 'x')).toEqual([]);
+  });
 });

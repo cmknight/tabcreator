@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CommandLabel } from '../../src/model/edit-history';
 import type { AppErrorCode } from '../../src/model/errors';
 import type { Note, Tab as TabRecord, Take } from '../../src/model/types';
 import { layoutTab } from '../../src/model/tab-render';
@@ -11,7 +12,7 @@ import {
 } from '../../src/session/take-session';
 import { activePlayback } from '../../src/session/playback';
 import { noteLabels, TabArea } from '../../src/ui/components/TabArea';
-import { Tab } from '../../src/ui/screens/Tab';
+import { REFIT_FADE_MS, REFIT_HOLD_MS, Tab } from '../../src/ui/screens/Tab';
 import { announce } from '../../src/ui/a11y/announcer';
 import { reloadOrExplain } from '../../src/ui/reload-or-explain';
 import { dispatchShortcut } from '../../src/ui/a11y/shortcuts';
@@ -403,7 +404,7 @@ describe('Tab screen analysis states', () => {
     });
     render(<Tab takeId="t1" createSession={create} />);
     vi.mocked(announce).mockClear();
-    edit({ kind: 'edit', label: { kind: 'setFret', fret: 5 }, string: 3, fret: 5 });
+    edit({ kind: 'edit', label: { kind: 'setFret', fret: 5 }, string: 3, fret: 5, refingered: [] });
     edit({ kind: 'undo', label: { kind: 'setFret', fret: 5 } });
     edit({ kind: 'redo', label: { kind: 'setFret', fret: 12 } });
     edit({ kind: 'failed' });
@@ -424,10 +425,16 @@ describe('Tab screen analysis states', () => {
     });
     render(<Tab takeId="t1" createSession={create} />);
     vi.mocked(announce).mockClear();
-    edit({ kind: 'edit', label: { kind: 'moveString', string: 3, fret: 7 }, string: 3, fret: 7 });
-    edit({ kind: 'edit', label: { kind: 'delete' }, string: 2, fret: 1 });
-    edit({ kind: 'edit', label: { kind: 'insert' }, string: 3, fret: 0 });
-    edit({ kind: 'edit', label: { kind: 'confirm' }, string: 2, fret: 1 });
+    edit({
+      kind: 'edit',
+      label: { kind: 'moveString', string: 3, fret: 7 },
+      string: 3,
+      fret: 7,
+      refingered: [],
+    });
+    edit({ kind: 'edit', label: { kind: 'delete' }, string: 2, fret: 1, refingered: [] });
+    edit({ kind: 'edit', label: { kind: 'insert' }, string: 3, fret: 0, refingered: [] });
+    edit({ kind: 'edit', label: { kind: 'confirm' }, string: 2, fret: 1, refingered: [] });
     edit({ kind: 'undo', label: { kind: 'moveString', string: 3, fret: 7 } });
     edit({ kind: 'undo', label: { kind: 'delete' } });
     edit({ kind: 'redo', label: { kind: 'insert' } });
@@ -442,6 +449,194 @@ describe('Tab screen analysis states', () => {
       ['Redid Insert note', 'polite'],
       ['Redid Confirm note', 'polite'],
     ]);
+  });
+
+  // Story "Re-fit feedback": the re-fingered notes' outline, its timer, and the announcement.
+  describe('re-fit feedback', () => {
+    const tab: TabRecord = {
+      takeId: 't1',
+      notes: [note(0, 1, 0), note(1, 2, 1), note(2, 3, 2), note(3, 4, 3)],
+      updatedAt: TAKE.updatedAt,
+      deletedStartMs: [],
+    };
+    const moved = (refingered: string[], label: CommandLabel = { kind: 'setFret', fret: 5 }) =>
+      ({ kind: 'edit', label, string: 3, fret: 5, refingered }) as const;
+    const refitted = () =>
+      [...document.querySelectorAll('[data-refit]')].map((el) => [
+        el.getAttribute('data-note-id'),
+        el.getAttribute('data-refit'),
+      ]);
+    const button = (id: string) => document.querySelector<HTMLElement>(`[data-note-id="${id}"]`)!;
+
+    function setup(selectedNoteId: string | null = null) {
+      vi.useFakeTimers();
+      const mock = mockSession({
+        take: TAKE,
+        tab,
+        loading: false,
+        analysis: { kind: 'idle' },
+        selectedNoteId,
+      });
+      const view = render(<Tab takeId="t1" createSession={mock.create} />);
+      vi.mocked(announce).mockClear();
+      return { ...mock, ...view };
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    });
+
+    it('two moved: both outlined 1.5 s, then fading, then gone; announced after the edit', () => {
+      const { edit } = setup();
+      edit(moved(['n1', 'n2']));
+      expect(refitted()).toEqual([
+        ['n1', 'true'],
+        ['n2', 'true'],
+      ]);
+      expect(button('n1').className).toMatch(/refit/);
+      expect(button('n0').className).not.toMatch(/refit/);
+      expect(vi.mocked(announce).mock.calls).toEqual([
+        ['Fret 5 on the G string', 'polite'],
+        ['2 nearby notes re-fingered'],
+      ]);
+      act(() => vi.advanceTimersByTime(REFIT_HOLD_MS - 1));
+      expect(refitted()).toEqual([
+        ['n1', 'true'],
+        ['n2', 'true'],
+      ]);
+      act(() => vi.advanceTimersByTime(1));
+      expect(refitted()).toEqual([
+        ['n1', 'fading'],
+        ['n2', 'fading'],
+      ]);
+      expect(button('n1').className).toMatch(/refitFading/);
+      act(() => vi.advanceTimersByTime(REFIT_FADE_MS));
+      expect(refitted()).toEqual([]);
+      expect(button('n1').className).not.toMatch(/refit/);
+    });
+
+    it('one moved: "1 nearby note re-fingered"', () => {
+      const { edit } = setup();
+      edit(moved(['n2']));
+      expect(refitted()).toEqual([['n2', 'true']]);
+      expect(vi.mocked(announce).mock.calls.at(-1)).toEqual(['1 nearby note re-fingered']);
+    });
+
+    it('none moved: no outline, no re-fit announcement', () => {
+      const { edit } = setup();
+      edit(moved([]));
+      expect(refitted()).toEqual([]);
+      expect(vi.mocked(announce).mock.calls).toEqual([['Fret 5 on the G string', 'polite']]);
+    });
+
+    it('a delete: its moved neighbours outlined and counted', () => {
+      const { edit } = setup();
+      edit(moved(['n0', 'n2'], { kind: 'delete' }));
+      expect(refitted().map(([id]) => id)).toEqual(['n0', 'n2']);
+      expect(vi.mocked(announce).mock.calls).toEqual([
+        ['Note deleted', 'polite'],
+        ['2 nearby notes re-fingered'],
+      ]);
+    });
+
+    it('back to back: the second re-fit replaces the set and restarts the timer', () => {
+      const { edit } = setup();
+      edit(moved(['n1', 'n2']));
+      act(() => vi.advanceTimersByTime(1000));
+      edit(moved(['n3']));
+      expect(refitted()).toEqual([['n3', 'true']]);
+      act(() => vi.advanceTimersByTime(REFIT_HOLD_MS - 1));
+      expect(refitted()).toEqual([['n3', 'true']]);
+      act(() => vi.advanceTimersByTime(1 + REFIT_FADE_MS));
+      expect(refitted()).toEqual([]);
+    });
+
+    it('a following edit that moves none clears the outline', () => {
+      const { edit } = setup();
+      edit(moved(['n1']));
+      edit(moved([]));
+      expect(refitted()).toEqual([]);
+    });
+
+    it('an edit that changed nothing (no re-fingered list) leaves the outline and its timer', () => {
+      const { edit } = setup();
+      edit(moved(['n1']));
+      act(() => vi.advanceTimersByTime(1000));
+      edit({ kind: 'edit', label: { kind: 'setFret', fret: 5 }, string: 3, fret: 5 });
+      expect(refitted()).toEqual([['n1', 'true']]);
+      expect(vi.mocked(announce).mock.calls.at(-1)).toEqual(['Fret 5 on the G string', 'polite']);
+      act(() => vi.advanceTimersByTime(REFIT_HOLD_MS - 1000 + REFIT_FADE_MS));
+      expect(refitted()).toEqual([]);
+    });
+
+    it('a failed edit clears the outline', () => {
+      const { edit } = setup();
+      edit(moved(['n1', 'n2']));
+      edit({ kind: 'failed' });
+      expect(refitted()).toEqual([]);
+    });
+
+    it('undo and redo clear the outline and outline nothing; the selection is the step’s note', () => {
+      const { edit, session } = setup();
+      edit(moved(['n1', 'n2']));
+      act(() => session.select('n3'));
+      edit({ kind: 'undo', label: { kind: 'setFret', fret: 5 } });
+      expect(refitted()).toEqual([]);
+      expect(button('n3').getAttribute('aria-pressed')).toBe('true');
+      edit({ kind: 'redo', label: { kind: 'setFret', fret: 5 } });
+      expect(refitted()).toEqual([]);
+      expect(vi.mocked(announce).mock.calls.map(([m]) => m)).not.toContain(
+        '1 nearby note re-fingered',
+      );
+      act(() => vi.advanceTimersByTime(REFIT_HOLD_MS + REFIT_FADE_MS));
+      expect(refitted()).toEqual([]);
+    });
+
+    it('reduced motion: the outline disappears at 1.5 s without fading', () => {
+      vi.stubGlobal('matchMedia', (q: string) => ({ matches: q.includes('reduce') }));
+      const { edit } = setup();
+      edit(moved(['n1']));
+      act(() => vi.advanceTimersByTime(REFIT_HOLD_MS - 1));
+      expect(refitted()).toEqual([['n1', 'true']]);
+      act(() => vi.advanceTimersByTime(1));
+      expect(refitted()).toEqual([]);
+    });
+
+    it('a selected re-fingered note shows both the selection and the re-fit outline', () => {
+      const { edit } = setup('n1');
+      edit(moved(['n1']));
+      expect(button('n1').getAttribute('aria-pressed')).toBe('true');
+      expect(button('n1').getAttribute('data-refit')).toBe('true');
+      expect(button('n1').className).toMatch(/refit/);
+    });
+
+    it('the label is unchanged by the outline', () => {
+      const { edit } = setup();
+      const before = button('n1').getAttribute('aria-label');
+      edit(moved(['n1']));
+      expect(button('n1').getAttribute('aria-label')).toBe(before);
+    });
+
+    it('the take going missing clears the outline; it does not come back', () => {
+      const { edit, set } = setup();
+      edit(moved(['n1']));
+      set({ missing: true });
+      set({ missing: undefined });
+      expect(refitted()).toEqual([]);
+    });
+
+    it('unmounting with the outline shown leaves no timer behind', () => {
+      // The timers the screen leaves anyway, without an outline.
+      const plain = setup();
+      plain.unmount();
+      const baseline = vi.getTimerCount();
+      vi.clearAllTimers();
+      const { edit, unmount } = setup();
+      edit(moved(['n1']));
+      unmount();
+      expect(vi.getTimerCount()).toBe(baseline);
+    });
   });
 
   it('the banner sits above the title', () => {

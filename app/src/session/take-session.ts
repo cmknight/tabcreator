@@ -41,6 +41,7 @@ import {
   EMPTY_HISTORY,
   pushStep,
   redoStep,
+  refingered,
   confirmNote,
   deleteNote,
   insertNote,
@@ -98,7 +99,17 @@ export interface TakeSnapshot {
 
 /** An announceable outcome of an edit, undo or redo (the screen words it, spine AD-18). */
 export type EditEvent =
-  | { kind: 'edit'; label: CommandLabel; string: StringNo; fret: number }
+  | {
+      kind: 'edit';
+      label: CommandLabel;
+      string: StringNo;
+      fret: number;
+      /**
+       * The other notes the edit's re-fit re-fingered (story "Re-fit feedback"), maybe none;
+       * absent when the edit changed nothing (a fret set to the fret it has).
+       */
+      refingered?: string[];
+    }
   | { kind: 'undo' | 'redo'; label: CommandLabel }
   | { kind: 'failed' };
 
@@ -735,7 +746,16 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       // A set fret is announced even when nothing changed (the fret it already had); the other
       // commands only when they did something (confirming a confirmed note says nothing).
       if (target && (changed || label.kind === 'setFret')) {
-        emitEdit({ kind: 'edit', label, string: target.string, fret: target.fret });
+        emitEdit({
+          kind: 'edit',
+          label,
+          string: target.string,
+          fret: target.fret,
+          // Against the step's `before`: a merged second digit reports the whole step's re-fit.
+          ...(changed && {
+            refingered: refingered(history.undo.at(-1)!.before.notes, next.notes, command.target),
+          }),
+        });
       }
       return;
     }

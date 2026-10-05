@@ -97,3 +97,28 @@
   content: '';
   pointer-events: none;
 }
+
+/* Re-fingered by a re-fit (DESIGN.md tab-note-refit): a dashed violet band drawn outside the
+   selection outline, the playing marker (to 5px) and the focus ring (to 4px + ring), with a 1px
+   gap, so it combines with each of them; the dashes, not the colour, are the cue. It appears at
+   once and fades out over 300 ms once the screen marks it fading. */
+.refit::before {
+  position: absolute;
+  inset: calc(-7px - var(--space-focus-ring));
+  border: 2px dashed var(--color-refit);
+  border-radius: 3px;
+  content: '';
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 300ms ease-out;
+}
+
+.refitFading::before {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .refit::before {
+    transition: none;
+  }
+}

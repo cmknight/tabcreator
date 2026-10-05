@@ -333,6 +333,11 @@ export const strings = {
     `Note inserted on the ${TAB_STRING_NAMES[string]} string, fret ${fret}`,
   /** Announced after a confirm. */
   'tab.editConfirmed': 'Note confirmed',
+  /**
+   * Announced after an edit's own announcement when its re-fit re-fingered other notes
+   * (EXPERIENCE.md Note (in tab)): "2 nearby notes re-fingered", "1 nearby note re-fingered".
+   */
+  'tab.refingered': (n: number) => `${n} nearby ${n === 1 ? 'note' : 'notes'} re-fingered`,
   /** The toolbar's Insert and Delete buttons (EXPERIENCE.md Toolbar). */
   'tab.insert': 'Insert',
   'tab.delete': 'Delete',

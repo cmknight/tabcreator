@@ -34,3 +34,6 @@
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-string-moves-delete-insert-and-confirm-plan.md`
   summary: EXPERIENCE.md does not yet carry story 8.3's copy — "Note deleted", "Note inserted on the G string, fret 0", "Note confirmed", the undo names ("Move to string 3", "Delete note", "Insert note", "Confirm note"), the popover's "Edit note", position buttons ("String 3, fret 7") and the fret range hint; the Fret popover entry (EXPERIENCE :80) also lacks the string positions and Confirm the user decided on — owner: UX owner.
   evidence: Strings in app/src/ui/strings.ts; the popover decision is in epic Tab editing's Notes (2026-10-04).
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-re-fit-feedback-plan.md`
+  summary: EXPERIENCE.md gives only the plural "<n> nearby notes re-fingered"; story 8.2 added the singular "1 nearby note re-fingered" — owner: UX owner.
+  evidence: tab.refingered in app/src/ui/strings.ts.

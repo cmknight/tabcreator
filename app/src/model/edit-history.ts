@@ -390,6 +390,26 @@ export function tabState(tab: Pick<Tab, 'notes' | 'deletedStartMs'>): TabState {
 }
 
 /**
+ * The ids of the notes a command's re-fit re-fingered (story "Re-fit feedback"): every note in
+ * both `before` and `after`, other than `targetId`, whose string or fret changed. In `after`'s
+ * order; a deleted target (absent from `after`) still reports its neighbours.
+ */
+export function refingered(
+  before: readonly Note[],
+  after: readonly Note[],
+  targetId: string,
+): string[] {
+  const was = new Map(before.map((n) => [n.id, n]));
+  const moved: string[] = [];
+  for (const note of after) {
+    if (note.id === targetId) continue;
+    const old = was.get(note.id);
+    if (old && (old.string !== note.string || old.fret !== note.fret)) moved.push(note.id);
+  }
+  return moved;
+}
+
+/**
  * Records `step`, clearing redo. With `mergeInto` equal to the top step's `mergeKey` (and
  * nothing undone since), the step merges into it instead: the top keeps its `before` and takes
  * this step's `after`, label and `mergeKey`.

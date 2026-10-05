@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { collectErrors, recordButton, stopButton, timer } from './helpers';
 import { expectNoSeriousAxe, FIXTURE, goLive } from './mic-helpers';
+import { strings } from '../../src/ui/strings';
 import { readTab } from './storage-helpers';
 import {
   focusedNote,
@@ -451,5 +452,175 @@ test('the popover traps Tab, Esc closes it back to the note, and axe passes with
   await expect
     .poll(() => storedNote(page, takeId, target.id))
     .toMatchObject({ fret: 9, locked: true });
+  expect(unexpected(errors)).toEqual([]);
+});
+
+// Story "Re-fit feedback": the notes an edit's re-fit re-fingered are outlined for about 1.5 s
+// and "<n> nearby notes re-fingered" follows the edit's announcement; undo outlines nothing.
+
+/** The re-fit outline's hold and fade (`REFIT_HOLD_MS`, `REFIT_FADE_MS` in screens/Tab.tsx). */
+const REFIT_HOLD_MS = 1500;
+const REFIT_FADE_MS = 300;
+
+interface RefitLog {
+  /** The polite region's non-empty texts, in order. */
+  polite: string[];
+  /** Each change of the outlined notes: when, and which (with their `data-refit` state). */
+  outlines: { at: number; ids: string[]; states: string[] }[];
+}
+
+/** Starts logging the polite region and the re-fit outlines in the page (`window.__refit`). */
+function watchRefit(page: Page): Promise<void> {
+  return page.evaluate(() => {
+    const log: RefitLog = { polite: [], outlines: [] };
+    (window as unknown as { __refit: RefitLog }).__refit = log;
+    const region = document.querySelector('[aria-live="polite"]')!;
+    let lastKey = '';
+    const record = () => {
+      const text = region.textContent ?? '';
+      if (text && log.polite.at(-1) !== text) log.polite.push(text);
+      const els = [...document.querySelectorAll('[data-refit]')];
+      const ids = els.map((el) => el.getAttribute('data-note-id') ?? '');
+      const states = els.map((el) => el.getAttribute('data-refit') ?? '');
+      const key = `${ids.join(',')}|${states.join(',')}`;
+      if (key !== lastKey) {
+        lastKey = key;
+        log.outlines.push({ at: performance.now(), ids, states });
+      }
+    };
+    new MutationObserver(record).observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['data-refit'],
+    });
+  });
+}
+
+const refitLog = (page: Page) =>
+  page.evaluate(() => (window as unknown as { __refit: RefitLog }).__refit);
+
+/** The other notes whose stored string or fret differ between `before` and `after`, sorted. */
+function changedIds(
+  before: Omit<StoredTab, 'updatedAt'>,
+  after: Omit<StoredTab, 'updatedAt'>,
+  targetId: string,
+): string[] {
+  const was = new Map(before.notes.map((n) => [n.id, n]));
+  return after.notes
+    .filter((n) => n.id !== targetId)
+    .filter((n) => {
+      const old = was.get(n.id);
+      return old && (old.string !== n.string || old.fret !== n.fret);
+    })
+    .map((n) => n.id)
+    .sort();
+}
+
+/**
+ * The edit's announcement then "<n> nearby notes re-fingered"; exactly `changed` outlined, fading
+ * about 1.5 s later and then gone.
+ */
+async function expectRefitShown(page: Page, editText: string, changed: string[]): Promise<void> {
+  await expect
+    .poll(async () => (await refitLog(page)).polite.slice(-2))
+    .toEqual([editText, strings['tab.refingered'](changed.length)]);
+  await expect(page.locator('[data-refit]')).toHaveCount(0, { timeout: 5_000 });
+  const { outlines } = await refitLog(page);
+  const shown = outlines.find((o) => o.ids.length > 0)!;
+  expect([...shown.ids].sort()).toEqual(changed);
+  expect(shown.states.every((s) => s === 'true')).toBe(true);
+  const fading = outlines.find((o) => o.at > shown.at && o.states.includes('fading'))!;
+  const gone = outlines.findLast((o) => o.ids.length === 0)!;
+  expect(fading.at - shown.at).toBeGreaterThan(1_300);
+  expect(fading.at - shown.at).toBeLessThan(2_000);
+  expect(gone.at - shown.at).toBeGreaterThan(1_300);
+  expect(gone.at - shown.at).toBeLessThan(2_500);
+}
+
+test('re-fit feedback on c_major: the move re-fingers no note, so no outline or re-fit announcement; undo outlines nothing', async ({
+  page,
+}) => {
+  const errors = await goLive(page, FIXTURE);
+  const takeId = await recordAndAnalyse(page);
+  const before = await storedTab(page, takeId);
+  // C3: the A string, fret 3; the popover offers the low E string, fret 8.
+  const target = before!.notes.find((n) => n.string === 5 && n.fret === 3)!;
+  expect(target).toBeTruthy();
+
+  await watchRefit(page);
+  await noteButton(page, target.id).dblclick();
+  const dialog = page.getByRole('dialog', { name: 'Edit note' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'String 6, fret 8' }).click();
+  await expect(dialog).toBeHidden();
+  await expect
+    .poll(() => storedNote(page, takeId, target.id))
+    .toMatchObject({ string: 6, fret: 8, locked: true });
+
+  // The real engine re-fingers no other note for this move (n = 0), so this take shows no
+  // outline; the outline, its count and its lifetime are asserted on a seeded tab (the test
+  // below) whose re-fit is known to move its neighbours.
+  expect(changedIds(before!, (await storedTab(page, takeId))!, target.id)).toEqual([]);
+
+  // The move's announcement, and past the full hold and fade no re-fit announcement or outline.
+  const moved = strings['tab.editMoved'](6, 8);
+  await expect.poll(async () => (await refitLog(page)).polite.at(-1)).toBe(moved);
+  await page.waitForTimeout(REFIT_HOLD_MS + REFIT_FADE_MS + 200);
+  const { polite, outlines } = await refitLog(page);
+  expect(polite.at(-1)).toBe(moved);
+  expect(polite.filter((t) => t.includes('re-fingered'))).toEqual([]);
+  expect(outlines.filter((o) => o.ids.length > 0)).toEqual([]);
+
+  // Ctrl+Z: the stored Tab as before, no outline, the edited note selected.
+  await page.keyboard.press('Control+z');
+  await expect.poll(() => storedTab(page, takeId)).toEqual(before);
+  await expect(page.locator('[data-refit]')).toHaveCount(0);
+  await expect(noteButton(page, target.id)).toHaveAttribute('aria-pressed', 'true');
+  expect((await refitLog(page)).outlines.at(-1)!.ids).toEqual([]);
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('re-fit feedback on a seeded tab: a fret change re-fingers its neighbours, outlined about 1.5 s', async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  // One phrase fingered high on the thick strings, where the engine would not put it: a fret
+  // change on its first note re-fits the rest to the engine's own fingering.
+  const seeded = [
+    { string: 6, fret: 20, midi: 60 },
+    { string: 6, fret: 22, midi: 62 },
+    { string: 5, fret: 19, midi: 64 },
+    { string: 5, fret: 20, midi: 65 },
+  ].map(({ string, fret, midi }, i) => {
+    const startMs = 1500 + i * 250;
+    return {
+      id: `s${i}`,
+      startMs,
+      endMs: startMs + 200,
+      midi,
+      confidence: 0.9,
+      string: string as 5 | 6,
+      fret,
+      locked: false,
+      lowConfidence: false,
+    };
+  });
+  const takeId = await openSeededTab(page, seeded);
+  const before = await storedTab(page, takeId);
+
+  await watchRefit(page);
+  await noteButton(page, 's0').click();
+  await page.keyboard.press('1');
+  await expect.poll(() => storedNote(page, takeId, 's0')).toMatchObject({ string: 6, fret: 1 });
+  const changed = changedIds(before!, (await storedTab(page, takeId))!, 's0');
+  expect(changed.length).toBeGreaterThan(0);
+  await expectRefitShown(page, strings['tab.editFret'](1, 6), changed);
+
+  await page.keyboard.press('Control+z');
+  await expect.poll(() => storedTab(page, takeId)).toEqual(before);
+  await expect(page.locator('[data-refit]')).toHaveCount(0);
+  await expect(noteButton(page, 's0')).toHaveAttribute('aria-pressed', 'true');
   expect(unexpected(errors)).toEqual([]);
 });

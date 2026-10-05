@@ -28,6 +28,10 @@
 // Story "String moves, delete, insert and confirm": a double-click on a note reports it, with its
 // button, through `onNoteDoubleClick` (the screen opens the edit popover there). While an
 // overlay is open the selection never pulls focus.
+//
+// Story "Re-fit feedback": the notes in `refitIds` show the re-fit outline (DESIGN.md
+// tab-note-refit, a dashed violet outline outside the selection outline) and `data-refit`;
+// with `refitFading` it fades out. The screen owns the set and its timer.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { midiName, playedOrder } from '../../model/notes';
@@ -76,6 +80,18 @@ export function noteLabels(notes: readonly Note[]): NoteLabel[] {
   });
 }
 
+/** A note button's classes: the check style when flagged, the re-fit outline (and its fade). */
+function noteClass(flagged: boolean, refit: 'true' | 'fading' | null): string {
+  return [
+    styles.note,
+    flagged && styles.check,
+    refit && styles.refit,
+    refit === 'fading' && styles.refitFading,
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
 interface Metrics {
   charWidth: number;
   lineHeight: number;
@@ -119,7 +135,13 @@ export interface TabAreaProps {
   onNoteClick?(noteId: string): void;
   /** Called with a note's id and its button when it is double-clicked (the edit popover). */
   onNoteDoubleClick?(noteId: string, button: HTMLButtonElement): void;
+  /** The notes the last edit's re-fit re-fingered: they show the re-fit outline. */
+  refitIds?: ReadonlySet<string>;
+  /** Whether the re-fit outline is fading out. */
+  refitFading?: boolean;
 }
+
+const NO_IDS: ReadonlySet<string> = new Set();
 
 /** Whether `el` lies (partly) outside the window's viewport. */
 function outOfView(el: Element): boolean {
@@ -128,7 +150,7 @@ function outOfView(el: Element): boolean {
 }
 
 /** Whether the user asks for reduced motion. */
-function reducedMotion(): boolean {
+export function reducedMotion(): boolean {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 }
 
@@ -145,6 +167,8 @@ export function TabArea({
   playing = false,
   onNoteClick,
   onNoteDoubleClick,
+  refitIds = NO_IDS,
+  refitFading = false,
 }: TabAreaProps) {
   const areaRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
@@ -263,6 +287,10 @@ export function TabArea({
     return () => clearTimeout(timer);
   }, [playingNoteId, playing, layout]);
 
+  /** A note's re-fit outline state: shown, fading, or none (null). */
+  const refit = (noteId: string): 'true' | 'fading' | null =>
+    refitIds.has(noteId) ? (refitFading ? 'fading' : 'true') : null;
+
   const instructionsId = `${id ?? 'tab-area'}-instructions`;
   const systems = layout?.systems ?? [];
 
@@ -308,11 +336,10 @@ export function TabArea({
                     }
                   }}
                   type="button"
-                  className={
-                    flagged.has(cell.noteId) ? `${styles.note} ${styles.check}` : styles.note
-                  }
+                  className={noteClass(flagged.has(cell.noteId), refit(cell.noteId))}
                   data-note-id={cell.noteId}
                   data-playing={cell.noteId === playingNoteId ? 'true' : undefined}
+                  data-refit={refit(cell.noteId) ?? undefined}
                   aria-label={labelById.get(cell.noteId)}
                   aria-pressed={cell.noteId === selectedNoteId}
                   tabIndex={cell.noteId === tabStop ? 0 : -1}
