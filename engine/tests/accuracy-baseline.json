@@ -1,23 +1,7 @@
 {
-  "engine_version": "0.6.0",
+  "engine_version": "0.7.0",
   "sets": {
     "clean-gate": {
-      "fixtures": 14,
-      "counts": {
-        "truth": 170,
-        "detected": 170,
-        "tp": 168,
-        "fp": 2,
-        "fn": 2,
-        "octave_errors": 0,
-        "fret_total": 168,
-        "fret_agree": 137
-      },
-      "f1": 0.9882352941176471,
-      "octave_rate": 0.0,
-      "fret_agreement": 0.8154761904761905
-    },
-    "noisy-gate": {
       "fixtures": 14,
       "counts": {
         "truth": 170,
@@ -32,6 +16,22 @@
       "f1": 0.9910979228486647,
       "octave_rate": 0.0,
       "fret_agreement": 0.8143712574850299
+    },
+    "noisy-gate": {
+      "fixtures": 14,
+      "counts": {
+        "truth": 170,
+        "detected": 168,
+        "tp": 168,
+        "fp": 0,
+        "fn": 2,
+        "octave_errors": 0,
+        "fret_total": 168,
+        "fret_agree": 137
+      },
+      "f1": 0.9940828402366864,
+      "octave_rate": 0.0,
+      "fret_agreement": 0.8154761904761905
     },
     "phantom-only": {
       "fixtures": 2,
@@ -85,6 +85,54 @@
       "fixtures": 14,
       "counts": {
         "truth": 170,
+        "detected": 167,
+        "tp": 167,
+        "fp": 0,
+        "fn": 3,
+        "octave_errors": 0,
+        "fret_total": 167,
+        "fret_agree": 136
+      },
+      "f1": 0.9910979228486647,
+      "octave_rate": 0.0,
+      "fret_agreement": 0.8143712574850299
+    },
+    "reported": {
+      "fixtures": 8,
+      "counts": {
+        "truth": 274,
+        "detected": 220,
+        "tp": 220,
+        "fp": 0,
+        "fn": 54,
+        "octave_errors": 0,
+        "fret_total": 220,
+        "fret_agree": 220
+      },
+      "f1": 0.8906882591093117,
+      "octave_rate": 0.0,
+      "fret_agreement": 1.0
+    },
+    "sweep-s0": {
+      "fixtures": 14,
+      "counts": {
+        "truth": 170,
+        "detected": 166,
+        "tp": 166,
+        "fp": 0,
+        "fn": 4,
+        "octave_errors": 0,
+        "fret_total": 166,
+        "fret_agree": 135
+      },
+      "f1": 0.9880952380952381,
+      "octave_rate": 0.0,
+      "fret_agreement": 0.8132530120481928
+    },
+    "sweep-s1": {
+      "fixtures": 14,
+      "counts": {
+        "truth": 170,
         "detected": 170,
         "tp": 168,
         "fp": 2,
@@ -96,54 +144,6 @@
       "f1": 0.9882352941176471,
       "octave_rate": 0.0,
       "fret_agreement": 0.8154761904761905
-    },
-    "reported": {
-      "fixtures": 6,
-      "counts": {
-        "truth": 250,
-        "detected": 195,
-        "tp": 195,
-        "fp": 0,
-        "fn": 55,
-        "octave_errors": 0,
-        "fret_total": 195,
-        "fret_agree": 195
-      },
-      "f1": 0.8764044943820225,
-      "octave_rate": 0.0,
-      "fret_agreement": 1.0
-    },
-    "sweep-s0": {
-      "fixtures": 14,
-      "counts": {
-        "truth": 170,
-        "detected": 169,
-        "tp": 167,
-        "fp": 2,
-        "fn": 3,
-        "octave_errors": 0,
-        "fret_total": 167,
-        "fret_agree": 136
-      },
-      "f1": 0.9852507374631269,
-      "octave_rate": 0.0,
-      "fret_agreement": 0.8143712574850299
-    },
-    "sweep-s1": {
-      "fixtures": 14,
-      "counts": {
-        "truth": 170,
-        "detected": 171,
-        "tp": 169,
-        "fp": 2,
-        "fn": 1,
-        "octave_errors": 0,
-        "fret_total": 169,
-        "fret_agree": 138
-      },
-      "f1": 0.9912023460410557,
-      "octave_rate": 0.0,
-      "fret_agreement": 0.8165680473372781
     }
   },
   "fixtures": {
@@ -814,9 +814,9 @@
       "set": "clean-gate",
       "counts": {
         "truth": 8,
-        "detected": 10,
+        "detected": 8,
         "tp": 8,
-        "fp": 2,
+        "fp": 0,
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 8,
@@ -827,9 +827,9 @@
       "set": "rate-44k1",
       "counts": {
         "truth": 8,
-        "detected": 10,
+        "detected": 8,
         "tp": 8,
-        "fp": 2,
+        "fp": 0,
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 8,
@@ -866,9 +866,9 @@
       "set": "sweep-s0",
       "counts": {
         "truth": 8,
-        "detected": 10,
+        "detected": 8,
         "tp": 8,
-        "fp": 2,
+        "fp": 0,
         "fn": 0,
         "octave_errors": 0,
         "fret_total": 8,
@@ -1191,26 +1191,26 @@
       "set": "clean-gate",
       "counts": {
         "truth": 64,
-        "detected": 62,
-        "tp": 62,
+        "detected": 61,
+        "tp": 61,
         "fp": 0,
-        "fn": 2,
+        "fn": 3,
         "octave_errors": 0,
-        "fret_total": 62,
-        "fret_agree": 62
+        "fret_total": 61,
+        "fret_agree": 61
       }
     },
     "repeated_notes_16th_120bpm@44k1": {
       "set": "rate-44k1",
       "counts": {
         "truth": 64,
-        "detected": 62,
-        "tp": 62,
+        "detected": 61,
+        "tp": 61,
         "fp": 0,
-        "fn": 2,
+        "fn": 3,
         "octave_errors": 0,
-        "fret_total": 62,
-        "fret_agree": 62
+        "fret_total": 61,
+        "fret_agree": 61
       }
     },
     "repeated_notes_16th_120bpm@pink15": {
@@ -1243,39 +1243,39 @@
       "set": "sweep-s0",
       "counts": {
         "truth": 64,
-        "detected": 61,
-        "tp": 61,
+        "detected": 60,
+        "tp": 60,
         "fp": 0,
-        "fn": 3,
+        "fn": 4,
         "octave_errors": 0,
-        "fret_total": 61,
-        "fret_agree": 61
+        "fret_total": 60,
+        "fret_agree": 60
       }
     },
     "repeated_notes_16th_120bpm@s1": {
       "set": "sweep-s1",
       "counts": {
         "truth": 64,
-        "detected": 63,
-        "tp": 63,
+        "detected": 62,
+        "tp": 62,
         "fp": 0,
-        "fn": 1,
+        "fn": 2,
         "octave_errors": 0,
-        "fret_total": 63,
-        "fret_agree": 63
+        "fret_total": 62,
+        "fret_agree": 62
       }
     },
     "repeated_notes_16th_120bpm_noisy": {
       "set": "noisy-gate",
       "counts": {
         "truth": 64,
-        "detected": 61,
-        "tp": 61,
+        "detected": 62,
+        "tp": 62,
         "fp": 0,
-        "fn": 3,
+        "fn": 2,
         "octave_errors": 0,
-        "fret_total": 61,
-        "fret_agree": 61
+        "fret_total": 62,
+        "fret_agree": 62
       }
     },
     "repeated_notes_16th_160bpm": {
@@ -1295,13 +1295,13 @@
       "set": "reported",
       "counts": {
         "truth": 64,
-        "detected": 46,
-        "tp": 46,
+        "detected": 47,
+        "tp": 47,
         "fp": 0,
-        "fn": 18,
+        "fn": 17,
         "octave_errors": 0,
-        "fret_total": 46,
-        "fret_agree": 46
+        "fret_total": 47,
+        "fret_agree": 47
       }
     },
     "ringing_overlap": {
@@ -1432,6 +1432,32 @@
         "octave_errors": 0,
         "fret_total": 3,
         "fret_agree": 1
+      }
+    },
+    "trill": {
+      "set": "reported",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 12
+      }
+    },
+    "trill_noisy": {
+      "set": "reported",
+      "counts": {
+        "truth": 12,
+        "detected": 12,
+        "tp": 12,
+        "fp": 0,
+        "fn": 0,
+        "octave_errors": 0,
+        "fret_total": 12,
+        "fret_agree": 12
       }
     },
     "vibrato": {

@@ -282,6 +282,8 @@ fn starts_near(t: &TruthNote, n: &Note) -> bool {
 /// CAP-28 / US-4.4 technique rows, clean and noisy twins:
 /// - `ringing_overlap`: no duplicate notes — no ground-truth note's pitch is output twice
 ///   within its span (onset tolerance before, `endMs` after).
+/// - `trill`: every ground-truth note appears at its MIDI, and the clean take has no extra
+///   notes; no trill return (a note repeating the note two back) is dropped as ring-over (SM5).
 /// - `vibrato`: one note per ground-truth note, at its MIDI.
 /// - `bend_up`, `slide_up`: each ground-truth note appears at its starting MIDI, flagged
 ///   low-confidence (confidence < c + 0.15).
@@ -313,6 +315,37 @@ fn technique_rows() {
                 failures.push(format!(
                     "{name}: MIDI {} output {within} times within the note at {} ms",
                     t.midi, t.start_ms
+                ));
+            }
+        }
+    }
+    for name in ["trill", "trill_noisy"] {
+        let answer = read_answer(name);
+        let (_, r) = analyze(name, 0.0);
+        println!(
+            "{name}: {} notes {:?}",
+            r.notes.len(),
+            r.notes
+                .iter()
+                .map(|n| (n.start_ms, n.midi))
+                .collect::<Vec<_>>()
+        );
+        if name == "trill" && r.notes.len() != answer.notes.len() {
+            failures.push(format!(
+                "{name}: {} notes for {} ground-truth notes",
+                r.notes.len(),
+                answer.notes.len()
+            ));
+        }
+        for t in &answer.notes {
+            if !r
+                .notes
+                .iter()
+                .any(|n| starts_near(t, n) && n.midi == t.midi)
+            {
+                failures.push(format!(
+                    "{name}: no note at {} ms MIDI {}",
+                    t.start_ms, t.midi
                 ));
             }
         }

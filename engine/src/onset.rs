@@ -12,7 +12,8 @@
 //!   MIDI pitch that holds. A change reached gradually rather than in a step (a bend, a slide or
 //!   vibrato across a rounding boundary) gets no onset; its span is recorded as a glide instead.
 //!
-//! The two are merged (30 ms) into one sorted list, each onset labelled by its source.
+//! The two are merged (30 ms) into one sorted list, each onset labelled by its source and by
+//! whether a pitch step lies at it (`legato`).
 
 use crate::Params;
 use crate::pyin::{FRAME_LENGTH, HOP_LENGTH, PitchTrack, SAMPLE_RATE, frame_count};
@@ -58,10 +59,6 @@ const STEP_MAX_VOICED_PROB: f64 = 0.7;
 /// Frames before a change's first frame searched for the voicing dip. pYIN's track takes about
 /// 4–6 frames to move through a 2-semitone hammer-on.
 const STEP_LOOK_BEFORE: usize = 4;
-/// A frame pYIN decodes as voiced but with a voicing probability below this counts as unvoiced
-/// for pitch changes: pYIN's Viterbi keeps runs of "voiced" frames at probability ≈ 0.01 in
-/// noise and in silent tails, with wandering pitch. Legato transitions stay ≥ 0.1.
-const VOICED_PROB_FLOOR: f64 = 0.05;
 /// A frame is "moving" (inside a glide or vibrato) when the pitch changes by at least this many
 /// semitones across ±[`MOVING_RADIUS`] frames (0.03 semitone per frame; the slowest synth
 /// glide, a one-semitone bend over 200 ms, moves ~0.06 per frame, so the whole bend counts).
@@ -91,8 +88,13 @@ pub enum OnsetSource {
 pub struct Onset {
     pub frame: usize,
     /// Read by ring-over removal (US-4.4, entry 9): a note with no flux onset that repeats the
-    /// pitch of the note before the previous one is a ringing string re-emerging.
+    /// pitch of the note before the previous one may be a ringing string re-emerging.
     pub source: OnsetSource,
+    /// True when a pitch-change onset lies at this onset or was merged into it, whatever the
+    /// final `source` (a `PitchChange` onset is always legato). The note was reached by a pitch
+    /// step on the sounding string (a hammer-on or pull-off), so the previous note's string
+    /// stopped ringing; ring-over removal needs a middle note that is not legato (SM5).
+    pub legato: bool,
 }
 
 /// The onsets and glide spans of a take, consumed by note building (US-4.4, entry 9).
@@ -290,19 +292,9 @@ fn is_offset(rms_db: &[f32], n: usize) -> bool {
     f64::from(after - before) < -OFFSET_DROP_DB
 }
 
-/// Fractional MIDI pitch of a frame, `None` when unvoiced or voiced with a probability below
-/// [`VOICED_PROB_FLOOR`].
-fn midi_of(pitch: &PitchTrack, i: usize) -> Option<f64> {
-    let f = f64::from(pitch.f0_hz[i]);
-    (pitch.voiced[i]
-        && f64::from(pitch.voiced_prob[i]) >= VOICED_PROB_FLOOR
-        && f.is_finite()
-        && f > 0.0)
-        .then(|| 69.0 + 12.0 * (f / 440.0).log2())
-}
-
 /// Pitch-change onsets and glide spans. A run is a stretch of consecutive voiced frames (see
-/// [`midi_of`]); any other frame ends it, so a new pitch after a break is left to the flux.
+/// [`PitchTrack::voiced_midi`]); any other frame ends it, so a new pitch after a break is left
+/// to the flux.
 /// Within a run, a frame whose rounded MIDI differs from the run's current value (so by ≥ 1
 /// semitone) and holds for [`PITCH_HOLD_FRAMES`] frames is a change, and the run takes the new
 /// value. A change is a step when the voicing probability dips on its way (see [`is_step`]); a
@@ -317,7 +309,7 @@ pub fn pitch_changes(
     gate_level: f64,
 ) -> (Vec<usize>, Vec<(usize, usize)>) {
     let n = pitch.len();
-    let midi: Vec<Option<f64>> = (0..n).map(|i| midi_of(pitch, i)).collect();
+    let midi: Vec<Option<f64>> = (0..n).map(|i| pitch.voiced_midi(i)).collect();
     let rounded = |i: usize| midi[i].map(f64::round);
     let mut onsets = Vec::new();
     let mut glides: Vec<(usize, usize)> = Vec::new();
@@ -410,18 +402,20 @@ fn moving_span(midi: &[Option<f64>], j: usize) -> (usize, usize) {
 }
 
 /// Joins flux and pitch-change onsets into one sorted list: an onset less than 30 ms after the
-/// last kept one is merged into it (the earlier is kept), and a merge involving a flux onset is
-/// labelled flux.
+/// last kept one is merged into it (the earlier is kept), a merge involving a flux onset is
+/// labelled flux, and a merge involving a pitch-change onset is legato.
 pub fn merge(flux: &[usize], pitch_change: &[usize]) -> Vec<Onset> {
     let mut all: Vec<Onset> = flux
         .iter()
         .map(|&frame| Onset {
             frame,
             source: OnsetSource::Flux,
+            legato: false,
         })
         .chain(pitch_change.iter().map(|&frame| Onset {
             frame,
             source: OnsetSource::PitchChange,
+            legato: true,
         }))
         .collect();
     // Flux first on equal frames.
@@ -434,6 +428,7 @@ pub fn merge(flux: &[usize], pitch_change: &[usize]) -> Vec<Onset> {
                 if o.source == OnsetSource::Flux {
                     last.source = OnsetSource::Flux;
                 }
+                last.legato |= o.legato;
             }
             _ => out.push(o),
         }
@@ -750,26 +745,26 @@ mod tests {
 
     #[test]
     fn merge_keeps_earlier_and_labels_flux() {
-        let out = merge(&[10, 40], &[9, 20, 41]);
+        let out = merge(&[10, 40, 60], &[9, 20, 41]);
+        let onset = |frame, source, legato| Onset {
+            frame,
+            source,
+            legato,
+        };
         assert_eq!(
             out,
             vec![
-                Onset {
-                    frame: 9,
-                    source: OnsetSource::Flux
-                },
-                Onset {
-                    frame: 20,
-                    source: OnsetSource::PitchChange
-                },
-                Onset {
-                    frame: 40,
-                    source: OnsetSource::Flux
-                },
+                // A pitch-change candidate merged with flux: labelled flux, but legato.
+                onset(9, OnsetSource::Flux, true),
+                onset(20, OnsetSource::PitchChange, true),
+                onset(40, OnsetSource::Flux, true),
+                // A lone flux onset is not legato.
+                onset(60, OnsetSource::Flux, false),
             ]
         );
         // 3 frames (34.8 ms) apart: not merged.
         assert_eq!(merge(&[10], &[13]).len(), 2);
+        assert!(!merge(&[10], &[13])[0].legato);
     }
 
     #[test]

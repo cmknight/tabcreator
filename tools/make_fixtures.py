@@ -18,7 +18,7 @@ Answer conventions (see testdata/README.md):
 - `string` 1 = high e ... 6 = low E; `midi` = standard-tuning open-string MIDI + `fret`, always.
 - A note's `endMs` is when the string is damped (or re-plucked), not when it falls silent.
 - A bend, slide or vibrato note is one note with its starting (fretted) pitch.
-- Each hammer-on / pull-off in a slur is its own note.
+- Each hammer-on / pull-off in a slur (including each note of `trill`) is its own note.
 - `detuned_-45c` keeps nominal MIDI; only the audio is 45 cents flat.
 - `drop_d` writes D2 as string 6, fret -2 (MIDI 38): below the standard-tuning range.
 """
@@ -61,6 +61,9 @@ class Segment:
     start_ms: float
     string: int
     fret: int
+    # How hard the segment excites the string; None: 1.0 for the pick, 0.5 for a hammer-on or
+    # pull-off.
+    excitation: float | None = None
 
     @property
     def midi(self) -> int:
@@ -169,7 +172,8 @@ def render_voice(v: Voice, total: int, detune_cents: float, rng: np.random.Gener
             burst = pluck_shape(period) + PLUCK_NOISE * rng.uniform(-1.0, 1.0, period)
             burst -= burst.mean()
             # Picks excite fully; hammer-ons and pull-offs excite it about half as hard.
-            exc[a : a + period] += burst * (1.0 if k == 0 else 0.5)
+            scale = seg.excitation if seg.excitation is not None else (1.0 if k == 0 else 0.5)
+            exc[a : a + period] += burst * scale
         out += level * ks_string(n, delay, gain, exc)
 
     # The damped string dies within ~150 ms of endMs; force exact silence after that.
@@ -298,6 +302,27 @@ def ringing_overlap() -> Fixture:
     return Fixture("ringing_overlap", voices, 150.0)
 
 
+# A soft pull-off; hammer-ons keep the default 0.5. Measured (onset_fixtures' trill row): 0.11-0.15
+# and 0.25-0.4 put a pitch-change candidate on every slur's onset (legato); 0.05-0.1 and 0.16-0.2
+# leave one or more pull-offs as a lone flux onset, the candidate falling > 30 ms after it.
+TRILL_PULL_OFF_EXCITATION = 0.13
+
+
+def trill() -> Fixture:
+    """One pick, then a fast trill between frets 1 and 3 on string 2 (B): hammer-ons at the
+    default slur excitation, pull-offs soft. The synth's pull-offs still make a flux peak (the
+    loop length changes abruptly), so the slurs come out as flux onsets merged with a pitch step.
+    """
+    step = 150.0
+    segs = []
+    for i in range(12):
+        fret = 1 if i % 2 == 0 else 3
+        pull_off = i > 0 and fret == 1
+        excitation = TRILL_PULL_OFF_EXCITATION if pull_off else None
+        segs.append(Segment(LEAD_IN_MS + i * step, 2, fret, excitation))
+    return Fixture("trill", [Voice(segs, LEAD_IN_MS + 12 * step - 5.0)], 200.0)
+
+
 def glide_notes(name: str, notes: list[tuple[int, int, float]], at_ms: float, len_ms: float) -> Fixture:
     voices = []
     for i, (s, f, cents) in enumerate(notes):
@@ -364,6 +389,7 @@ def fixtures() -> list[Fixture]:
             100.0,
         ),
         ringing_overlap(),
+        trill(),
         vibrato(),
         glide_notes("bend_up", [(3, 7, 200.0), (2, 8, 200.0), (1, 10, 100.0)], 150.0, 200.0),
         glide_notes("slide_up", [(3, 5, 200.0), (4, 5, 200.0), (2, 5, 300.0)], 250.0, 120.0),

@@ -228,6 +228,7 @@ fn onset_fixtures() {
     let mut rows = vec![
         Row::new("repeated_notes_16th_120bpm", 30.0),
         Row::new("legato_slurs", 30.0),
+        Row::new("trill", 30.0),
     ];
     rows.extend(names_50.iter().map(|n| Row::new(n, 50.0)));
     rows.push(Row::new("silence_60s", 30.0));
@@ -237,6 +238,7 @@ fn onset_fixtures() {
         Row::new("repeated_notes_16th_160bpm", 30.0),
         Row::new("repeated_notes_16th_120bpm_noisy", 30.0),
         Row::new("legato_slurs_noisy", 30.0),
+        Row::new("trill_noisy", 30.0),
         Row::new("vibrato_noisy", 50.0),
         Row::new("bend_up_noisy", 50.0),
         Row::new("slide_up_noisy", 50.0),
@@ -374,6 +376,23 @@ fn onset_fixtures() {
                             "{}: picked note at {picked} ms labelled {:?}",
                             r.name,
                             r.source_of(t)
+                        ));
+                    }
+                }
+            }
+            "trill" => {
+                // Every note has an onset, and every hammer-on and pull-off (each note after the
+                // pick) is legato, so ring-over cannot drop a trill return (SM5).
+                if !misses.is_empty() {
+                    failures.push(format!("{}: misses {misses:?}", r.name));
+                }
+                for t in 1..r.truth.len() {
+                    if let Some(d) = r.matches[t]
+                        && !r.detected.onsets[d].legato
+                    {
+                        failures.push(format!(
+                            "{}: slur at {} ms has a {:?} onset that is not legato",
+                            r.name, r.truth[t], r.detected.onsets[d].source
                         ));
                     }
                 }

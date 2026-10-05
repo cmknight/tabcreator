@@ -62,6 +62,12 @@ const PROGRESS_STEP: f64 = 0.025;
 /// is the rest.
 const OBSERVATION_SHARE: f64 = 0.35;
 
+/// A frame pYIN decodes as voiced but with a voicing probability below this counts as unvoiced
+/// (see [`PitchTrack::voiced_midi`]): pYIN's Viterbi keeps runs of "voiced" frames at
+/// probability ≈ 0.01 in noise and in silent tails, with wandering pitch. Legato transitions stay
+/// ≥ 0.1.
+pub const VOICED_PROB_FLOOR: f64 = 0.05;
+
 /// Per-frame pitch and voicing. Frame `i` is centred on sample `i × 256` of the pre-processed
 /// signal; see [`frame_time_ms`].
 #[derive(Debug, Clone, PartialEq)]
@@ -83,6 +89,18 @@ impl PitchTrack {
     /// True when there are no frames (never, for output of [`pyin`]).
     pub fn is_empty(&self) -> bool {
         self.voiced.is_empty()
+    }
+
+    /// Fractional MIDI pitch of frame `i` (`69 + 12·log2(f0/440)`), or `None` unless the frame
+    /// is decoded voiced, with a voicing probability of at least [`VOICED_PROB_FLOOR`] and a
+    /// finite positive f0. The one voiced-frame rule shared by onset detection and note building.
+    pub fn voiced_midi(&self, i: usize) -> Option<f64> {
+        let f = f64::from(self.f0_hz[i]);
+        (self.voiced[i]
+            && f64::from(self.voiced_prob[i]) >= VOICED_PROB_FLOOR
+            && f.is_finite()
+            && f > 0.0)
+            .then(|| 69.0 + 12.0 * (f / 440.0).log2())
     }
 }
 
@@ -641,6 +659,20 @@ mod tests {
         (0..n)
             .map(|i| (0.8 * (2.0 * PI * freq * i as f64 / SAMPLE_RATE).sin()) as f32)
             .collect()
+    }
+
+    #[test]
+    fn voiced_midi_needs_voicing_the_floor_and_a_usable_f0() {
+        let track = PitchTrack {
+            f0_hz: vec![440.0, 440.0, 440.0, 440.0, f32::NAN, 0.0, 220.0],
+            voiced: vec![true, false, true, true, true, true, true],
+            voiced_prob: vec![0.9, 0.9, 0.04, 0.05, 0.9, 0.9, 0.9],
+        };
+        let midi: Vec<Option<f64>> = (0..track.len()).map(|i| track.voiced_midi(i)).collect();
+        assert_eq!(
+            midi,
+            [Some(69.0), None, None, Some(69.0), None, None, Some(57.0)]
+        );
     }
 
     #[test]

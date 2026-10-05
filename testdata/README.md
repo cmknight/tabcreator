@@ -30,7 +30,10 @@ and a `{name}.json` answer file:
   (64, 59, 55, 50, 45, 40) plus `fret`.
 - `tempoBpm` is the tempo the notes were placed on, or `null` when the fixture has none.
 - Bends, slides and vibrato are one note at the starting (fretted) pitch. Each hammer-on or
-  pull-off in `legato_slurs` is its own note.
+  pull-off in `legato_slurs` and `trill` is its own note.
+- `trill` is one pick, then a fast trill on string 2 between frets 1 and 3 (150 ms per note):
+  hammer-ons at the usual slur strength, pull-offs soft (about a quarter as hard). The synth's
+  pull-offs still make a spectral-flux peak, because the string's loop length changes abruptly.
 - `detuned_-45c` keeps the nominal MIDI; only the audio is 45 cents flat.
 - `drop_d` writes D2 as string 6, fret −2 (MIDI 38): below the standard-tuning range.
 - `countin_bleed`'s click (peak −30 dBFS, first 80 ms) is not a note.

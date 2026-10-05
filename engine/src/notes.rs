@@ -1,10 +1,15 @@
 //! Note building (US-4.4): turns onsets and the pitch track into timed, pitched notes with a
 //! confidence, and measures the tuning offset and below-range notes behind the CAP-27 warnings.
 //!
-//! Clean-up (US-4.4, CAP-28): ring-over removal drops a ringing string re-emerging as a
-//! pitch-change note; a note over a glide (bend, slide) takes its starting pitch with its
+//! Clean-up (US-4.4, CAP-28): a note over a glide (bend, slide) takes its starting pitch with its
 //! confidence capped, so it is flagged low-confidence; octave correction is applied to
-//! low-confidence notes only.
+//! low-confidence notes only, never to glide-capped ones; ring-over removal drops a ringing
+//! string re-emerging as a pitch-change note when there is evidence it was still ringing.
+//!
+//! [`build_notes`] runs these as ordered passes over candidate notes (Detection retro R2):
+//! candidates, octave fix, range drops, confidence filter, ring-over. So a low-string octave
+//! slip is corrected before it could be counted below range, no emitted note's confidence is
+//! below `c`, and ring-over compares corrected pitches.
 
 use crate::Params;
 use crate::onset::{OnsetSource, Onsets};
@@ -31,6 +36,13 @@ const OCTAVE_FIX_MIN_DISTANCE: i32 = 10;
 const OCTAVE_FIX_MAX_RESIDUAL: i32 = 5;
 /// Confidence multiplier for a corrected note.
 const OCTAVE_FIX_CONFIDENCE_FACTOR: f64 = 0.8;
+/// Ring-over (SM5): a pitch-change note repeating the note two back is dropped only when it
+/// starts within this many ms of that note's end. Measured on the synth fixtures at sensitivity
+/// 0.5: no note in any fixture is a pitch-change repeat of the note two back, so ring-over never
+/// fires there; the window is set from `ringing_overlap`, whose picks are 400 ms apart, so a
+/// ringing A re-emerging after one middle note starts about 400 ms after A's note ends (at the
+/// middle note's onset). 500 ms keeps that case with a 100 ms margin.
+const RING_OVER_MAX_GAP_MS: f64 = 500.0;
 /// Glides (US-4.4, FR-25): a note over a glide has its confidence capped at `c` plus this, so it
 /// stays under the low-confidence flag at `c` + 0.15.
 const GLIDE_CONFIDENCE_MARGIN: f64 = 0.1;
@@ -85,11 +97,6 @@ fn serialize_rounded<S: Serializer>(x: &f64, s: S) -> Result<S::Ok, S::Error> {
     }
 }
 
-/// MIDI pitch of `hz`: `69 + 12·log2(f/440)`.
-fn midi_of(hz: f64) -> f64 {
-    69.0 + 12.0 * (hz / 440.0).log2()
-}
-
 /// Median of `v` (mean of the two middle values for an even count); `None` when empty.
 fn median(v: &mut [f64]) -> Option<f64> {
     if v.is_empty() {
@@ -104,9 +111,22 @@ fn median(v: &mut [f64]) -> Option<f64> {
     })
 }
 
-/// True when frame `i` has a usable pitch.
-fn is_voiced(pitch: &PitchTrack, i: usize) -> bool {
-    pitch.voiced[i] && pitch.f0_hz[i].is_finite() && pitch.f0_hz[i] > 0.0
+/// A note while it is being built: every note that lasts `min_note_ms` and has a pitch, before
+/// the octave fix, the range drops, the confidence filter and ring-over removal.
+#[derive(Debug, Clone, PartialEq)]
+struct Candidate {
+    /// Untrimmed times, ms, unrounded.
+    start_ms: f64,
+    end_ms: f64,
+    midi: i32,
+    /// Unrounded; rounded only on output.
+    confidence: f64,
+    /// The note lies over a glide: it has its starting pitch and capped confidence, and the
+    /// octave fix never moves it (SM1).
+    glide: bool,
+    /// Its onset's source and `legato` flag, read by ring-over removal.
+    source: OnsetSource,
+    legato: bool,
 }
 
 /// Builds the notes of a take from its pre-processed `signal`, `pitch` track and `onsets`, all
@@ -115,7 +135,19 @@ fn is_voiced(pitch: &PitchTrack, i: usize) -> bool {
 /// A note's frames run from its onset up to the next onset (the last note's up to the end of
 /// the track); frames from the next onset on belong to the next note. A run of
 /// `END_RUN_FRAMES` quiet frames ends a note early only when it lies wholly before the next
-/// onset. The last note's `endMs` is at most the last frame's time.
+/// onset. The last note's `endMs` is at most the last frame's time. A frame is voiced only by
+/// [`PitchTrack::voiced_midi`] (decoded voiced, probability at least 0.05), here as in onset
+/// detection.
+///
+/// The passes, in order (Detection retro R2):
+/// 1. candidates: every note lasting `min_note_ms` with a pitch, glide-capped where it lies
+///    over a glide;
+/// 2. the octave fix over all candidates ([`octave_fix`]);
+/// 3. range: a candidate below E2 is counted in `below_range_notes` whatever its confidence,
+///    then dropped; one above the highest playable note is dropped;
+/// 4. confidence: a candidate below `c` (after the octave fix's ×0.8) is dropped, so no
+///    emitted note is below `c`;
+/// 5. ring-over removal on the kept notes ([`ring_over`]).
 pub fn build_notes(
     signal: &Preprocessed,
     pitch: &PitchTrack,
@@ -123,17 +155,75 @@ pub fn build_notes(
     params: &Params,
 ) -> AnalysisResult {
     let n = pitch.len();
+    let c = params.confidence_c;
+    let highest = HIGHEST_OPEN_MIDI + i32::try_from(params.max_fret).unwrap_or(i32::MAX - 64);
+
+    // 1. Candidates.
+    let mut candidates = candidates(signal, pitch, onsets, params);
+    // 2. Octave fix.
+    octave_fix(&mut candidates, c, highest);
+    // 3. Range drops. Counted whatever its confidence (user decision, 2026-10-03): pYIN pins
+    // pitches under its 75 Hz floor to its lowest bin at low voicing, so the threshold would
+    // hide them.
+    let below_range_notes = candidates
+        .iter()
+        .filter(|cand| cand.midi < LOWEST_MIDI)
+        .count();
+    let below_range_notes = u32::try_from(below_range_notes).unwrap_or(u32::MAX);
+    candidates.retain(|cand| (LOWEST_MIDI..=highest).contains(&cand.midi));
+    // 4. Confidence, on the unrounded value after the octave fix: the rounded output is then
+    // at least round4(c).
+    candidates.retain(|cand| cand.confidence >= c);
+    // 5. Ring-over, on corrected MIDI.
+    let kept = ring_over(candidates);
+
+    let notes = kept
+        .into_iter()
+        .map(|cand| DetectedNote {
+            start_ms: cand.start_ms.round() as i64,
+            end_ms: cand.end_ms.round() as i64,
+            midi: cand.midi,
+            confidence: round4(cand.confidence),
+        })
+        .collect();
+
+    let mut cents: Vec<f64> = (0..n)
+        .filter_map(|i| pitch.voiced_midi(i))
+        .map(|m| 100.0 * (m - m.round()))
+        .collect();
+    let tuning_offset_cents = round4(median(&mut cents).unwrap_or(0.0));
+
+    AnalysisResult {
+        notes,
+        tuning_offset_cents,
+        below_range_notes,
+        confidence_threshold: c,
+    }
+}
+
+/// Pass 1 of [`build_notes`]: one candidate per onset whose note lasts `min_note_ms` and has a
+/// pitch, in onset order.
+fn candidates(
+    signal: &Preprocessed,
+    pitch: &PitchTrack,
+    onsets: &Onsets,
+    params: &Params,
+) -> Vec<Candidate> {
+    let n = pitch.len();
     let gate = signal.gate_level(params.gate_db);
     // A frame that may end a note: unvoiced, or at or below the noise gate (frames past the
     // RMS array count as below it).
     let quiet = |i: usize| {
-        !is_voiced(pitch, i) || signal.rms_db.get(i).is_none_or(|&db| f64::from(db) <= gate)
+        pitch.voiced_midi(i).is_none()
+            || signal.rms_db.get(i).is_none_or(|&db| f64::from(db) <= gate)
     };
     let at = |frame: usize| pyin::frame_time_ms(signal.offset_ms, frame);
-    let highest = HIGHEST_OPEN_MIDI + i32::try_from(params.max_fret).unwrap_or(i32::MAX - 64);
+    let midi_over = |frames: std::ops::Range<usize>| {
+        let mut midis: Vec<f64> = frames.filter_map(|i| pitch.voiced_midi(i)).collect();
+        median(&mut midis)
+    };
 
-    let mut notes: Vec<DetectedNote> = Vec::new();
-    let mut below_range_notes = 0u32;
+    let mut out = Vec::new();
     for (k, onset) in onsets.onsets.iter().enumerate() {
         let start = onset.frame;
         // Exclusive: the next onset, or the end of the track for the last note.
@@ -159,13 +249,6 @@ pub fn build_notes(
             continue;
         }
 
-        let midi_over = |frames: std::ops::Range<usize>| {
-            let mut midis: Vec<f64> = frames
-                .filter(|&i| is_voiced(pitch, i))
-                .map(|i| midi_of(f64::from(pitch.f0_hz[i])))
-                .collect();
-            median(&mut midis)
-        };
         let Some(mut midi) = midi_over(start + ATTACK_FRAMES..end) else {
             continue;
         };
@@ -181,11 +264,7 @@ pub fn build_notes(
             .find(|&&(gs, ge)| gs < end && ge >= start + ATTACK_FRAMES);
         if let Some(&(glide_start, _)) = glide {
             let before = glide_start.min(end);
-            let first_voiced = || {
-                (start..end)
-                    .find(|&i| is_voiced(pitch, i))
-                    .map(|i| midi_of(f64::from(pitch.f0_hz[i])))
-            };
+            let first_voiced = || (start..end).find_map(|i| pitch.voiced_midi(i));
             if let Some(starting) = midi_over(start + ATTACK_FRAMES..before)
                 .or_else(|| midi_over(start..before))
                 .or_else(first_voiced)
@@ -200,7 +279,10 @@ pub fn build_notes(
             .map(|i| f64::from(pitch.voiced_prob[i]))
             .sum::<f64>()
             / len;
-        let voiced_fraction = (start..end).filter(|&i| is_voiced(pitch, i)).count() as f64 / len;
+        let voiced_fraction = (start..end)
+            .filter(|&i| pitch.voiced_midi(i).is_some())
+            .count() as f64
+            / len;
         let mut confidence = mean_prob * voiced_fraction;
         if glide.is_some() {
             confidence = confidence.min(params.confidence_c + GLIDE_CONFIDENCE_MARGIN);
@@ -211,101 +293,98 @@ pub fn build_notes(
         if end_ms - start_ms < params.min_note_ms {
             continue;
         }
-        // Counted whatever its confidence (user decision, 2026-10-03): pYIN pins pitches under
-        // its 75 Hz floor to its lowest bin at low voicing, so the threshold would hide them.
-        if midi < LOWEST_MIDI {
-            below_range_notes += 1;
-            continue;
-        }
-        if confidence < params.confidence_c || midi > highest {
-            continue;
-        }
-        // Ring-over (US-4.4): a note with no spectral-flux onset that repeats the pitch of the
-        // note before the previous kept one is a ringing string re-emerging, not a new note.
-        if onset.source == OnsetSource::PitchChange
-            && notes
-                .len()
-                .checked_sub(2)
-                .is_some_and(|j| notes[j].midi == midi)
-        {
-            continue;
-        }
-        notes.push(DetectedNote {
-            start_ms: start_ms.round() as i64,
-            end_ms: end_ms.round() as i64,
+        out.push(Candidate {
+            start_ms,
+            end_ms,
             midi,
-            confidence: round4(confidence),
+            confidence,
+            glide: glide.is_some(),
+            source: onset.source,
+            legato: onset.legato,
         });
     }
-    notes.sort_by_key(|note| note.start_ms);
-    let notes = octave_fix(
-        notes,
-        params.confidence_c + OCTAVE_FIX_CONFIDENCE_MARGIN,
-        highest,
-    );
+    out
+}
 
-    let mut cents: Vec<f64> = (0..n)
-        .filter(|&i| is_voiced(pitch, i))
-        .map(|i| {
-            let m = midi_of(f64::from(pitch.f0_hz[i]));
-            100.0 * (m - m.round())
-        })
+/// The US-4.4 octave fix over candidates in start order, in place. A candidate with confidence
+/// in [`c`, `c + OCTAVE_FIX_CONFIDENCE_MARGIN`) that is not glide-capped (SM1), whose MIDI is at
+/// least `OCTAVE_FIX_MIN_DISTANCE` from the median MIDI `m` of its neighbours (up to
+/// `OCTAVE_FIX_NEIGHBOURS` candidates on each side with confidence ≥ `c` and MIDI in
+/// 40..=`highest`, at their values before any correction; notes the range drops will remove
+/// never set the median), and that lands within `OCTAVE_FIX_MAX_RESIDUAL` of `m` when moved by
+/// 12, is moved by 12 toward `m` with its confidence multiplied by
+/// `OCTAVE_FIX_CONFIDENCE_FACTOR`, unless the move would leave 40..=`highest` (then it is kept
+/// as it is). Confident candidates, glide-capped ones and ones with no neighbours are never
+/// moved, so genuine octave leaps and long slides survive. Unconfident ones (< `c`) are never
+/// moved either: they are dropped by the confidence filter anyway, and a real low note under E2
+/// must still be counted below range (user, 2026-10-05). It runs before the range drops, so a
+/// low-string slip below E2 is moved back rather than counted below range (SM2).
+fn octave_fix(candidates: &mut [Candidate], c: f64, highest: i32) {
+    let threshold = c + OCTAVE_FIX_CONFIDENCE_MARGIN;
+    // (index, MIDI before correction) of every candidate that may be a neighbour.
+    let confident: Vec<(usize, i32)> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, cand)| cand.confidence >= c && (LOWEST_MIDI..=highest).contains(&cand.midi))
+        .map(|(i, cand)| (i, cand.midi))
         .collect();
-    let tuning_offset_cents = round4(median(&mut cents).unwrap_or(0.0));
-
-    AnalysisResult {
-        notes,
-        tuning_offset_cents,
-        below_range_notes,
-        confidence_threshold: params.confidence_c,
+    for (i, cand) in candidates.iter_mut().enumerate() {
+        if cand.glide || !(c..threshold).contains(&cand.confidence) {
+            continue;
+        }
+        // The first confident candidate after `i`; those before it lie before `i`.
+        let split = confident.partition_point(|&(j, _)| j < i);
+        let after = confident[split..].iter().filter(|&&(j, _)| j != i);
+        let mut neighbours: Vec<f64> = confident
+            [split.saturating_sub(OCTAVE_FIX_NEIGHBOURS)..split]
+            .iter()
+            .chain(after.take(OCTAVE_FIX_NEIGHBOURS))
+            .map(|&(_, m)| f64::from(m))
+            .collect();
+        let Some(m) = median(&mut neighbours) else {
+            continue;
+        };
+        let off = |midi: i32| (f64::from(midi) - m).abs();
+        if off(cand.midi) < f64::from(OCTAVE_FIX_MIN_DISTANCE) {
+            continue;
+        }
+        let shifted = if f64::from(cand.midi) > m {
+            cand.midi - 12
+        } else {
+            cand.midi + 12
+        };
+        if off(shifted) > f64::from(OCTAVE_FIX_MAX_RESIDUAL) {
+            continue;
+        }
+        // An unplayable result means the slip explanation is impossible: keep the candidate.
+        if !(LOWEST_MIDI..=highest).contains(&shifted) {
+            continue;
+        }
+        cand.midi = shifted;
+        cand.confidence *= OCTAVE_FIX_CONFIDENCE_FACTOR;
     }
 }
 
-/// The US-4.4 octave fix over notes sorted by start. A note with confidence below `threshold`
-/// whose MIDI is at least `OCTAVE_FIX_MIN_DISTANCE` from the median MIDI `m` of up to
-/// `OCTAVE_FIX_NEIGHBOURS` kept neighbours on each side (their values before any correction),
-/// and that lands within `OCTAVE_FIX_MAX_RESIDUAL` of `m` when moved by 12, is moved by 12
-/// toward `m` with its confidence multiplied by `OCTAVE_FIX_CONFIDENCE_FACTOR`, unless the move
-/// would leave 40..=`highest` (then the note is kept as it is). Confident notes, and
-/// notes with no neighbours, are never moved, so genuine octave leaps survive.
-fn octave_fix(notes: Vec<DetectedNote>, threshold: f64, highest: i32) -> Vec<DetectedNote> {
-    let original: Vec<i32> = notes.iter().map(|note| note.midi).collect();
-    notes
-        .into_iter()
-        .enumerate()
-        .map(|(i, mut note)| {
-            if note.confidence >= threshold {
-                return note;
-            }
-            let mut neighbours: Vec<f64> = original[i.saturating_sub(OCTAVE_FIX_NEIGHBOURS)..i]
-                .iter()
-                .chain(original.iter().skip(i + 1).take(OCTAVE_FIX_NEIGHBOURS))
-                .map(|&m| f64::from(m))
-                .collect();
-            let Some(m) = median(&mut neighbours) else {
-                return note;
-            };
-            let off = |midi: i32| (f64::from(midi) - m).abs();
-            if off(note.midi) < f64::from(OCTAVE_FIX_MIN_DISTANCE) {
-                return note;
-            }
-            let shifted = if f64::from(note.midi) > m {
-                note.midi - 12
-            } else {
-                note.midi + 12
-            };
-            if off(shifted) > f64::from(OCTAVE_FIX_MAX_RESIDUAL) {
-                return note;
-            }
-            // An unplayable result means the slip explanation is impossible: keep the note.
-            if !(LOWEST_MIDI..=highest).contains(&shifted) {
-                return note;
-            }
-            note.midi = shifted;
-            note.confidence = round4(note.confidence * OCTAVE_FIX_CONFIDENCE_FACTOR);
-            note
-        })
-        .collect()
+/// Ring-over removal (US-4.4, CAP-28; SM5, user decision 2026-10-05) over the kept notes in
+/// start order, on their corrected MIDI. A note A′ from a `PitchChange` onset (no pick) whose
+/// MIDI equals that of the kept note A two back is a ringing string re-emerging, and is dropped,
+/// only when there is ringing evidence:
+/// - the middle kept note B's onset is not `legato`: B was not reached by a pitch step on A's
+///   string, so it may be on another string while A rings (a trill's return after a hammer-on
+///   is kept);
+/// - A′ starts within [`RING_OVER_MAX_GAP_MS`] of A's end, so A can still be sounding.
+fn ring_over(candidates: Vec<Candidate>) -> Vec<Candidate> {
+    let mut kept: Vec<Candidate> = Vec::with_capacity(candidates.len());
+    for cand in candidates {
+        let rings = cand.source == OnsetSource::PitchChange && kept.len() >= 2 && {
+            let (a, b) = (&kept[kept.len() - 2], &kept[kept.len() - 1]);
+            a.midi == cand.midi && !b.legato && cand.start_ms - a.end_ms <= RING_OVER_MAX_GAP_MS
+        };
+        if !rings {
+            kept.push(cand);
+        }
+    }
+    kept
 }
 
 #[cfg(test)]
@@ -379,17 +458,28 @@ mod tests {
             self.build_with(&onsets, &[])
         }
 
-        /// Builds with labelled onsets and glide spans.
+        /// Builds with labelled onsets and glide spans; a `PitchChange` onset is legato, a
+        /// `Flux` one is not.
         fn build_with(
             &self,
             onsets: &[(usize, OnsetSource)],
             glides: &[(usize, usize)],
         ) -> AnalysisResult {
+            let onsets: Vec<Onset> = onsets
+                .iter()
+                .map(|&(frame, source)| Onset {
+                    frame,
+                    source,
+                    legato: source == OnsetSource::PitchChange,
+                })
+                .collect();
+            self.build_onsets(onsets, glides)
+        }
+
+        /// Builds with the given onsets and glide spans.
+        fn build_onsets(&self, onsets: Vec<Onset>, glides: &[(usize, usize)]) -> AnalysisResult {
             let onsets = Onsets {
-                onsets: onsets
-                    .iter()
-                    .map(|&(frame, source)| Onset { frame, source })
-                    .collect(),
+                onsets,
                 glides: glides.to_vec(),
             };
             build_notes(&self.signal, &self.pitch, &onsets, &PARAMS)
@@ -565,7 +655,8 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         let start = (1000.3_f64 + 10.0 * 256.0 / 22.05).round() as i64;
         // f0 is f32, so the cents come from the stored frequency.
-        let cents = round4(100.0 * (midi_of(f64::from(hz(60.1234567))) - 60.0));
+        let midi = 69.0 + 12.0 * (f64::from(hz(60.1234567)) / 440.0).log2();
+        let cents = round4(100.0 * (midi - 60.0));
         assert!((cents - 12.3457).abs() < 0.001);
         let end = (1000.3_f64 + 99.0 * 256.0 / 22.05).round() as i64;
         assert_eq!(
@@ -587,20 +678,103 @@ mod tests {
         );
     }
 
-    /// Notes A, B, A' with A' from an onset of `source`.
+    /// Notes A, B, A' of 30 frames (348 ms) each, with A' from an onset of `source`: A' starts
+    /// 348 ms after A ends, within the ring-over window.
     fn ring_over_take(source: OnsetSource) -> AnalysisResult {
-        let mut t = Take::new(150);
-        t.voice(0..50, 48.0, 0.9)
-            .voice(50..100, 52.0, 0.9)
-            .voice(100..150, 48.0, 0.9);
+        let mut t = Take::new(90);
+        t.voice(0..30, 48.0, 0.9)
+            .voice(30..60, 52.0, 0.9)
+            .voice(60..90, 48.0, 0.9);
         t.build_with(
             &[
                 (0, OnsetSource::Flux),
-                (50, OnsetSource::Flux),
-                (100, source),
+                (30, OnsetSource::Flux),
+                (60, source),
             ],
             &[],
         )
+    }
+
+    fn onset(frame: usize, source: OnsetSource, legato: bool) -> Onset {
+        Onset {
+            frame,
+            source,
+            legato,
+        }
+    }
+
+    #[test]
+    fn a_trill_return_after_a_legato_middle_note_is_kept() {
+        // SM5: A picked, B a hammer-on that also made a flux peak (Flux, legato), A' a soft
+        // pull-off (PitchChange). B was reached on A's string, so A is not ringing.
+        let mut t = Take::new(90);
+        t.voice(0..30, 48.0, 0.9)
+            .voice(30..60, 50.0, 0.9)
+            .voice(60..90, 48.0, 0.9);
+        let r = t.build_onsets(
+            vec![
+                onset(0, OnsetSource::Flux, false),
+                onset(30, OnsetSource::Flux, true),
+                onset(60, OnsetSource::PitchChange, true),
+            ],
+            &[],
+        );
+        assert_eq!(midis(&r.notes), vec![48, 50, 48]);
+        // The same with B picked (not legato): A' is a ringing A re-emerging.
+        let r = t.build_onsets(
+            vec![
+                onset(0, OnsetSource::Flux, false),
+                onset(30, OnsetSource::Flux, false),
+                onset(60, OnsetSource::PitchChange, true),
+            ],
+            &[],
+        );
+        assert_eq!(midis(&r.notes), vec![48, 50]);
+    }
+
+    #[test]
+    fn ring_over_keeps_a_repeat_starting_after_the_window() {
+        // SM5 stale: A ends at frame 30 (348 ms); a long B (60 frames) puts A' at frame 90
+        // (1045 ms), 697 ms after A's end, past RING_OVER_MAX_GAP_MS.
+        let mut t = Take::new(120);
+        t.voice(0..30, 48.0, 0.9)
+            .voice(30..90, 52.0, 0.9)
+            .voice(90..120, 48.0, 0.9);
+        let r = t.build_with(
+            &[
+                (0, OnsetSource::Flux),
+                (30, OnsetSource::Flux),
+                (90, OnsetSource::PitchChange),
+            ],
+            &[],
+        );
+        assert!(ms(90) - ms(30) > RING_OVER_MAX_GAP_MS as i64);
+        assert_eq!(midis(&r.notes), vec![48, 52, 48]);
+    }
+
+    #[test]
+    fn ring_over_compares_corrected_midi() {
+        // SM6: A (52) is an octave slip of 40 among low Es; once corrected, A' (40, from a pitch
+        // change after a picked B) repeats it and is dropped as ring-over.
+        let mut t = Take::new(210);
+        t.voice(0..30, 40.0, 0.9)
+            .voice(30..60, 41.0, 0.9)
+            .voice(60..90, 52.0, 0.64)
+            .voice(90..120, 43.0, 0.9)
+            .voice(120..150, 40.0, 0.9)
+            .voice(150..210, 41.0, 0.9);
+        let r = t.build_with(
+            &[
+                (0, OnsetSource::Flux),
+                (30, OnsetSource::Flux),
+                (60, OnsetSource::Flux),
+                (90, OnsetSource::Flux),
+                (120, OnsetSource::PitchChange),
+                (150, OnsetSource::Flux),
+            ],
+            &[],
+        );
+        assert_eq!(midis(&r.notes), vec![40, 41, 40, 43, 41]);
     }
 
     #[test]
@@ -716,17 +890,31 @@ mod tests {
         assert_confidence(r.notes[1].confidence, 0.6);
     }
 
-    fn n(start_ms: i64, midi: i32, confidence: f64) -> DetectedNote {
-        DetectedNote {
-            start_ms,
-            end_ms: start_ms + 200,
+    /// A picked candidate at `start_ms`, 200 ms long.
+    fn n(start_ms: i64, midi: i32, confidence: f64) -> Candidate {
+        Candidate {
+            start_ms: start_ms as f64,
+            end_ms: start_ms as f64 + 200.0,
             midi,
             confidence,
+            glide: false,
+            source: OnsetSource::Flux,
+            legato: false,
         }
     }
 
     fn midis(notes: &[DetectedNote]) -> Vec<i32> {
         notes.iter().map(|note| note.midi).collect()
+    }
+
+    /// The octave fix with c = 0.5 (moves below 0.65) and fret 24 on high e (88) highest.
+    fn fixed(mut candidates: Vec<Candidate>) -> Vec<Candidate> {
+        octave_fix(&mut candidates, 0.5, 88);
+        candidates
+    }
+
+    fn fixed_midis(candidates: Vec<Candidate>) -> Vec<i32> {
+        fixed(candidates).iter().map(|cand| cand.midi).collect()
     }
 
     #[test]
@@ -739,34 +927,37 @@ mod tests {
             n(750, 43, 0.9),
             n(1000, 41, 0.9),
         ];
-        let fixed = octave_fix(notes, 0.65, 88);
-        assert_eq!(midis(&fixed), vec![40, 41, 43, 43, 41]);
+        let out = fixed(notes);
+        assert_eq!(
+            out.iter().map(|cand| cand.midi).collect::<Vec<_>>(),
+            vec![40, 41, 43, 43, 41]
+        );
         // Confidence × 0.8.
-        assert_confidence(fixed[2].confidence, 0.44);
+        assert_confidence(out[2].confidence, 0.44);
     }
 
     #[test]
     fn octave_fix_corrects_a_slip_downward_too() {
         let notes = vec![n(0, 64, 0.9), n(250, 52, 0.6), n(500, 66, 0.9)];
-        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![64, 64, 66]);
+        assert_eq!(fixed_midis(notes), vec![64, 64, 66]);
     }
 
     #[test]
     fn confident_octave_leaps_survive() {
         let notes = vec![n(0, 45, 0.9), n(250, 57, 0.9), n(500, 45, 0.9)];
-        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![45, 57, 45]);
+        assert_eq!(fixed_midis(notes), vec![45, 57, 45]);
     }
 
     #[test]
     fn octave_fix_leaves_small_jumps_lonely_notes_and_bad_residuals_alone() {
         // 9 semitones from the median: not a candidate.
         let notes = vec![n(0, 50, 0.9), n(250, 59, 0.5), n(500, 50, 0.9)];
-        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![50, 59, 50]);
+        assert_eq!(fixed_midis(notes), vec![50, 59, 50]);
         // No neighbours.
-        assert_eq!(midis(&octave_fix(vec![n(0, 70, 0.5)], 0.65, 88)), vec![70]);
+        assert_eq!(fixed_midis(vec![n(0, 70, 0.5)]), vec![70]);
         // 20 semitones away: moving by 12 still leaves 8, over the residual limit.
         let notes = vec![n(0, 45, 0.9), n(250, 65, 0.5), n(500, 45, 0.9)];
-        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![45, 65, 45]);
+        assert_eq!(fixed_midis(notes), vec![45, 65, 45]);
     }
 
     #[test]
@@ -779,12 +970,15 @@ mod tests {
             n(750, 40, 0.9),
             n(1000, 40, 0.9),
         ];
-        let fixed = octave_fix(notes, 0.65, 88);
-        assert_eq!(midis(&fixed), vec![40, 40, 50, 40, 40]);
-        assert_confidence(fixed[2].confidence, 0.5);
+        let out = fixed(notes);
+        assert_eq!(
+            out.iter().map(|cand| cand.midi).collect::<Vec<_>>(),
+            vec![40, 40, 50, 40, 40]
+        );
+        assert_confidence(out[2].confidence, 0.5);
         // At the top: 77 against a median of 87 would move to 89, above fret 24 on high e.
         let notes = vec![n(0, 87, 0.9), n(250, 77, 0.5), n(500, 87, 0.9)];
-        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![87, 77, 87]);
+        assert_eq!(fixed_midis(notes), vec![87, 77, 87]);
     }
 
     #[test]
@@ -798,6 +992,149 @@ mod tests {
             n(500, 52, 0.5),
             n(750, 58, 0.5),
         ];
-        assert_eq!(midis(&octave_fix(notes, 0.65, 88)), vec![40, 40, 40, 46]);
+        assert_eq!(fixed_midis(notes), vec![40, 40, 40, 46]);
+    }
+
+    #[test]
+    fn unconfident_candidates_are_not_neighbours() {
+        // The 64s (< c) are left out: neighbours 40, 40 -> median 40, so 52 moves to 40. Were
+        // they counted, the median would be 52 and nothing would move.
+        let notes = vec![
+            n(0, 40, 0.9),
+            n(250, 40, 0.9),
+            n(500, 52, 0.6),
+            n(750, 64, 0.3),
+            n(1000, 64, 0.3),
+        ];
+        assert_eq!(fixed_midis(notes), vec![40, 40, 40, 64, 64]);
+    }
+
+    #[test]
+    fn out_of_range_candidates_are_not_neighbours() {
+        // Confident real D2s (38) are dropped by the range pass, so they do not set the median:
+        // 52 has no neighbours and stays. Were they counted (median 38), 52 would move to 40.
+        let notes = vec![
+            n(0, 38, 0.9),
+            n(250, 38, 0.9),
+            n(500, 52, 0.6),
+            n(750, 38, 0.9),
+            n(1000, 38, 0.9),
+        ];
+        assert_eq!(fixed_midis(notes), vec![38, 38, 52, 38, 38]);
+    }
+
+    /// A take of 50-frame notes at `notes` (MIDI, voicing probability), each picked.
+    fn run_of(notes: &[(f64, f32)]) -> AnalysisResult {
+        let mut t = Take::new(50 * notes.len());
+        for (k, &(m, p)) in notes.iter().enumerate() {
+            t.voice(50 * k..50 * (k + 1), m, p);
+        }
+        let onsets: Vec<usize> = (0..notes.len()).map(|k| 50 * k).collect();
+        t.build(&onsets)
+    }
+
+    #[test]
+    fn a_long_glide_is_never_octave_corrected() {
+        // SM1: a 12-semitone slide from 42 (fret 2 → 14 on low E) among notes around 54. Its
+        // starting pitch is 12 from their median and its confidence is capped at c + 0.1 = 0.6,
+        // under the octave fix's 0.65, but a glide-capped note is never moved.
+        let mut t = Take::new(250);
+        t.voice(0..50, 54.0, 0.9).voice(50..100, 55.0, 0.9);
+        t.voice(100..110, 42.0, 0.9);
+        for (k, i) in (110..130).enumerate() {
+            t.voice(i..i + 1, 42.0 + 12.0 * k as f64 / 20.0, 0.9);
+        }
+        t.voice(130..150, 54.0, 0.9)
+            .voice(150..200, 54.0, 0.9)
+            .voice(200..250, 52.0, 0.9);
+        let onsets = [0, 50, 100, 150, 200].map(|f| (f, OnsetSource::Flux));
+        let r = t.build_with(&onsets, &[(106, 134)]);
+        assert_eq!(midis(&r.notes), vec![54, 55, 42, 54, 52]);
+        assert_confidence(r.notes[2].confidence, 0.6);
+    }
+
+    #[test]
+    fn a_low_string_slip_below_e2_is_corrected_not_counted() {
+        // SM2: an E-string run with one note read 12 low (29) at 0.64, in [c, c + 0.15): moved
+        // up to 41 (confidence 0.64 × 0.8 = 0.512 ≥ c) and kept, not counted below range.
+        let r = run_of(&[
+            (40.0, 0.9),
+            (41.0, 0.9),
+            (29.0, 0.64),
+            (43.0, 0.9),
+            (41.0, 0.9),
+        ]);
+        assert_eq!(midis(&r.notes), vec![40, 41, 41, 43, 41]);
+        assert_eq!(r.below_range_notes, 0);
+        assert_confidence(r.notes[2].confidence, 0.512);
+    }
+
+    #[test]
+    fn a_real_below_range_note_is_counted_and_dropped() {
+        // D2 (38), confident (≥ c + 0.15) among a run around 50: not moved, counted.
+        let r = run_of(&[
+            (50.0, 0.9),
+            (50.0, 0.9),
+            (38.0, 0.9),
+            (50.0, 0.9),
+            (50.0, 0.9),
+        ]);
+        assert_eq!(midis(&r.notes), vec![50, 50, 50, 50]);
+        assert_eq!(r.below_range_notes, 1);
+        // Unconfident but with no neighbour 12 away (median 40.5): counted.
+        let r = run_of(&[
+            (40.0, 0.9),
+            (41.0, 0.9),
+            (38.0, 0.6),
+            (40.0, 0.9),
+            (41.0, 0.9),
+        ]);
+        assert_eq!(midis(&r.notes), vec![40, 41, 40, 41]);
+        assert_eq!(r.below_range_notes, 1);
+        // Unconfident (< c) with a neighbour 12 away (median 50): not moved up to 50, but
+        // counted below range and dropped.
+        let r = run_of(&[
+            (50.0, 0.9),
+            (50.0, 0.9),
+            (38.0, 0.3),
+            (50.0, 0.9),
+            (50.0, 0.9),
+        ]);
+        assert_eq!(midis(&r.notes), vec![50, 50, 50, 50]);
+        assert_eq!(r.below_range_notes, 1);
+    }
+
+    #[test]
+    fn an_octave_fix_never_emits_a_note_below_c() {
+        // SM3: 55 at c + 0.05 among low Es moves to 43 with 0.55 × 0.8 = 0.44 < c: dropped.
+        let r = run_of(&[
+            (40.0, 0.9),
+            (41.0, 0.9),
+            (55.0, 0.55),
+            (43.0, 0.9),
+            (41.0, 0.9),
+        ]);
+        assert_eq!(midis(&r.notes), vec![40, 41, 43, 41]);
+        assert!(
+            r.notes
+                .iter()
+                .all(|note| note.confidence >= round4(r.confidence_threshold)),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn frames_under_the_voicing_floor_are_quiet() {
+        // SM4: a note at 60, then a tail decoded voiced at probability 0.01 and a wandering
+        // 70.3. The tail ends the note at its first frame, and is left out of the pitch, the
+        // confidence and the tuning offset.
+        let mut t = Take::new(100);
+        t.voice(10..50, 60.0, 0.9).voice(50..100, 70.3, 0.01);
+        let r = t.build(&[10]);
+        assert_eq!(r.notes.len(), 1);
+        assert_eq!((r.notes[0].start_ms, r.notes[0].end_ms), (ms(10), ms(50)));
+        assert_eq!(r.notes[0].midi, 60);
+        assert_confidence(r.notes[0].confidence, 0.9);
+        assert!(r.tuning_offset_cents.abs() < 0.01, "{r:?}");
     }
 }
