@@ -3,7 +3,7 @@ title: 'Flags, warnings and bar lines on screen'
 type: 'feature'
 ticket: '9'
 created: '2026-10-04'
-status: 'built'
+status: done
 baseline_revision: 'f2e3c9cbfe1668ec4ffa9c3f8ed495ed0a080e38'
 route: 'full'
 route_source: 'auto'
