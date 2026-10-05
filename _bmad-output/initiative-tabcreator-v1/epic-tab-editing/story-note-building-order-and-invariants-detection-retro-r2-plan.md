@@ -3,7 +3,7 @@ title: 'Note-building order and invariants (Detection retro R2)'
 type: 'bugfix'
 ticket: '9'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: '6ec4e6f152fac71b6c125f53d1e87eb85b5b7273'
 route: 'full'
 route_source: 'auto'
