@@ -3,7 +3,7 @@ title: 'Re-fit feedback'
 type: 'feature'
 ticket: '2'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: 'd1f27fbc207216a2c6ccd437e209f8ca76aeedbe'
 route: 'full'
 route_source: 'auto'
