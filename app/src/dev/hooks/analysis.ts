@@ -3,6 +3,8 @@
 // - `?holdAnalysis`: no analysis ever starts (e2e tests read a stopped take's raw file).
 // - `?slowAnalysis=<ms>`: every engine analyze is delayed by that long.
 // - `window.__analysisFailHook` / `window.__commitStorageFullHook`: forced failures.
+// - `window.__putTabStorageFullHook`: every `putTab` (the Tab screen's edit save) rejects with
+//   `storage-full` (story "Change a fret and undo it").
 // Every export also falls back to the production behaviour (no hook) outside dev builds, so a
 // call missing its guard changes nothing in production.
 
@@ -13,7 +15,7 @@ import type { TakeDb } from '../../storage/db';
 /** The engine calls analysis uses (`AnalysisDeps['engine']`). */
 type DevEngine = Pick<EngineClient, 'analyze' | 'mapFrets' | 'version' | 'cancel'>;
 /** The database calls analysis uses (`AnalysisDeps['db']`). */
-type DevDb = Pick<TakeDb, 'getTake' | 'getTab' | 'commitAnalysis'>;
+type DevDb = Pick<TakeDb, 'getTake' | 'getTab' | 'commitAnalysis' | 'putTab'>;
 
 /** Whether the URL asks to hold analysis (`?holdAnalysis`). */
 export function devHold(): boolean {
@@ -39,6 +41,7 @@ export function devSlowMs(): number {
 interface AnalysisDevHooks {
   __analysisFailHook?: boolean;
   __commitStorageFullHook?: boolean;
+  __putTabStorageFullHook?: boolean;
 }
 
 const devHooks = () => globalThis as AnalysisDevHooks;
@@ -79,7 +82,7 @@ export function devEngine(engine: EngineClient, slowMs: number): DevEngine {
   };
 }
 
-/** The database with `__commitStorageFullHook` applied. */
+/** The database with `__commitStorageFullHook` and `__putTabStorageFullHook` applied. */
 export function devDb(store: TakeDb): DevDb {
   if (!import.meta.env.DEV) return store;
   return {
@@ -92,6 +95,12 @@ export function devDb(store: TakeDb): DevDb {
         );
       }
       return store.commitAnalysis(takeId, tab, takePatch);
+    },
+    putTab(tab, writer) {
+      if (devHooks().__putTabStorageFullHook) {
+        return Promise.reject(new AppError('storage-full', 'Put tab: quota exceeded (dev hook)'));
+      }
+      return store.putTab(tab, writer);
     },
   };
 }

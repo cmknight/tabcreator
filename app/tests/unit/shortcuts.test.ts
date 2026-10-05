@@ -5,9 +5,11 @@ import {
   dispatchShortcut,
   guarded,
   installShortcuts,
+  isMacPlatform,
   RECORD_KEYDOWN_MARK,
   recordToggle,
   SHORTCUTS,
+  tabEditShortcuts,
   tabPlaybackShortcuts,
   tabSelectionShortcuts,
   type Shortcut,
@@ -414,6 +416,12 @@ describe('the Tab selection shortcuts', () => {
       ['n', 'Next note to check'],
       [' ', 'Play / pause'],
       ['p', 'Seek playback to selected note'],
+      ...'0123456789'
+        .split('')
+        .map((d) => [d, 'Set fret; two digits within 400 ms make one number']),
+      ['z', 'Undo'],
+      ['z', 'Redo'],
+      ['y', 'Redo'],
     ]);
   });
 
@@ -769,5 +777,190 @@ describe('the Tab playback shortcuts', () => {
     install(fakeSession('n1'), playback);
     expect(press(add('input'), 'p').defaultPrevented).toBe(false);
     expect(playback.playFromNote).not.toHaveBeenCalled();
+  });
+});
+
+// Story "Change a fret and undo it": the digit keys and the undo / redo modifier entries.
+describe('the Tab edit shortcuts', () => {
+  function fakeSession(selectedNoteId: string | null, over: Partial<TakeSnapshot> = {}) {
+    const snapshot = {
+      tab: { notes: [{ id: 'n0' }, { id: 'n1' }] },
+      selectedNoteId,
+      missing: false,
+      analysis: { kind: 'idle' },
+      ...over,
+    } as unknown as TakeSnapshot;
+    return {
+      getSnapshot: () => snapshot,
+      typeDigit: vi.fn(),
+      undo: vi.fn(() => Promise.resolve()),
+      redo: vi.fn(() => Promise.resolve()),
+    };
+  }
+
+  let remove: () => void = () => {};
+  afterEach(() => {
+    remove();
+    document.body.innerHTML = '';
+    window.location.hash = '';
+  });
+
+  function install(session: ReturnType<typeof fakeSession> | null, mac = false, hash = '#/tab/t1') {
+    window.location.hash = hash;
+    remove = installShortcuts(
+      window,
+      tabEditShortcuts(() => session),
+      () => mac,
+    );
+  }
+
+  it('each digit sets the fret of the selected note', () => {
+    const session = fakeSession('n1');
+    install(session);
+    for (const d of '0123456789') expect(press(document.body, d).defaultPrevented).toBe(true);
+    expect(session.typeDigit.mock.calls.map(([d]) => d)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
+  it('digits need a selected note and a shown tab, and are left to the page otherwise', () => {
+    const none = fakeSession(null);
+    install(none);
+    expect(press(document.body, '5').defaultPrevented).toBe(false);
+    remove();
+    const analysing = fakeSession('n1', { analysis: { kind: 'running', progress: 0.2 } });
+    install(analysing);
+    expect(press(document.body, '5').defaultPrevented).toBe(false);
+    remove();
+    const elsewhere = fakeSession('n1');
+    install(elsewhere, false, '#/library');
+    expect(press(document.body, '5').defaultPrevented).toBe(false);
+    for (const s of [none, analysing, elsewhere]) expect(s.typeDigit).not.toHaveBeenCalled();
+  });
+
+  it('a digit in a text field is typed, not a fret', () => {
+    const session = fakeSession('n1');
+    install(session);
+    const input = add('input');
+    expect(press(input, '5').defaultPrevented).toBe(false);
+    expect(session.typeDigit).not.toHaveBeenCalled();
+  });
+
+  it('a digit typed with Shift (AZERTY number row) sets the fret; Ctrl, ⌘ or Alt still refused', () => {
+    const session = fakeSession('n1');
+    install(session);
+    expect(press(document.body, '5', { shiftKey: true }).defaultPrevented).toBe(true);
+    expect(session.typeDigit).toHaveBeenCalledWith(5);
+    for (const mod of ['ctrlKey', 'metaKey', 'altKey'] as const) {
+      expect(press(document.body, '5', { shiftKey: true, [mod]: true }).defaultPrevented).toBe(
+        false,
+      );
+    }
+    expect(session.typeDigit).toHaveBeenCalledTimes(1);
+  });
+
+  it('a held digit fires once; a digit with a modifier is left to the page', () => {
+    const session = fakeSession('n1');
+    install(session);
+    press(document.body, '5');
+    press(document.body, '5', { repeat: true });
+    expect(press(document.body, '5', { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(press(document.body, '5', { altKey: true }).defaultPrevented).toBe(false);
+    expect(session.typeDigit).toHaveBeenCalledTimes(1);
+  });
+
+  it('non-Mac: Ctrl+Z undoes, Ctrl+Shift+Z and Ctrl+Y redo; ⌘ does nothing', () => {
+    const session = fakeSession(null);
+    install(session, false);
+    expect(press(document.body, 'z', { ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(session.undo).toHaveBeenCalledTimes(1);
+    expect(press(document.body, 'Z', { ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(
+      true,
+    );
+    expect(press(document.body, 'y', { ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(session.redo).toHaveBeenCalledTimes(2);
+    expect(press(document.body, 'z', { metaKey: true }).defaultPrevented).toBe(false);
+    expect(press(document.body, 'z', { ctrlKey: true, altKey: true }).defaultPrevented).toBe(false);
+    expect(press(document.body, 'z').defaultPrevented).toBe(false);
+    expect(session.undo).toHaveBeenCalledTimes(1);
+  });
+
+  it('Mac: ⌘Z undoes, ⌘⇧Z and Ctrl+Y redo; Ctrl+Z does nothing', () => {
+    const session = fakeSession(null);
+    install(session, true);
+    expect(press(document.body, 'z', { metaKey: true }).defaultPrevented).toBe(true);
+    expect(session.undo).toHaveBeenCalledTimes(1);
+    expect(press(document.body, 'z', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(
+      true,
+    );
+    expect(press(document.body, 'y', { ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(session.redo).toHaveBeenCalledTimes(2);
+    expect(press(document.body, 'z', { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(press(document.body, 'z', { metaKey: true, ctrlKey: true }).defaultPrevented).toBe(
+      false,
+    );
+    expect(session.undo).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+Z in the title field stays native', () => {
+    const session = fakeSession('n1');
+    install(session);
+    const input = add('input');
+    expect(press(input, 'z', { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(press(input, 'y', { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(session.undo).not.toHaveBeenCalled();
+    expect(session.redo).not.toHaveBeenCalled();
+  });
+
+  it('undo and redo need a shown tab', () => {
+    const session = fakeSession(null, { missing: true });
+    install(session);
+    expect(press(document.body, 'z', { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(session.undo).not.toHaveBeenCalled();
+  });
+
+  it('the registry still refuses modifier combinations no entry declares', () => {
+    const handler = vi.fn();
+    const shortcuts: Shortcut[] = [{ key: 'n', route: 'global', description: 'x', handler }];
+    for (const mod of ['ctrlKey', 'metaKey', 'altKey', 'shiftKey'] as const) {
+      const event = new KeyboardEvent('keydown', { key: 'n', cancelable: true, [mod]: true });
+      expect(dispatchShortcut(event, 'tab', shortcuts, false)).toBe(false);
+      expect(dispatchShortcut(event, 'tab', shortcuts, true)).toBe(false);
+    }
+    expect(handler).not.toHaveBeenCalled();
+  });
+});
+
+describe('isMacPlatform', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete (navigator as Navigator & { userAgentData?: unknown }).userAgentData;
+  });
+
+  const platform = (value: string) => vi.spyOn(navigator, 'platform', 'get').mockReturnValue(value);
+  const userAgentData = (value: string) =>
+    Object.defineProperty(navigator, 'userAgentData', {
+      value: { platform: value },
+      configurable: true,
+    });
+
+  it.each([
+    ['MacIntel', true],
+    ['iPhone', true],
+    ['iPad', true],
+    ['iPod touch', true],
+    ['Win32', false],
+    ['Linux x86_64', false],
+  ])('navigator.platform %s, no userAgentData: %s', (value, mac) => {
+    platform(value);
+    expect(isMacPlatform()).toBe(mac);
+  });
+
+  it.each([
+    ['macOS', true],
+    ['iOS', true],
+    ['Windows', false],
+  ])('userAgentData.platform %s wins: %s', (value, mac) => {
+    platform(mac ? 'Win32' : 'MacIntel');
+    userAgentData(value);
+    expect(isMacPlatform()).toBe(mac);
   });
 });

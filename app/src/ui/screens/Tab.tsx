@@ -20,6 +20,12 @@
 // state in ui/use-playback.ts) between the status line and the tab, shown with the tab. The
 // playing note is outlined in the tab area; a click on a note while playing seeks to it. While
 // shown, its controller is the active playback the Space and `P` shortcuts act on.
+//
+// Story "Change a fret and undo it": the session's edit outcomes are announced (an edit
+// politely, "Fret 5 on the G string"; undo and redo with the step's label; a failed edit
+// assertively), and an edit that could not be saved for lack of space shows the storage-full
+// banner (testId `tab-edit-storage-full`) whose Retry saves the kept Tab. The edit keys
+// themselves live in the shortcut registry.
 
 import {
   useEffect,
@@ -30,6 +36,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
+import type { CommandLabel } from '../../model/edit-history';
 import type { AppErrorCode } from '../../model/errors';
 import type { Take } from '../../model/types';
 import { activePlayback, setActivePlayback } from '../../session/playback';
@@ -38,11 +45,13 @@ import {
   setActiveTakeSession,
   activeTakeSession,
   isTabShown,
+  type EditEvent,
   type TakeAnalysisState,
   type TakeSession,
   type TakeSnapshot,
 } from '../../session/take-session';
 import { announce } from '../a11y/announcer';
+import { NOTE_BUTTON } from '../a11y/selectors';
 import { focusSelectedNote } from '../a11y/shortcuts';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
@@ -149,6 +158,47 @@ function FailureBanner({ code, session }: { code: AppErrorCode; session: TakeSes
   );
 }
 
+/** An edit command's name, as undo and redo announce it ("Set fret 5"). */
+export function commandLabelText(label: CommandLabel): string {
+  return strings['tab.commandSetFret'](label.fret);
+}
+
+/** What an edit outcome announces, and how. */
+export function editAnnouncement(event: EditEvent): [string, 'polite' | 'assertive'] {
+  switch (event.kind) {
+    case 'edit':
+      return [strings['tab.editFret'](event.fret, event.string), 'polite'];
+    case 'undo':
+      return [strings['tab.undone'](commandLabelText(event.label)), 'polite'];
+    case 'redo':
+      return [strings['tab.redone'](commandLabelText(event.label)), 'polite'];
+    case 'failed':
+      return [strings['tab.editFailed'], 'assertive'];
+  }
+}
+
+/**
+ * The storage-full banner for an edit that could not be saved (EXPERIENCE.md Storage full): the
+ * Tab is kept, and Retry saves it again. Announced assertively once per showing.
+ */
+function EditSaveBanner({ session }: { session: TakeSession }) {
+  const text = strings['tab.storageFull'];
+  const announced = useRef(false);
+  useEffect(() => {
+    if (announced.current) return;
+    announced.current = true;
+    announce(text, 'assertive');
+  }, [text]);
+  return (
+    <StorageFullBannerView
+      text={text}
+      className={tabStyles.banner}
+      testId="tab-edit-storage-full"
+      retry={{ label: strings['tab.retry'], onClick: () => session.retrySave() }}
+    />
+  );
+}
+
 export interface TabProps {
   takeId: string;
   /** Creates the screen's session; tests pass a mock. */
@@ -222,6 +272,22 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
       if (activePlayback() === controller) setActivePlayback(null);
     };
   }, [showTab, controller]);
+
+  // The session's edit outcomes are announced through the shared live region (spine AD-18).
+  useEffect(
+    () =>
+      session.onEditEvent((event) => {
+        const [message, politeness] = editAnnouncement(event);
+        announce(message, politeness);
+        // Undo and redo select the step's note; focus on a note follows it there.
+        if (event.kind === 'undo' || event.kind === 'redo') {
+          if (document.activeElement?.closest(NOTE_BUTTON)) {
+            focusSelectedNote(session.getSnapshot().selectedNoteId);
+          }
+        }
+      }),
+    [session],
+  );
 
   // The shortcut registry reaches this session while the screen is mounted.
   useEffect(() => {
@@ -379,6 +445,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
       {!missing && analysis.kind === 'failed' && (
         <FailureBanner code={analysis.code} session={session} />
       )}
+      {!missing && snapshot.saveFailed === 'storage-full' && <EditSaveBanner session={session} />}
       {!missing && take && (
         <TakeWarnings
           take={take}

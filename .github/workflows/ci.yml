@@ -192,7 +192,7 @@ jobs:
 
       - name: No dev-only test pages in the production bundle
         run: |
-          if grep -rE '__test|StorageTestPage|UiTestPage|maxTakeMs|warnLeadMs|__storageFullHook|__analysisFailHook|__commitStorageFullHook|slowAnalysis|holdAnalysis|__playbackTrace|__recordingClock|__instanceTest|__encodePcmFailHook' app/dist; then
+          if grep -rE '__test|StorageTestPage|UiTestPage|maxTakeMs|warnLeadMs|__storageFullHook|__analysisFailHook|__commitStorageFullHook|__putTabStorageFullHook|slowAnalysis|holdAnalysis|__playbackTrace|__recordingClock|__instanceTest|__encodePcmFailHook' app/dist; then
             echo "::error::dev-only test page code or a dev hook (dev/hooks/: the take-length override, storage-full, analysis, playback trace, recording clock, instance or encode hooks) found in app/dist"
             exit 1
           fi

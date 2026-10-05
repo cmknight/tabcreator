@@ -6,11 +6,15 @@ import {
   activeTakeSession,
   capTitle,
   createTakeSession,
+  hasUnsavedEdits,
   isTabShown,
+  onPageHide,
+  type EditEvent,
   setActiveTakeSession,
   type TakeSessionDeps,
 } from '../../src/session/take-session';
 import type { StorageEvent, StorageListener } from '../../src/storage/events';
+import { deferred } from './helpers';
 
 // Story 5.6 (spine AD-3, AD-5, AD-16): the take session against mocked storage and analysis.
 
@@ -76,6 +80,9 @@ function harness(take: Take | null, tab: Tab | null = null) {
         storageListener = null;
       };
     }),
+    putTab: vi.fn(async (t: Tab) => t),
+    mapFrets: vi.fn(async () => []),
+    onPageHide: vi.fn(() => () => {}),
   };
   return {
     deps,
@@ -102,6 +109,7 @@ describe('take session', () => {
       analysis: { kind: 'idle' },
       selectedNoteId: null,
       lastFocusedNoteId: null,
+      saveFailed: null,
     });
     expect(h.deps.analysis.ensureAnalysed).not.toHaveBeenCalled();
   });
@@ -199,6 +207,7 @@ describe('take session', () => {
       analysis: { kind: 'idle' },
       selectedNoteId: null,
       lastFocusedNoteId: null,
+      saveFailed: null,
       missing: true,
     });
   });
@@ -828,5 +837,490 @@ describe('isTabShown', () => {
     ['an analysed tab with notes', { analysis: idle, tab: tab(3) }, true],
   ])('%s', (_name, snapshot, shown) => {
     expect(isTabShown(snapshot as Parameters<typeof isTabShown>[0])).toBe(shown);
+  });
+});
+
+// Story "Change a fret and undo it" (spine AD-4, AD-16): edits, undo/redo, the debounced save.
+describe('take session edits', () => {
+  const OPEN: Record<number, number> = { 1: 64, 2: 59, 3: 55, 4: 50, 5: 45, 6: 40 };
+  const note = (id: string, startMs: number, string: Note['string'], fret: number): Note => ({
+    id,
+    startMs,
+    endMs: startMs + 200,
+    midi: OPEN[string]! + fret,
+    confidence: 0.9,
+    string,
+    fret,
+    locked: false,
+    lowConfidence: false,
+  });
+  // Phrase 1: a, b, c; phrase 2 (a 1200 ms gap): d, e. b is on string 2 at fret 1, flagged.
+  const NOTES: Note[] = [
+    note('a', 0, 1, 0),
+    { ...note('b', 300, 2, 1), lowConfidence: true, confidence: 0.2 },
+    note('c', 600, 3, 2),
+    note('d', 2000, 1, 3),
+    note('e', 2300, 2, 3),
+  ];
+  const TAB5: Tab = { ...TAB, notes: NOTES, deletedStartMs: [1500] };
+
+  /** Thickest string that plays each unlocked note; locks kept. */
+  function fakeMap(request: Parameters<TakeSessionDeps['mapFrets']>[1]) {
+    return request.notes.map((n, i) => {
+      const lock = request.locks.find((l) => l.index === i);
+      if (lock) return { string: lock.string, fret: lock.fret };
+      for (const s of [6, 5, 4, 3, 2, 1] as const) {
+        const fret = n.midi - OPEN[s]!;
+        if (fret >= 0 && fret <= request.maxFret) return { string: s, fret };
+      }
+      return null;
+    });
+  }
+
+  let clock = 0;
+  const tick = async (ms: number) => {
+    clock += ms;
+    await vi.advanceTimersByTimeAsync(ms);
+  };
+
+  async function open(tab: Tab = TAB5, take: Take = ANALYZED) {
+    vi.useFakeTimers();
+    clock = 1_000_000;
+    const h = harness(take, tab);
+    vi.mocked(h.deps.mapFrets).mockImplementation(async (_id, r) => fakeMap(r));
+    let pageHide: (() => void) | null = null;
+    vi.mocked(h.deps.onPageHide).mockImplementation((l) => {
+      pageHide = l;
+      return () => {
+        pageHide = null;
+      };
+    });
+    h.deps.now = () => clock;
+    const session = createTakeSession('t1', h.deps);
+    opened.push(session);
+    const events: EditEvent[] = [];
+    session.onEditEvent((e) => events.push(e));
+    session.subscribe(() => {});
+    await tick(0);
+    return { h, session, events, pageHide: () => pageHide?.() };
+  }
+
+  const noteOf = (session: ReturnType<typeof createTakeSession>, id: string) =>
+    session.getSnapshot().tab!.notes.find((n) => n.id === id)!;
+
+  const opened: ReturnType<typeof createTakeSession>[] = [];
+  afterEach(async () => {
+    // Close every session and let its last save settle, so none counts as unsaved later.
+    for (const s of opened.splice(0)) s.dispose();
+    await vi.runAllTimersAsync();
+    vi.useRealTimers();
+  });
+
+  it('single digit: fret 5, pitch follows, locked, unflagged, phrase re-fitted, announced', async () => {
+    const { h, session, events } = await open();
+    session.select('b');
+    session.typeDigit(5);
+    await tick(0);
+    expect(noteOf(session, 'b')).toEqual({
+      ...NOTES[1],
+      fret: 5,
+      midi: NOTES[1]!.midi + 4,
+      locked: true,
+      lowConfidence: false,
+    });
+    expect(h.deps.mapFrets).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(h.deps.mapFrets).mock.calls[0]![1]).toMatchObject({
+      kind: 'mapFrets',
+      locks: [{ index: 1, string: 2, fret: 5 }],
+      maxFret: 24,
+    });
+    expect(noteOf(session, 'a')).toMatchObject({ string: 6, fret: 24 }); // re-fitted
+    // The other phrase and deletedStartMs untouched.
+    expect(noteOf(session, 'd')).toBe(NOTES[3]);
+    expect(noteOf(session, 'e')).toBe(NOTES[4]);
+    expect(session.getSnapshot().tab!.deletedStartMs).toBe(TAB5.deletedStartMs);
+    expect(session.getSnapshot().selectedNoteId).toBe('b');
+    expect(events).toEqual([
+      { kind: 'edit', label: { kind: 'setFret', fret: 5 }, string: 2, fret: 5 },
+    ]);
+    expect(session.canUndo()).toBe(true);
+  });
+
+  it('two digits within 400 ms: fret 12, one undo step back to before the first', async () => {
+    const { session } = await open();
+    session.select('b');
+    session.typeDigit(1);
+    await tick(200);
+    session.typeDigit(2);
+    await tick(0);
+    expect(noteOf(session, 'b').fret).toBe(12);
+    await session.undo();
+    expect(session.getSnapshot().tab!.notes).toEqual(NOTES);
+    expect(session.canUndo()).toBe(false);
+  });
+
+  it('slow digits (500 ms apart): fret 2, two undo steps', async () => {
+    const { session } = await open();
+    session.select('b');
+    session.typeDigit(1);
+    await tick(500);
+    session.typeDigit(2);
+    await tick(0);
+    expect(noteOf(session, 'b').fret).toBe(2);
+    await session.undo();
+    expect(noteOf(session, 'b').fret).toBe(1);
+    expect(noteOf(session, 'b').locked).toBe(true);
+    await session.undo();
+    expect(session.getSnapshot().tab!.notes).toEqual(NOTES);
+  });
+
+  it('a second digit on another note starts afresh', async () => {
+    const { session } = await open();
+    session.select('b');
+    session.typeDigit(1);
+    session.select('c');
+    session.typeDigit(2);
+    await tick(0);
+    expect(noteOf(session, 'b').fret).toBe(1);
+    expect(noteOf(session, 'c').fret).toBe(2);
+  });
+
+  it('over max: 3, 0 with maxFret 24 gives 24', async () => {
+    const { session, events } = await open();
+    session.select('b');
+    session.typeDigit(3);
+    session.typeDigit(0);
+    await tick(0);
+    expect(noteOf(session, 'b').fret).toBe(24);
+    expect(events.at(-1)).toMatchObject({ kind: 'edit', label: { fret: 24 }, fret: 24 });
+  });
+
+  it('a digit with nothing selected does nothing', async () => {
+    const { h, session } = await open();
+    session.typeDigit(5);
+    await tick(0);
+    expect(h.deps.mapFrets).not.toHaveBeenCalled();
+    expect(session.getSnapshot().tab).toEqual(TAB5);
+  });
+
+  it('a null position keeps that note where it is', async () => {
+    const { h, session } = await open();
+    vi.mocked(h.deps.mapFrets).mockResolvedValueOnce([null, { string: 2, fret: 5 }, null]);
+    await session.setFret('b', 5);
+    expect(noteOf(session, 'a')).toBe(NOTES[0]);
+    expect(noteOf(session, 'c')).toBe(NOTES[2]);
+  });
+
+  it('a stale result is dropped and the command re-planned on the new Tab', async () => {
+    const { h, session } = await open();
+    const first = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+    vi.mocked(h.deps.mapFrets).mockReturnValueOnce(first.promise);
+    const done = session.setFret('b', 5);
+    await tick(0);
+    // The stored tab changes (a re-read replaces it) while the re-fit is in flight.
+    const moved = { ...NOTES[0]!, startMs: 100, endMs: 250 };
+    vi.mocked(h.deps.db.getTab).mockResolvedValue({ ...TAB5, notes: [moved, ...NOTES.slice(1)] });
+    session.analyse(); // analysed: re-reads the take and tab
+    await tick(0);
+    first.resolve([
+      { string: 1, fret: 0 },
+      { string: 2, fret: 5 },
+      { string: 3, fret: 2 },
+    ]);
+    await done;
+    expect(h.deps.mapFrets).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(h.deps.mapFrets).mock.calls[1]![1].notes[0]).toMatchObject({ startMs: 100 });
+    expect(noteOf(session, 'a')).toMatchObject({ startMs: 100, string: 6, fret: 24 });
+    expect(noteOf(session, 'b').fret).toBe(5);
+  });
+
+  it('undo and redo restore exactly, the selection follows the target; nothing to do: no-op', async () => {
+    const { h, session, events } = await open();
+    await session.undo();
+    await session.redo();
+    expect(session.getSnapshot().tab).toEqual(TAB5);
+    session.select('b');
+    await session.setFret('b', 5);
+    const after = session.getSnapshot().tab!;
+    session.select('d');
+    await session.undo();
+    expect(session.getSnapshot().tab!.notes).toEqual(TAB5.notes);
+    expect(session.getSnapshot().tab!.deletedStartMs).toEqual(TAB5.deletedStartMs);
+    expect(session.getSnapshot().selectedNoteId).toBe('b');
+    expect(session.canRedo()).toBe(true);
+    session.select('d');
+    await session.redo();
+    expect(session.getSnapshot().tab!.notes).toEqual(after.notes);
+    expect(session.getSnapshot().selectedNoteId).toBe('b');
+    expect(events.slice(-2)).toEqual([
+      { kind: 'undo', label: { kind: 'setFret', fret: 5 } },
+      { kind: 'redo', label: { kind: 'setFret', fret: 5 } },
+    ]);
+    await session.redo(); // nothing to redo
+    expect(session.getSnapshot().tab!.notes).toEqual(after.notes);
+    expect(h.deps.mapFrets).toHaveBeenCalledTimes(1); // undo and redo never re-fit
+  });
+
+  it('a new edit clears redo', async () => {
+    const { session } = await open();
+    await session.setFret('b', 5);
+    await session.undo();
+    await session.setFret('c', 7);
+    expect(session.canRedo()).toBe(false);
+  });
+
+  it('201 edits: 200 undoable', async () => {
+    const { session } = await open();
+    for (let i = 0; i < 201; i++) await session.setFret('b', i % 2 === 0 ? 5 : 6);
+    let undone = 0;
+    while (session.canUndo()) {
+      await session.undo();
+      undone++;
+    }
+    expect(undone).toBe(200);
+    // The oldest step (the first edit) was dropped: the Tab is the state after it.
+    expect(noteOf(session, 'b').fret).toBe(5);
+  });
+
+  it('an engine error drops the command: Tab unchanged, failure announced', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { h, session, events } = await open();
+    vi.mocked(h.deps.mapFrets).mockRejectedValueOnce(new AppError('analysis-failed', 'boom'));
+    await session.setFret('b', 5);
+    expect(session.getSnapshot().tab!.notes).toBe(TAB5.notes);
+    expect(events).toEqual([{ kind: 'failed' }]);
+    expect(session.canUndo()).toBe(false);
+    await tick(1000);
+    expect(h.deps.putTab).not.toHaveBeenCalled();
+  });
+
+  it('commands run one at a time, in order', async () => {
+    const { h, session } = await open();
+    const first = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+    vi.mocked(h.deps.mapFrets).mockReturnValueOnce(first.promise);
+    const one = session.setFret('b', 5);
+    const two = session.setFret('b', 7);
+    const undo = session.undo();
+    await tick(0);
+    expect(h.deps.mapFrets).toHaveBeenCalledTimes(1); // the second waits
+    first.resolve([null, { string: 2, fret: 5 }, null]);
+    await Promise.all([one, two, undo]);
+    // 5, then 7, then undo of 7.
+    expect(noteOf(session, 'b').fret).toBe(5);
+  });
+
+  it('debounce: 3 edits 100 ms apart, one putTab 300 ms after the last', async () => {
+    const { h, session } = await open();
+    await session.setFret('b', 5);
+    await tick(100);
+    await session.setFret('b', 6);
+    await tick(100);
+    await session.setFret('b', 7);
+    await tick(299);
+    expect(h.deps.putTab).not.toHaveBeenCalled();
+    expect(hasUnsavedEdits()).toBe(true);
+    await tick(1);
+    expect(h.deps.putTab).toHaveBeenCalledTimes(1);
+    expect(h.deps.putTab).toHaveBeenCalledWith(session.getSnapshot().tab, 'take-session');
+    expect(vi.mocked(h.deps.putTab).mock.calls[0]![0].notes.find((n) => n.id === 'b')?.fret).toBe(
+      7,
+    );
+    expect(hasUnsavedEdits()).toBe(false);
+  });
+
+  it('undo and redo save too', async () => {
+    const { h, session } = await open();
+    await session.setFret('b', 5);
+    await tick(300);
+    await session.undo();
+    await tick(300);
+    expect(h.deps.putTab).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(h.deps.putTab).mock.calls[1]![0].notes).toEqual(TAB5.notes);
+  });
+
+  it('dispose (route exit) saves at once', async () => {
+    const { h, session } = await open();
+    await session.setFret('b', 5);
+    session.dispose();
+    await tick(0);
+    expect(h.deps.putTab).toHaveBeenCalledTimes(1);
+    await tick(1000);
+    expect(h.deps.putTab).toHaveBeenCalledTimes(1);
+  });
+
+  it('pagehide / hidden saves at once; nothing unsaved: no write', async () => {
+    const { h, session, pageHide } = await open();
+    pageHide();
+    await tick(0);
+    expect(h.deps.putTab).not.toHaveBeenCalled();
+    await session.setFret('b', 5);
+    pageHide();
+    await tick(0);
+    expect(h.deps.putTab).toHaveBeenCalledTimes(1);
+    session.dispose();
+    expect(h.deps.onPageHide).toHaveBeenCalledTimes(1);
+  });
+
+  it('storage full: the Tab is kept, saveFailed shows, Retry saves and clears it', async () => {
+    const { h, session } = await open();
+    vi.mocked(h.deps.putTab).mockRejectedValueOnce(new AppError('storage-full', 'quota'));
+    await session.setFret('b', 5);
+    await tick(300);
+    expect(session.getSnapshot().saveFailed).toBe('storage-full');
+    expect(noteOf(session, 'b').fret).toBe(5);
+    expect(hasUnsavedEdits()).toBe(true);
+    session.retrySave();
+    await tick(0);
+    expect(h.deps.putTab).toHaveBeenCalledTimes(2);
+    expect(session.getSnapshot().saveFailed).toBeNull();
+    expect(hasUnsavedEdits()).toBe(false);
+  });
+
+  it('storage full: further edits keep working and retry the save', async () => {
+    const { h, session } = await open();
+    vi.mocked(h.deps.putTab).mockRejectedValueOnce(new AppError('storage-full', 'quota'));
+    await session.setFret('b', 5);
+    await tick(300);
+    expect(session.getSnapshot().saveFailed).toBe('storage-full');
+    await session.setFret('c', 7);
+    expect(noteOf(session, 'c').fret).toBe(7);
+    await tick(300);
+    expect(session.getSnapshot().saveFailed).toBeNull();
+    expect(vi.mocked(h.deps.putTab).mock.calls.at(-1)![0]).toBe(session.getSnapshot().tab);
+  });
+
+  it('another save error: no banner, logged, retried on the next flush', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { h, session } = await open();
+    vi.mocked(h.deps.putTab).mockRejectedValueOnce(new AppError('storage-failed', 'io'));
+    await session.setFret('b', 5);
+    await tick(300);
+    expect(session.getSnapshot().saveFailed).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    await session.flush();
+    expect(h.deps.putTab).toHaveBeenCalledTimes(2);
+  });
+
+  it('take deleted: the pending save and queued commands are dropped', async () => {
+    const { h, session } = await open();
+    await session.setFret('b', 5);
+    const first = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+    vi.mocked(h.deps.mapFrets).mockReturnValueOnce(first.promise);
+    const inFlight = session.setFret('b', 6);
+    const queued = session.setFret('c', 7);
+    await tick(0);
+    h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    first.reject(new AppError('analysis-cancelled', 'cancelled'));
+    await Promise.all([inFlight, queued]);
+    await tick(1000);
+    expect(h.deps.putTab).not.toHaveBeenCalled();
+    expect(h.deps.mapFrets).toHaveBeenCalledTimes(2);
+    expect(h.deps.cancel).toHaveBeenCalledWith('t1');
+    expect(session.getSnapshot().tab).toBeNull();
+    expect(hasUnsavedEdits()).toBe(false);
+  });
+
+  it('a completed analysis or a reload of the take resets the history', async () => {
+    const { h, session } = await open();
+    await session.setFret('b', 5);
+    expect(session.canUndo()).toBe(true);
+    session.analyse(); // analysed: re-reads the take and tab
+    await tick(0);
+    expect(session.canUndo()).toBe(false);
+    expect(h.deps.db.getTab).toHaveBeenCalledTimes(2);
+  });
+
+  it('storage full, then the screen closes: the next session for the take shows the held edit and the banner; Retry saves it', async () => {
+    const first = await open();
+    vi.mocked(first.h.deps.putTab).mockRejectedValue(new AppError('storage-full', 'quota'));
+    await first.session.setFret('b', 5);
+    await tick(300);
+    expect(first.session.getSnapshot().saveFailed).toBe('storage-full');
+    first.session.dispose(); // the dispose flush fails again
+    await tick(0);
+    expect(first.h.deps.putTab).toHaveBeenCalledTimes(2);
+    expect(hasUnsavedEdits()).toBe(false); // held, not busy (as analysis's held result)
+
+    const second = await open(); // storage still holds the unedited tab
+    expect(second.session.getSnapshot().saveFailed).toBe('storage-full');
+    expect(noteOf(second.session, 'b')).toMatchObject({ fret: 5, locked: true });
+    second.session.retrySave();
+    await tick(0);
+    expect(second.h.deps.putTab).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(second.h.deps.putTab).mock.calls[0]![0].notes[1]).toMatchObject({ fret: 5 });
+    expect(second.session.getSnapshot().saveFailed).toBeNull();
+
+    const third = await open(); // saved: nothing held any more
+    expect(third.session.getSnapshot().saveFailed).toBeNull();
+    expect(third.session.getSnapshot().tab).toEqual(TAB5);
+  });
+
+  it('a held edit is dropped when the take is deleted', async () => {
+    const first = await open();
+    vi.mocked(first.h.deps.putTab).mockRejectedValue(new AppError('storage-full', 'quota'));
+    await first.session.setFret('b', 5);
+    await tick(300);
+    first.h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    const second = await open();
+    expect(second.session.getSnapshot().saveFailed).toBeNull();
+    expect(second.session.getSnapshot().tab).toEqual(TAB5);
+  });
+
+  it('a save that throws does not stop later saves', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { h, session } = await open();
+    vi.mocked(h.deps.putTab).mockRejectedValueOnce(new AppError('storage-full', 'quota'));
+    let throwing = true;
+    session.subscribe(() => {
+      if (throwing && session.getSnapshot().saveFailed === 'storage-full') throw new Error('boom');
+    });
+    await session.setFret('b', 5);
+    await tick(300); // the save's publish throws
+    throwing = false;
+    await session.setFret('b', 6);
+    await tick(300);
+    expect(h.deps.putTab).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(h.deps.putTab).mock.calls[1]![0].notes[1]).toMatchObject({ fret: 6 });
+  });
+
+  it('a selection change in between: the second digit starts afresh', async () => {
+    const { session } = await open();
+    session.select('b');
+    session.typeDigit(1);
+    session.select('c');
+    session.select('b');
+    session.typeDigit(2);
+    await tick(0);
+    expect(noteOf(session, 'b').fret).toBe(2);
+  });
+
+  it('edits do nothing while the tab is not shown (analysing)', async () => {
+    const { h, session } = await open(TAB5, TAKE);
+    await session.setFret('b', 5);
+    expect(h.deps.mapFrets).not.toHaveBeenCalled();
+  });
+});
+
+// The app's page-hide hook (createAppTakeSession's `onPageHide`).
+describe('onPageHide', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('runs on pagehide and on visibilitychange to hidden, not to visible; cleanup removes both', () => {
+    const listener = vi.fn();
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    const remove = onPageHide(listener);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(listener).toHaveBeenCalledTimes(1);
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(listener).toHaveBeenCalledTimes(1); // visible: no save
+    visibility.mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(listener).toHaveBeenCalledTimes(2);
+    remove();
+    window.dispatchEvent(new Event('pagehide'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 });

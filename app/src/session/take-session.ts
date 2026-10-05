@@ -5,8 +5,7 @@
 //
 // Story 5.6: load, analyse, the storage events. Story 5.7 (US-4.5): Cancel, Analyse, Retry and
 // the retry of a `storage-full` commit. A run cancelled by the player stays cancelled for this
-// session; a new session (reopening the take) analyses a `recorded` take again. Edits and undo
-// come with later stories; `flush()` resolves at once because nothing is written yet.
+// session; a new session (reopening the take) analyses a `recorded` take again.
 //
 // Story "Tab screen, reflow and selection" (US-6.2, US-6.3): the selected note, kept by id so it
 // survives reflow and re-renders (cleared when that note no longer exists), the rename of the
@@ -15,12 +14,38 @@
 //
 // Story "Flags, warnings and bar lines on screen": Next to check (`selectNextFlagged`), the
 // next low-confidence note in played order, wrapping around.
+//
+// Story "Change a fret and undo it" (spine AD-4, AD-16): the edit core. `apply(command)` runs
+// one command at a time per take (a promise queue; undo and redo queue too): it plans against
+// the current Tab revision, runs the command's engine requests (`mapFrets`), drops a result
+// whose revision went stale and plans again, then publishes the reduced Tab as one undo step
+// (`model/edit-history.ts`, at most 200, in memory only; reset when a take loads or an analysis
+// replaces the tab). Digits (`typeDigit`) set the selected note's fret; a second digit on the
+// same note within 400 ms makes one number and merges into the first's step. The edited Tab is
+// saved with a 300 ms debounced `putTab`; `flush()` saves at once (dispose, `pagehide`,
+// `visibilitychange` → hidden). A `storage-full` save keeps the Tab in memory and shows
+// `saveFailed` until a later save succeeds. Announceable outcomes go to `onEditEvent` listeners
+// (the screen words them, spine AD-18).
 
 import { engineClient } from '../engine/engine-client';
 import { isAppError, type AppErrorCode } from '../model/errors';
+import { devDb } from '../dev/hooks/analysis';
+import {
+  EMPTY_HISTORY,
+  pushStep,
+  redoStep,
+  setFret as setFretCommand,
+  tabState,
+  undoStep,
+  type CommandLabel,
+  type EditCommand,
+  type EngineResult,
+  type History,
+  type MapFretsRequest,
+} from '../model/edit-history';
 import { devWarn } from '../model/log';
 import { playedOrder } from '../model/notes';
-import type { Tab, Take } from '../model/types';
+import type { StringNo, Tab, Take } from '../model/types';
 import { db, type TakeDb } from '../storage/db';
 import { subscribe as subscribeStorage, type StorageListener } from '../storage/events';
 import { analysis as appAnalysis, type Analysis, type AnalysisOutcome } from './analysis';
@@ -52,7 +77,23 @@ export interface TakeSnapshot {
   lastFocusedNoteId: string | null;
   /** Present when the take does not exist (never did, or was deleted while open). */
   missing?: true;
+  /**
+   * `storage-full` while the edited Tab could not be saved for lack of space (it is kept in
+   * memory; Retry or the next edit saves again); null otherwise.
+   */
+  saveFailed: 'storage-full' | null;
 }
+
+/** An announceable outcome of an edit, undo or redo (the screen words it, spine AD-18). */
+export type EditEvent =
+  | { kind: 'edit'; label: CommandLabel; string: StringNo; fret: number }
+  | { kind: 'undo' | 'redo'; label: CommandLabel }
+  | { kind: 'failed' };
+
+/** The debounce before an edited Tab is saved (EXPERIENCE.md Saving). */
+export const SAVE_DEBOUNCE_MS = 300;
+/** A second digit on the same note within this long of the first makes one number. */
+export const DIGIT_WINDOW_MS = 400;
 
 /**
  * Whether the take's tab is shown: the take exists, no analysis is running or failed, and its
@@ -78,18 +119,52 @@ export interface TakeSessionDeps {
   /** The engine client's `cancel` (spine AD-16: a deleted take's engine work is cancelled). */
   cancel(takeId: string): void;
   subscribeStorage(listener: StorageListener): () => void;
+  /** Saves an edited Tab (`storage/db.ts` `putTab`). */
+  putTab: TakeDb['putTab'];
+  /** Runs a re-fit request on the engine (the engine client's `mapFrets`). */
+  mapFrets(takeId: string, request: MapFretsRequest): Promise<EngineResult>;
+  /**
+   * Calls `listener` on `pagehide` and on `visibilitychange` to hidden; returns the removal.
+   * The session listens while active, to flush its pending save.
+   */
+  onPageHide(listener: () => void): () => void;
+  /** The clock for the two-digit window (default `Date.now`). */
+  now?: () => number;
 }
 
 export interface TakeSession {
   subscribe(listener: () => void): () => void;
   getSnapshot(): TakeSnapshot;
   /**
-   * Detaches the progress listener and the storage subscription; an analysis in flight carries
-   * on (spine AD-16). A later `subscribe` attaches again (React StrictMode remounts).
+   * Detaches the progress listener and the storage subscription and saves a pending edit at
+   * once (`flush`, not awaited); an analysis in flight carries on (spine AD-16). A later
+   * `subscribe` attaches again (React StrictMode remounts).
    */
   dispose(): void;
-  /** Resolves once pending writes are saved; this story has none. */
+  /** Saves the edited Tab now, if it has unsaved changes; resolves once that save settles. */
   flush(): Promise<void>;
+  /** Retry on the edit-save storage-full banner: saves the kept Tab again. */
+  retrySave(): void;
+  /**
+   * Runs `command` against the Tab (spine AD-4), after any command, undo or redo queued before
+   * it; resolves once it has settled. One undo step; the result is saved after 300 ms.
+   */
+  apply(command: EditCommand): Promise<void>;
+  /** Sets note `noteId`'s fret (capped to the take's highest fret). */
+  setFret(noteId: string, fret: number): Promise<void>;
+  /**
+   * A digit typed with a note selected: sets its fret; a second digit on the same note within
+   * 400 ms of the first makes a two-digit fret, in the same undo step. Nothing selected: ignored.
+   */
+  typeDigit(digit: number): void;
+  /** Undoes the last step (queued like a command); nothing to undo: nothing happens. */
+  undo(): Promise<void>;
+  /** Redoes the last undone step (queued like a command); nothing to redo: nothing happens. */
+  redo(): Promise<void>;
+  canUndo(): boolean;
+  canRedo(): boolean;
+  /** Listens for edit, undo, redo and failure outcomes, to announce them; returns the removal. */
+  onEditEvent(listener: (event: EditEvent) => void): () => void;
   /** Cancel: stops the analysis in flight; the snapshot shows `cancelled` at once. */
   cancel(): void;
   /**
@@ -144,6 +219,24 @@ function errorCode(err: unknown): AppErrorCode {
   return isAppError(err) ? err.code : 'analysis-failed';
 }
 
+/**
+ * Sessions whose edited Tab is unsaved: a save pending or in flight, or a failed one while its
+ * screen is open (once it closes nothing can retry it).
+ */
+const unsavedSessions = new Set<object>();
+
+/**
+ * Edited Tabs whose save failed `storage-full`, by take id: kept past the session (leaving the
+ * screen, even through the banner's Library link), so the next session for the take shows the
+ * edit with the banner and its Retry saves it. Cleared by a successful save of the take, by
+ * `take-deleted`, and by a new analysis. Not counted as busy, as analysis's held result is not.
+ */
+const heldTabs = new Map<string, Tab>();
+/** Whether any take session holds an unsaved edit (app-reload.ts's busy check). */
+export function hasUnsavedEdits(): boolean {
+  return unsavedSessions.size > 0;
+}
+
 export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSession {
   let snapshot: TakeSnapshot = {
     take: null,
@@ -152,8 +245,30 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     analysis: { kind: 'idle' },
     selectedNoteId: null,
     lastFocusedNoteId: null,
+    saveFailed: null,
   };
   const listeners = new Set<() => void>();
+  const editListeners = new Set<(event: EditEvent) => void>();
+  const now = deps.now ?? Date.now;
+  /** Increments on every change to `snapshot.tab`; a re-fit result from an older one is stale. */
+  let revision = 0;
+  let history: History = EMPTY_HISTORY;
+  /** The command queue's tail; commands, undo and redo run one at a time. */
+  let queue: Promise<void> = Promise.resolve();
+  /** Bumped on take-deleted: queued and in-flight commands of an older epoch are dropped. */
+  let epoch = 0;
+  /** Whether the shown Tab has edits not yet saved. */
+  let dirty = false;
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The save chain's tail: saves run one at a time. */
+  let saving: Promise<void> = Promise.resolve();
+  let savesInFlight = 0;
+  /** The first digit typed, while a second may still join it. */
+  let pendingDigit: { noteId: string; digit: number; at: number; key: string } | null = null;
+  let digitSeq = 0;
+  let removePageHide: (() => void) | null = null;
+  /** Unsaved-edit bookkeeping for `hasUnsavedEdits`. */
+  const unsavedKey = {};
   let active = false;
   let loadStarted = false;
   /** Whether the session follows an analysis run (and `onProgress` is attached to it). */
@@ -178,6 +293,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
         patch = { ...patch, take: { ...patch.take, title: pendingTitle } };
       }
     }
+    if (patch.tab !== undefined && patch.tab !== snapshot.tab) revision++;
+    const wasSelected = snapshot.selectedNoteId;
     snapshot = { ...snapshot, ...patch };
     // The selection follows its note: cleared when the note is gone (deleted, re-analysed).
     const selected = snapshot.selectedNoteId;
@@ -188,6 +305,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     if (focused !== null && !snapshot.tab?.notes.some((n) => n.id === focused)) {
       snapshot = { ...snapshot, lastFocusedNoteId: null };
     }
+    // A digit waiting for its second belongs to the note it was typed on.
+    if (snapshot.selectedNoteId !== wasSelected) pendingDigit = null;
     for (const l of [...listeners]) l();
   }
 
@@ -222,6 +341,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
         if (seq !== runSeq) return;
         attached = false;
         if (snapshot.missing) return;
+        resetEdits();
+        heldTabs.delete(takeId); // the new analysis replaces any unsaved edit
         publish({ take: outcome.take, tab: outcome.tab, analysis: { kind: 'idle' } });
       },
       (err: unknown) => {
@@ -273,10 +394,20 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       const [take, tab] = await Promise.all([deps.db.getTake(takeId), deps.db.getTab(takeId)]);
       if (snapshot.missing) return;
       if (!take) {
+        heldTabs.delete(takeId);
         publish({ loading: false, missing: true });
         return;
       }
-      publish({ take, tab, loading: false });
+      resetEdits();
+      // An edit an earlier session could not save (storage full) wins over the stored Tab.
+      const held = take.status === 'analyzed' ? heldTabs.get(takeId) : undefined;
+      if (held) {
+        dirty = true;
+        trackUnsaved();
+        publish({ take, tab: held, loading: false, saveFailed: 'storage-full' });
+      } else {
+        publish({ take, tab, loading: false });
+      }
       maybeAnalyse();
     } catch (err) {
       if (snapshot.missing) return;
@@ -304,6 +435,10 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   const onStorage: StorageListener = (event) => {
     if (event.type === 'library-restored' || event.takeId !== takeId) return;
     if (event.type === 'take-deleted') {
+      // Spine AD-16: the pending save and any queued command are dropped.
+      epoch++;
+      resetEdits();
+      heldTabs.delete(takeId);
       deps.cancel(takeId);
       publish({
         take: null,
@@ -312,6 +447,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
         analysis: { kind: 'idle' },
         selectedNoteId: null,
         lastFocusedNoteId: null,
+        saveFailed: null,
         missing: true,
       });
       return;
@@ -324,6 +460,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     if (active) return;
     active = true;
     unsubscribeStorage = deps.subscribeStorage(onStorage);
+    removePageHide = deps.onPageHide(() => void flush());
+    trackUnsaved();
     if (!loadStarted) void load();
     else maybeAnalyse();
   }
@@ -333,6 +471,9 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     active = false;
     unsubscribeStorage?.();
     unsubscribeStorage = null;
+    removePageHide?.();
+    removePageHide = null;
+    trackUnsaved();
     if (attached) {
       deps.analysis.detach(takeId, onProgress);
       attached = false;
@@ -394,6 +535,180 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     }
   }
 
+  /** Updates `unsavedSessions` from this session's save state. */
+  function trackUnsaved() {
+    // A failed save is counted only while the screen is open: after it closes nothing can retry.
+    if ((dirty && active) || savesInFlight > 0 || saveTimer !== null) {
+      unsavedSessions.add(unsavedKey);
+    } else {
+      unsavedSessions.delete(unsavedKey);
+    }
+  }
+
+  /** Forgets the history, the pending save and the digit (a take loaded or re-analysed, or deleted). */
+  function resetEdits() {
+    history = EMPTY_HISTORY;
+    pendingDigit = null;
+    dirty = false;
+    if (saveTimer !== null) clearTimeout(saveTimer);
+    saveTimer = null;
+    if (snapshot.saveFailed !== null) snapshot = { ...snapshot, saveFailed: null };
+    trackUnsaved();
+  }
+
+  function emitEdit(event: EditEvent) {
+    for (const l of [...editListeners]) l(event);
+  }
+
+  /** Marks the Tab edited and saves it `SAVE_DEBOUNCE_MS` after the last change. */
+  function scheduleSave() {
+    dirty = true;
+    if (saveTimer !== null) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      void flush();
+    }, SAVE_DEBOUNCE_MS);
+    trackUnsaved();
+  }
+
+  async function save() {
+    const tab = snapshot.tab;
+    if (!dirty || snapshot.missing || !tab) return;
+    dirty = false;
+    try {
+      await deps.putTab(tab, WRITER);
+      heldTabs.delete(takeId);
+      if (snapshot.saveFailed !== null && !snapshot.missing) publish({ saveFailed: null });
+    } catch (err) {
+      // A deleted take's save is dropped (spine AD-16).
+      if (snapshot.missing || (isAppError(err) && err.code === 'take-not-found')) return;
+      // Kept: Retry, the next edit or the next flush saves it again.
+      dirty = true;
+      if (isAppError(err) && err.code === 'storage-full') {
+        if (snapshot.tab) heldTabs.set(takeId, snapshot.tab);
+        if (snapshot.saveFailed !== 'storage-full') publish({ saveFailed: 'storage-full' });
+      } else {
+        devWarn(`could not save the tab of take ${takeId}`, err);
+      }
+    }
+  }
+
+  function flush(): Promise<void> {
+    if (saveTimer !== null) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    if (dirty) {
+      savesInFlight++;
+      saving = saving
+        .then(save)
+        .catch((err: unknown) => devWarn(`saving the tab of take ${takeId} failed`, err))
+        .finally(() => {
+          savesInFlight--;
+          trackUnsaved();
+        });
+    }
+    trackUnsaved();
+    return saving;
+  }
+
+  /** Runs `task` after everything queued before it; dropped if the take is deleted meanwhile. */
+  function enqueue(task: () => Promise<void> | void): Promise<void> {
+    const at = epoch;
+    const run = queue.then(() => (at === epoch ? task() : undefined));
+    queue = run.catch((err: unknown) => devWarn(`edit of take ${takeId} failed`, err));
+    return queue;
+  }
+
+  /** Whether edits apply now: the take's tab is shown (analysed, idle, not deleted). */
+  function editable(): boolean {
+    return (
+      !snapshot.missing && snapshot.analysis.kind === 'idle' && !!snapshot.tab && !!snapshot.take
+    );
+  }
+
+  async function runCommand(
+    command: EditCommand,
+    at: number,
+    merge: { key?: string; into?: string },
+  ) {
+    for (;;) {
+      if (at !== epoch || !editable()) return;
+      const tab = snapshot.tab!;
+      const state = { ...tabState(tab), maxFret: snapshot.take!.settings.maxFret };
+      const planned = revision;
+      const requests = command.plan(state);
+      let results: EngineResult[];
+      try {
+        results = await Promise.all(requests.map((r) => deps.mapFrets(takeId, r)));
+      } catch (err) {
+        if (at !== epoch || snapshot.missing) return;
+        devWarn(`re-fit for take ${takeId} failed`, err);
+        emitEdit({ kind: 'failed' });
+        return;
+      }
+      if (at !== epoch || !editable()) return;
+      if (revision !== planned) continue; // stale: plan again on the current Tab
+      const next = command.reduce(state, results);
+      const label = command.label(state);
+      const target = next.notes.find((n) => n.id === command.target);
+      if (next.notes !== tab.notes || next.deletedStartMs !== tab.deletedStartMs) {
+        history = pushStep(
+          history,
+          {
+            label,
+            target: command.target,
+            before: tabState(tab),
+            after: tabState(next),
+            mergeKey: merge.key ?? null,
+          },
+          merge.into,
+        );
+        publish({ tab: { ...tab, notes: next.notes, deletedStartMs: next.deletedStartMs } });
+        scheduleSave();
+      }
+      if (target) emitEdit({ kind: 'edit', label, string: target.string, fret: target.fret });
+      return;
+    }
+  }
+
+  function apply(command: EditCommand, merge: { key?: string; into?: string } = {}) {
+    const at = epoch;
+    return enqueue(() => runCommand(command, at, merge));
+  }
+
+  function travel(direction: 'undo' | 'redo') {
+    pendingDigit = null;
+    return enqueue(() => {
+      if (!editable()) return;
+      const moved = direction === 'undo' ? undoStep(history) : redoStep(history);
+      if (!moved) return;
+      history = moved.history;
+      const restore = direction === 'undo' ? moved.step.before : moved.step.after;
+      publish({
+        tab: { ...snapshot.tab!, notes: restore.notes, deletedStartMs: restore.deletedStartMs },
+        selectedNoteId: moved.step.target,
+      });
+      scheduleSave();
+      emitEdit({ kind: direction, label: moved.step.label });
+    });
+  }
+
+  function typeDigit(digit: number) {
+    const noteId = snapshot.selectedNoteId;
+    if (noteId === null || !Number.isInteger(digit) || digit < 0 || digit > 9) return;
+    const t = now();
+    const first = pendingDigit;
+    if (first && first.noteId === noteId && t - first.at <= DIGIT_WINDOW_MS) {
+      pendingDigit = null;
+      void apply(setFretCommand(noteId, first.digit * 10 + digit), { into: first.key });
+      return;
+    }
+    const key = `digit-${++digitSeq}`;
+    pendingDigit = { noteId, digit, at: t, key };
+    void apply(setFretCommand(noteId, digit), { key });
+  }
+
   return {
     subscribe(listener) {
       listeners.add(listener);
@@ -403,8 +718,33 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       };
     },
     getSnapshot: () => snapshot,
-    dispose: deactivate,
-    flush: () => Promise.resolve(),
+    dispose() {
+      deactivate();
+      void flush();
+    },
+    flush,
+    retrySave() {
+      void flush();
+    },
+    apply(command) {
+      pendingDigit = null;
+      return apply(command);
+    },
+    setFret(noteId, fret) {
+      pendingDigit = null;
+      return apply(setFretCommand(noteId, fret));
+    },
+    typeDigit,
+    undo: () => travel('undo'),
+    redo: () => travel('redo'),
+    canUndo: () => history.undo.length > 0,
+    canRedo: () => history.redo.length > 0,
+    onEditEvent(listener) {
+      editListeners.add(listener);
+      return () => {
+        editListeners.delete(listener);
+      };
+    },
 
     cancel() {
       if (!attached || snapshot.analysis.kind !== 'running' || snapshot.analysis.saving) return;
@@ -458,10 +798,34 @@ export function activeTakeSession(): TakeSession | null {
 
 /** A take session wired to the app's storage, engine client and analysis registry. */
 export function createAppTakeSession(takeId: string): TakeSession {
+  const store = import.meta.env.DEV ? devDb(db) : db;
   return createTakeSession(takeId, {
     db,
     analysis: appAnalysis,
     cancel: (id) => engineClient.cancel(id),
     subscribeStorage,
+    putTab: (tab, writer) => store.putTab(tab, writer),
+    mapFrets: (id, r) => engineClient.mapFrets(id, r.notes, r.locks, r.maxFret),
+    onPageHide: (listener) => onPageHide(listener),
   });
+}
+
+/**
+ * Calls `listener` on `pagehide` (on `win`) and on `visibilitychange` (on `doc`) to hidden;
+ * returns the removal of both listeners. The app's `TakeSessionDeps.onPageHide`.
+ */
+export function onPageHide(
+  listener: () => void,
+  win: Pick<Window, 'addEventListener' | 'removeEventListener'> = window,
+  doc: Pick<Document, 'addEventListener' | 'removeEventListener' | 'visibilityState'> = document,
+): () => void {
+  const onVisibility = () => {
+    if (doc.visibilityState === 'hidden') listener();
+  };
+  win.addEventListener('pagehide', listener);
+  doc.addEventListener('visibilitychange', onVisibility);
+  return () => {
+    win.removeEventListener('pagehide', listener);
+    doc.removeEventListener('visibilitychange', onVisibility);
+  };
 }

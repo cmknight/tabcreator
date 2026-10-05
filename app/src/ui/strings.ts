@@ -292,6 +292,23 @@ export const strings = {
   /** Shortcut descriptions (the `?` dialog). */
   'tab.shortcutPlayPause': 'Play / pause',
   'tab.shortcutSeekToNote': 'Seek playback to selected note',
+  /** The `0`–`9` shortcut's description (EXPERIENCE.md Interaction Primitives). */
+  'tab.shortcutSetFret': 'Set fret; two digits within 400 ms make one number',
+  /** The Ctrl/⌘+Z shortcut's description. */
+  'tab.shortcutUndo': 'Undo',
+  /** The Ctrl/⌘+Shift+Z and Ctrl+Y shortcuts' description. */
+  'tab.shortcutRedo': 'Redo',
+  /** An edit command's name (`model/edit-history.ts` `CommandLabel`), as undo and redo name it. */
+  'tab.commandSetFret': (fret: number) => `Set fret ${fret}`,
+  /** Announced after a fret edit: "Fret 5 on the G string". */
+  'tab.editFret': (fret: number, string: StringNo) =>
+    `Fret ${fret} on the ${TAB_STRING_NAMES[string]} string`,
+  /** Announced after an undo: "Undid Set fret 5". */
+  'tab.undone': (label: string) => `Undid ${label}`,
+  /** Announced after a redo: "Redid Set fret 5". */
+  'tab.redone': (label: string) => `Redid ${label}`,
+  /** Announced assertively when an edit could not be made (the engine failed); nothing changed. */
+  'tab.editFailed': "Couldn't change that note — try again",
   'library.title': 'Library',
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */

@@ -27,6 +27,13 @@
 // (session/playback.ts), apply only while the tab is shown and its audio is loaded, and do
 // nothing in a text field or the toolbar. Space on a focused note button is the guard's one
 // exception (see `guarded`).
+//
+// Story "Change a fret and undo it" (spine AD-4): `0`–`9` set the selected note's fret (two
+// digits within 400 ms make one number; the session times them), while the tab is shown and a
+// note is selected. Undo (Ctrl/⌘+Z) and Redo (Ctrl/⌘+Shift+Z, Ctrl+Y) are modifier entries:
+// an entry's `mod` names the modifiers it needs, `'mod'` being ⌘ on a Mac and Ctrl elsewhere.
+// A key pressed with modifiers no matching entry declares is still left to the page, and the
+// guard still applies (Ctrl/⌘+Z in the title field stays native).
 
 import { useEffect } from 'react';
 import { recordingSession, type RecordingSession } from '../../session/recording-session';
@@ -52,6 +59,23 @@ export interface Shortcut {
   when?: (target: EventTarget | null) => boolean;
   /** Whether auto-repeat fires it again (default: a held key fires once). */
   repeat?: boolean;
+  /**
+   * The modifiers it needs (default: none). `'mod'`: Ctrl, or ⌘ on a Mac; `'mod+shift'`: that
+   * and Shift; `'ctrl'`: Ctrl on every platform. Any other modifier held means no match.
+   */
+  mod?: 'mod' | 'mod+shift' | 'ctrl';
+  /**
+   * Whether it also matches with Shift held (default: no). The digits: on some layouts (French
+   * AZERTY) the number row types digits only with Shift.
+   */
+  shiftOk?: boolean;
+}
+
+/** Whether the platform is a Mac (⌘ is the command modifier there). */
+export function isMacPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const data = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+  return /mac|iphone|ipad|ipod|ios/i.test(data?.platform ?? navigator.platform ?? '');
 }
 
 /** The latency mark set at a handled Space keydown on Record (story 3.5, Done when 1). */
@@ -278,6 +302,54 @@ export function tabPlaybackShortcuts(
   ];
 }
 
+type EditSession = Pick<TakeSession, 'getSnapshot' | 'typeDigit' | 'undo' | 'redo'>;
+
+/**
+ * The Tab screen's edit keys, acting on `session()` (the mounted screen's) while its tab is
+ * shown: `0`–`9` set the selected note's fret (only with a note selected), Ctrl/⌘+Z undoes,
+ * Ctrl/⌘+Shift+Z and Ctrl+Y redo (nothing to undo or redo: nothing happens).
+ */
+export function tabEditShortcuts(
+  session: () => EditSession | null = activeTakeSession,
+): Shortcut[] {
+  const tabShown = () => isTabShown(session()?.getSnapshot());
+  const digits: Shortcut[] = Array.from({ length: 10 }, (_, digit) => ({
+    key: String(digit),
+    route: 'tab',
+    shiftOk: true,
+    description: strings['tab.shortcutSetFret'],
+    when: () => tabShown() && (session()?.getSnapshot().selectedNoteId ?? null) !== null,
+    handler: () => session()?.typeDigit(digit),
+  }));
+  return [
+    ...digits,
+    {
+      key: 'z',
+      mod: 'mod',
+      route: 'tab',
+      description: strings['tab.shortcutUndo'],
+      when: tabShown,
+      handler: () => void session()?.undo(),
+    },
+    {
+      key: 'z',
+      mod: 'mod+shift',
+      route: 'tab',
+      description: strings['tab.shortcutRedo'],
+      when: tabShown,
+      handler: () => void session()?.redo(),
+    },
+    {
+      key: 'y',
+      mod: 'ctrl',
+      route: 'tab',
+      description: strings['tab.shortcutRedo'],
+      when: tabShown,
+      handler: () => void session()?.redo(),
+    },
+  ];
+}
+
 /** Every shortcut in the app. */
 export const SHORTCUTS: readonly Shortcut[] = [
   {
@@ -289,6 +361,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   cancelCountIn(recordingSession),
   ...tabSelectionShortcuts(),
   ...tabPlaybackShortcuts(),
+  ...tabEditShortcuts(),
 ];
 
 /**
@@ -300,20 +373,33 @@ function keyMatches(key: string, pressed: string): boolean {
   return /^[a-z]$/i.test(key) && key.toLowerCase() === pressed.toLowerCase();
 }
 
+/** Whether the modifiers held in `event` are exactly those `entry.mod` needs (Shift also with `shiftOk`). */
+function modMatches(entry: Shortcut, event: KeyboardEvent, mac: boolean): boolean {
+  const { mod } = entry;
+  const { ctrlKey, metaKey, altKey, shiftKey } = event;
+  if (altKey) return false;
+  if (mod === undefined) return !ctrlKey && !metaKey && (!shiftKey || entry.shiftOk === true);
+  if (mod === 'ctrl') return ctrlKey && !metaKey && !shiftKey;
+  const command = mac ? metaKey && !ctrlKey : ctrlKey && !metaKey;
+  return command && shiftKey === (mod === 'mod+shift');
+}
+
 /**
  * Runs the shortcut `event` matches on `route` (null: no known route, so only global ones), if
  * any and unless the guard skips it. Returns whether a shortcut matched; its default is then
- * prevented.
+ * prevented. A key held with modifiers matches only an entry declaring exactly those (`mod`;
+ * `mac` decides what `'mod'` means).
  */
 export function dispatchShortcut(
   event: KeyboardEvent,
   route: Route['name'] | null,
   shortcuts: readonly Shortcut[] = SHORTCUTS,
+  mac: boolean = isMacPlatform(),
 ): boolean {
   if (event.defaultPrevented) return false;
-  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false;
   const entry = shortcuts.find(
     (s) =>
+      modMatches(s, event, mac) &&
       keyMatches(s.key, event.key) &&
       (s.route === 'global' || (route !== null && s.route === route)) &&
       (s.when?.(event.target) ?? true),
@@ -328,9 +414,10 @@ export function dispatchShortcut(
 export function installShortcuts(
   target: Pick<Window, 'addEventListener' | 'removeEventListener'> = window,
   shortcuts: readonly Shortcut[] = SHORTCUTS,
+  mac: () => boolean = isMacPlatform,
 ): () => void {
   const onKeyDown = (event: KeyboardEvent) => {
-    dispatchShortcut(event, parseRoute(window.location.hash)?.name ?? null, shortcuts);
+    dispatchShortcut(event, parseRoute(window.location.hash)?.name ?? null, shortcuts, mac());
   };
   target.addEventListener('keydown', onKeyDown);
   return () => target.removeEventListener('keydown', onKeyDown);

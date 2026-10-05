@@ -28,3 +28,6 @@
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-view-and-editor/story-take-save-robustness-plan.md`
   summary: A recovered or re-offered take's durationMs and clipped come from its raw file even when it keeps a whole compressed copy (DS2 on the recovery path) — owner: epic Library and export (a recovery or Library story).
   evidence: recording-recovery.ts rebuild derives both from readRaw; after raw append failures or an early storage-full the raw file is shorter than the compressed audio. audio/decode.ts (story 5.12) now provides the compressed copy's length. Medium, unverified.
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-change-a-fret-and-undo-it-tracer-plan.md`
+  summary: EXPERIENCE.md does not yet carry the edit announcement copy added in story 8.1 ("Fret 5 on the G string", "Undid Set fret 5", "Redid …", "Couldn't change that note — try again") — owner: UX owner.
+  evidence: The strings are tab.editFret, tab.undone, tab.redone and tab.editFailed in app/src/ui/strings.ts; EXPERIENCE gives only the string-move example "Moved to G string, fret 7".

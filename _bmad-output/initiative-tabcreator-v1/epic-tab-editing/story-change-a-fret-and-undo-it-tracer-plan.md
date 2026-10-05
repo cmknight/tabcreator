@@ -3,14 +3,15 @@ title: 'Change a fret and undo it (tracer)'
 type: 'feature'
 ticket: '1'
 created: '2026-10-05'
-status: 'draft'
+status: 'built'
+baseline_revision: '27dc30f5b784f27f3493acacc233eb3cb5410444'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context:
   - '{project-root}/_bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md'
   - '{project-root}/_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md'
@@ -142,20 +143,20 @@ Digits set the selected note's fret. Ctrl/⌘+Z undoes; Ctrl/⌘+Shift+Z and Ctr
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `app/src/model/phrase.ts` -- `phrases(notes) → index ranges`, by the gap rule -- the re-fit scope.
-- [ ] `app/src/model/edit-history.ts` -- the command type, `setFret`, the history (push with merge, undo, redo, cap 200, clear redo) -- the pure edit core.
-- [ ] `app/src/session/take-session.ts` -- deps `putTab` and `mapFrets`; revision; the serial `apply` queue with stale re-plan; `setFret`/`typeDigit`/`undo`/`redo`/`canUndo`/`canRedo`; the debounced save, `flush`, `saveFailed`, `retrySave`; `pagehide`/`visibilitychange` listeners while active; take-deleted drops pending work; history reset on load or analysis; announcements -- AD-4 and AD-16.
-- [ ] `app/src/ui/a11y/shortcuts.ts` -- `mod` on `Shortcut`, modifier matching (Mac via `navigator.platform`/`userAgentData`, injectable), the digit entries, and undo/redo -- the registry stays the only one.
-- [ ] `app/src/ui/screens/Tab.tsx` -- the edit-save storage-full banner with Retry -- the CAP-14 save path.
-- [ ] `app/src/ui/strings.ts`, `app/src/ui/app-reload.ts`, `app/src/session/README.md` -- strings, the busy check, docs.
-- [ ] `app/src/dev/hooks/analysis.ts`, `.github/workflows/ci.yml` -- the putTab storage-full hook and its grep.
-- [ ] Unit tests:
+- [x] `app/src/model/phrase.ts` -- `phrases(notes) → index ranges`, by the gap rule -- the re-fit scope.
+- [x] `app/src/model/edit-history.ts` -- the command type, `setFret`, the history (push with merge, undo, redo, cap 200, clear redo) -- the pure edit core.
+- [x] `app/src/session/take-session.ts` -- deps `putTab` and `mapFrets`; revision; the serial `apply` queue with stale re-plan; `setFret`/`typeDigit`/`undo`/`redo`/`canUndo`/`canRedo`; the debounced save, `flush`, `saveFailed`, `retrySave`; `pagehide`/`visibilitychange` listeners while active; take-deleted drops pending work; history reset on load or analysis; announcements -- AD-4 and AD-16.
+- [x] `app/src/ui/a11y/shortcuts.ts` -- `mod` on `Shortcut`, modifier matching (Mac via `navigator.platform`/`userAgentData`, injectable), the digit entries, and undo/redo -- the registry stays the only one.
+- [x] `app/src/ui/screens/Tab.tsx` -- the edit-save storage-full banner with Retry -- the CAP-14 save path.
+- [x] `app/src/ui/strings.ts`, `app/src/ui/app-reload.ts`, `app/src/session/README.md` -- strings, the busy check, docs.
+- [x] `app/src/dev/hooks/analysis.ts`, `.github/workflows/ci.yml` -- the putTab storage-full hook and its grep.
+- [x] Unit tests:
   - `tests/unit/phrase.test.ts`;
   - `tests/unit/edit-history.test.ts`, including a seeded property test: 50 random set-fret edits undone fully restore the original and redone fully restore the final, deep-equal;
   - `take-session.test.ts` (every I/O matrix row, with fake timers);
   - `shortcuts.test.ts` (digits, mod keys, guard, Mac/non-Mac);
   - `tab-screen.test.tsx` (banner and Retry).
-- [ ] `app/tests/e2e/tab-edit.dev.spec.ts` -- the scenarios in the ACs.
+- [x] `app/tests/e2e/tab-edit.dev.spec.ts` -- the scenarios in the ACs.
 
 **Acceptance Criteria:**
 - Given a take of `c_major_scale_pos1` recorded through the fake mic and opened on the Tab screen, when the player selects a note and types `5`, then its fret digit shows 5, the stored Tab has it locked with `lowConfidence` false, and after a reload the Tab screen still shows fret 5.
@@ -165,9 +166,52 @@ Digits set the selected note's fret. Ctrl/⌘+Z undoes; Ctrl/⌘+Shift+Z and Ctr
 
 ## Implementation Notes
 
+- **Command labels are structured.** `model/` may not hold user-visible text (AD-12), so a command's `label(state)` returns `{kind: 'setFret', fret}` (the capped fret); `ui/screens/Tab.tsx` `commandLabelText` words it through `strings['tab.commandSetFret']` ("Set fret 5"). 8.4's tooltips can reuse it from the history steps.
+- **Announcements go through an event.** `session/` may not import `ui/`, so the session emits `EditEvent`s (`onEditEvent`): `edit` (with the edited note's string and fret), `undo` / `redo` (with the step label) and `failed`. The Tab screen words them and calls `announce` (failed: assertive).
+- **Busy check.** `hasUnsavedEdits()` (take-session.ts) counts a save that is pending or in flight, and a failed one only while its screen is open; after the screen closes nothing can retry it, so it would otherwise block reloads forever.
+- **Deep-equal checks exclude `updatedAt`.** `putTab` stamps `updatedAt` on every save, so the e2e ACs compare `takeId`, `notes` and `deletedStartMs`.
+- **Stale re-plan trigger in unit tests:** a re-read of the take (`analyse()` on an analysed take) while a re-fit is in flight; edits apply only while the tab is shown (analysis idle).
+
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-05 — Review pass
+- verdicts: 33 findings — high 0, medium 3, low 25, false 5, maybe-false 0
+- findings:
+  - `[false]` `[reject]` (blind) `load()`/analysis completion reset discards an unsaved edit — in 8.1, no path runs `load` or a successful `follow` while the tab is editable: analysis starts only for `recorded` takes, which have no editable tab, and `analyse()` is offered only in failed or cancelled states. Re-analysis (8.6) must flush first.
+  - `[low]` `[reject]` (blind) A save failure other than storage-full is not retried and keeps the app busy while the screen is open — the plan's matrix logs non-quota errors; the next edit, flush or dispose retries; non-quota IndexedDB write errors are rare.
+  - `[medium]` `[patch]` (blind) Leaving the Tab screen with the storage-full banner up loses the edit silently, including through the banner's own Library link — the unsaved Tab is now held per take across sessions, like analysis's held result, and offered again with Retry.
+  - `[low]` `[reject]` (blind) Reload within 300 ms of an edit is refused instead of flushing — only while on the Tab screen inside the debounce (leaving the route flushes); a flush-then-reload belongs with the AD-16 router change noted in Design Notes.
+  - `[low]` `[reject]` (blind) Phrase gaps run from the previous note's end, not the latest end — this is US-5.2's literal rule ("next startMs − previous endMs"); engine notes are monophonic and rarely overlap.
+  - `[low]` `[reject]` (blind) Two digits re-fit and announce twice; neighbours moved by the first re-fit can stay moved — the plan applies the first digit at once by design (no 400 ms delay); a null for a neighbour on the second re-fit is rare.
+  - `[low]` `[patch]` (blind) After undo or redo, the selection moves to the target note but focus stays on another note — focus now follows the selection when it was on a note button. (The announcement wording is part of the UX copy check.)
+  - `[low]` `[reject]` (blind) `Shortcut` has no display label with modifiers for a `?` dialog — nothing renders `SHORTCUTS` with keys yet; the dialog's story adds what it needs.
+  - `[low]` `[reject]` (blind) The re-plan loop is unbounded — the revision changes only on load or analysis completion, which cannot repeat while a command waits.
+  - `[low]` `[reject]` (blind) `tab-put` from other writers is ignored while history exists — no other Tab writer exists while a session is open (the instance lock keeps one app instance; analysis completion goes through `follow`).
+  - `[low]` `[reject]` (blind) The in-memory Tab's `updatedAt` goes stale after a save — nothing reads it from the snapshot; `putTab` restamps it.
+  - `[low]` `[patch]` (blind) Test gaps (devDb putTab hook, analyse with a pending save, retrySave in flight, a failed first digit, isMacPlatform, a fixed wait in the title e2e, a hard-coded fret 3) — the `isMacPlatform` test is added (grouped with the platform fix); the rest are rejected: the hook is exercised by the storage-full e2e, a load with a pending save is unreachable (above), and the title test's fixed wait asserts that nothing happens.
+  - `[low]` `[reject]` (edge) A non-storage-full error is not retried and keeps the app busy — the same as the blind finding above.
+  - `[low]` `[reject]` (edge) Reload refused with the recording wording when only an edit is unsaved — grouped with the reload finding above; rare, and the fix needs new copy.
+  - `[low]` `[patch]` (edge) A rejected `save` leaves the `saving` chain rejected, so later saves are skipped — the chain now catches and logs.
+  - `[low]` `[reject]` (edge) A never-settling `mapFrets` stalls the command queue — the accepted ticket unknown; a hung worker stalls analysis as well.
+  - `[false]` `[reject]` (edge) An engine position with fret < 0 or > maxFret that sounds the note is accepted — the engine produces candidates only within 0..max_fret for unlocked notes, and a negative fret cannot equal `midi − open` for an in-range note.
+  - `[false]` `[reject]` (edge) A NaN `maxFret` gives a NaN fret — `take.settings` is written only from validated prefs (0..24) at take creation.
+  - `[medium]` `[patch]` (edge) Closing the screen with a failed save loses the edit — the same root cause as the blind storage-full finding; the same fix.
+  - `[low]` `[patch]` (edge) Moving the selection off a note and back within 400 ms merges two digits — `pendingDigit` now clears when the selection changes.
+  - `[low]` `[patch]` (edge) iPhone and iPad report non-Mac platforms, so ⌘Z does nothing — the platform test now covers iPhone, iPad and iPod.
+  - `[low]` `[patch]` (verification-gap) The real `pagehide`/`visibilitychange` wiring is untested — added a unit test that dispatches both events on the real hook.
+  - `[low]` `[patch]` (verification-gap) `isMacPlatform` is untested — added, with stubbed `navigator` values.
+  - `[medium]` `[patch]` (verification-gap, other) Digits typed with Shift (AZERTY number row) are refused — the digit entries now accept Shift.
+  - `[low]` `[reject]` (intent) The flag and count are checked on a seeded tab, not on c_major_scale_pos1 — the recorded fixture has no guaranteed flagged note; the seeded test proves the same path.
+  - `[low]` `[reject]` (intent) "Restore exactly" is checked on storage rather than on screen — the stored Tab is what the screen renders from; the strictest available surface.
+  - `[low]` `[reject]` (intent) Other phrases are proven byte-identical only against a fake mapper — Verify names Vitest for that; phrase scoping is model-side, and model code cannot call the engine.
+  - `[low]` `[reject]` (intent) The stale path is exercised only through analysis completion — the only reachable trigger in 8.1.
+  - `[low]` `[patch]` (intent) Real page-hide wiring untested — the same as the verification-gap finding; the same test.
+  - `[false]` `[reject]` (intent) The banner is a new parallel surface — it reuses `StorageFullBannerView` and the `tab.storageFull` text, as the Tab screen's existing storage-full banner does.
+  - `[false]` `[reject]` (intent) The ⌘ path is unit-only — the e2e runs on Linux Chromium; the unit tests inject both platforms (and now test detection).
+  - `[low]` `[reject]` (intent) The two unknowns are resolved by decision, not evidence — recorded in the plan (capped, accepted wait); 8.5 measures latency.
+  - `[low]` `[reject]` (intent) Out-of-scope additions (isAppBusy, announcements, CI grep) — required by AD-16 and AD-18 and the plan's Boundaries.
 
 ## Design Notes
 
@@ -187,3 +231,49 @@ Digits set the selected note's fret. Ctrl/⌘+Z undoes; Ctrl/⌘+Shift+Z and Ctr
 **Commands:**
 - `cd app && npx -y pnpm@12.6.0 lint && npx -y pnpm@12.6.0 typecheck && npx -y pnpm@12.6.0 format:check && npx -y pnpm@12.6.0 test` -- expected: pass.
 - `cd app && export PATH="$HOME/.cargo/bin:$PATH" && npx -y pnpm@12.6.0 exec playwright test --project=dev tests/e2e/tab-edit.dev.spec.ts tests/e2e/tab-screen.dev.spec.ts tests/e2e/tab-states.dev.spec.ts` -- expected: pass.
+
+## Auto Run Result
+
+**Status:** built, 2026-10-05.
+
+**Summary:** the edit core end to end (AD-4, AD-16).
+- **Model:** `model/phrase.ts` (1000 ms gap rule) and `model/edit-history.ts` (the two-phase `setFret` command; history with a 200-step cap, digit merge, and redo cleared by a new edit).
+- **`take-session`:**
+  - `apply` runs commands one at a time with a Tab revision, re-planning a stale result;
+  - the phrase re-fit goes through `mapFrets` with locks; a null or non-sounding position keeps the note;
+  - `typeDigit` (two digits within 400 ms, capped at maxFret), `undo`/`redo`;
+  - `putTab` 300 ms after the last change, with `flush` on dispose, `pagehide` and hidden visibility;
+  - storage-full sets `saveFailed`, and the unsaved Tab is held per take across sessions for Retry.
+- **Shortcuts:** `0`–`9` (Shift allowed), Ctrl/⌘+Z, Ctrl/⌘+Shift+Z and Ctrl+Y, via per-entry `mod` matching with Mac and iOS detection.
+- **Tab screen:** the edit-save storage-full banner with Retry; announcements for edit, undo, redo and failure; focus follows the selection after undo and redo.
+
+**Files:**
+- `app/src/model/phrase.ts`, `app/src/model/edit-history.ts`: new.
+- `app/src/session/take-session.ts`: commands, history, save, held Tabs, `onPageHide`.
+- `app/src/session/app-reload.ts`: `isAppBusy` counts unsaved edits.
+- `app/src/session/README.md`: docs.
+- `app/src/ui/a11y/shortcuts.ts`: `mod`, `shiftOk`, `isMacPlatform`, the edit entries.
+- `app/src/ui/screens/Tab.tsx`: the banner, announcements, focus after undo.
+- `app/src/ui/strings.ts`: `tab.editFret`, `tab.undone`, `tab.redone`, `tab.editFailed`, labels.
+- `app/src/dev/hooks/analysis.ts`, `.github/workflows/ci.yml`: the `__putTabStorageFullHook` hook and its grep.
+- Tests: `phrase`, `edit-history` (seeded 50-edit property test), `take-session`, `shortcuts`, `tab-screen` and `app-reload` unit tests; `tests/e2e/tab-edit.dev.spec.ts`.
+
+**Review:** thorough, 33 findings (3 medium, 25 low, 5 false).
+- **Patched:**
+  - 2 medium entries: the unsaved Tab is held across sessions after a storage-full failure; Shift-digits work on AZERTY.
+  - 5 low: focus after undo, the save chain survives a rejection, the digit window clears on a selection change, iOS ⌘ detection, tests for the real page-hide hook and platform detection.
+- **Deferred:** none.
+- **Rejected:** with reasons in the triage log.
+
+**Follow-up review: recommended.** Two medium entries were patched on this first pass. The unverified risk is the save lifecycle as a whole: the module-level held Tabs, `dirty`/`saveFailed` across dispose and reopen, the reload busy check and the debounced chain. It is covered piecewise by unit tests, but not re-reviewed together. A secondary risk is the shared dispatcher's new modifier and Shift matching.
+
+**Verification:**
+- lint, typecheck, format:check and test pass (1209).
+- Dev and chromium e2e: 168/168 (the tuner timing test passed on rerun).
+- prod-mic: 4/4.
+
+**Residual risks:**
+- The flush on route exit is not awaited before the next screen mounts (Design Notes).
+- An edit can wait about 2 s behind another take's running analysis (ticket unknown).
+- Held Tabs live in memory only, so a page reload drops them, as it does analysis's held result.
+- The new announcement copy (`tab.editFret`, `tab.undone`, `tab.redone`, `tab.editFailed`) is not yet in EXPERIENCE.md (deferred-work, UX owner).

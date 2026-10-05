@@ -5,6 +5,7 @@ import type { Note, Tab as TabRecord, Take } from '../../src/model/types';
 import { layoutTab } from '../../src/model/tab-render';
 import {
   activeTakeSession,
+  type EditEvent,
   type TakeSession,
   type TakeSnapshot,
 } from '../../src/session/take-session';
@@ -56,15 +57,22 @@ const note = (i: number, string: Note['string'], fret: number): Note => ({
   lowConfidence: false,
 });
 
-/** A snapshot; `selectedNoteId` and `lastFocusedNoteId` default to null. */
-type Snap = Omit<TakeSnapshot, 'selectedNoteId' | 'lastFocusedNoteId'> & {
+/** A snapshot; `selectedNoteId`, `lastFocusedNoteId` and `saveFailed` default to null. */
+type Snap = Omit<TakeSnapshot, 'selectedNoteId' | 'lastFocusedNoteId' | 'saveFailed'> & {
   selectedNoteId?: string | null;
   lastFocusedNoteId?: string | null;
+  saveFailed?: TakeSnapshot['saveFailed'];
 };
 
 function mockSession(initial: Snap) {
-  let snapshot: TakeSnapshot = { selectedNoteId: null, lastFocusedNoteId: null, ...initial };
+  let snapshot: TakeSnapshot = {
+    selectedNoteId: null,
+    lastFocusedNoteId: null,
+    saveFailed: null,
+    ...initial,
+  };
   const listeners = new Set<() => void>();
+  const editListeners = new Set<(event: EditEvent) => void>();
   const session: TakeSession = {
     subscribe: vi.fn((listener: () => void) => {
       listeners.add(listener);
@@ -88,14 +96,30 @@ function mockSession(initial: Snap) {
     selectPrev: vi.fn(),
     selectNextFlagged: vi.fn(),
     rename: vi.fn(() => Promise.resolve()),
+    retrySave: vi.fn(),
+    apply: vi.fn(() => Promise.resolve()),
+    setFret: vi.fn(() => Promise.resolve()),
+    typeDigit: vi.fn(),
+    undo: vi.fn(() => Promise.resolve()),
+    redo: vi.fn(() => Promise.resolve()),
+    canUndo: () => false,
+    canRedo: () => false,
+    onEditEvent: vi.fn((listener: (event: EditEvent) => void) => {
+      editListeners.add(listener);
+      return () => {
+        editListeners.delete(listener);
+      };
+    }),
   };
+  /** Sends an edit outcome to the screen. */
+  const edit = (event: EditEvent) => act(() => editListeners.forEach((l) => l(event)));
   /** Publishes a new snapshot to the screen. */
   const set = (next: Partial<TakeSnapshot>) =>
     act(() => {
       snapshot = { ...snapshot, ...next };
       listeners.forEach((l) => l());
     });
-  return { session, create: vi.fn(() => session), set };
+  return { session, create: vi.fn(() => session), set, edit };
 }
 
 afterEach(() => {
@@ -304,6 +328,86 @@ describe('Tab screen analysis states', () => {
     fireEvent.click(screen.getByRole('button', { name: strings['tab.retry'] }));
     expect(session.retryCommit).toHaveBeenCalledTimes(1);
     expect(session.analyse).not.toHaveBeenCalled();
+  });
+
+  // Story "Change a fret and undo it": an edit save that hit a full disk.
+  describe('the edit-save storage-full banner', () => {
+    const analysed = (saveFailed: TakeSnapshot['saveFailed']) => ({
+      take: TAKE,
+      tab: { takeId: 't1', notes: [note(0, 1, 0)], updatedAt: TAKE.updatedAt, deletedStartMs: [] },
+      loading: false,
+      analysis: { kind: 'idle' as const },
+      saveFailed,
+    });
+
+    it('shows with the tab, announced once, with a Library link and Retry, which saves again', () => {
+      const { create, session, set } = mockSession(analysed('storage-full'));
+      render(<Tab takeId="t1" createSession={create} />);
+      const alert = screen.getByTestId('tab-edit-storage-full');
+      expect(alert.textContent).toContain(strings['tab.storageFull']);
+      expect(screen.getByRole('link', { name: strings['global.goToLibrary'] })).toBeTruthy();
+      expect(screen.getByRole('application', { name: 'Tab' })).toBeTruthy(); // the tab stays
+      expect(vi.mocked(announce).mock.calls).toEqual([[strings['tab.storageFull'], 'assertive']]);
+      fireEvent.click(screen.getByRole('button', { name: strings['tab.retry'] }));
+      expect(session.retrySave).toHaveBeenCalledTimes(1);
+      expect(session.retryCommit).not.toHaveBeenCalled();
+      set({ saveFailed: null });
+      expect(screen.queryByTestId('tab-edit-storage-full')).toBeNull();
+    });
+
+    it('is absent while saves succeed', () => {
+      const { create } = mockSession(analysed(null));
+      render(<Tab takeId="t1" createSession={create} />);
+      expect(screen.queryByTestId('tab-edit-storage-full')).toBeNull();
+    });
+  });
+
+  it('after undo or redo, focus on a note follows the selection to the step’s note', () => {
+    const notes = [note(0, 1, 0), note(1, 2, 1)];
+    const { create, session } = mockSession({
+      take: TAKE,
+      tab: { takeId: 't1', notes, updatedAt: TAKE.updatedAt, deletedStartMs: [] },
+      loading: false,
+      analysis: { kind: 'idle' },
+    });
+    const { container } = render(<Tab takeId="t1" createSession={create} />);
+    const button = (id: string) =>
+      container.querySelector<HTMLButtonElement>(`[data-note-id="${id}"]`)!;
+    act(() => button('n0').focus());
+    expect(document.activeElement).toBe(button('n0'));
+    const listener = vi.mocked(session.onEditEvent).mock.calls.at(-1)![0];
+    // The session selects the step's note and emits the undo, before the screen re-renders.
+    act(() => {
+      session.select('n1');
+      listener({ kind: 'undo', label: { kind: 'setFret', fret: 5 } });
+      expect(document.activeElement).toBe(button('n1'));
+    });
+    expect(document.activeElement).toBe(button('n1'));
+    // Focus elsewhere (the body) is left where it is.
+    act(() => (document.activeElement as HTMLElement).blur());
+    act(() => listener({ kind: 'redo', label: { kind: 'setFret', fret: 5 } }));
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('announces edits politely, undo and redo with their label, a failed edit assertively', () => {
+    const { create, edit } = mockSession({
+      take: TAKE,
+      tab: { takeId: 't1', notes: [note(0, 1, 0)], updatedAt: TAKE.updatedAt, deletedStartMs: [] },
+      loading: false,
+      analysis: { kind: 'idle' },
+    });
+    render(<Tab takeId="t1" createSession={create} />);
+    vi.mocked(announce).mockClear();
+    edit({ kind: 'edit', label: { kind: 'setFret', fret: 5 }, string: 3, fret: 5 });
+    edit({ kind: 'undo', label: { kind: 'setFret', fret: 5 } });
+    edit({ kind: 'redo', label: { kind: 'setFret', fret: 12 } });
+    edit({ kind: 'failed' });
+    expect(vi.mocked(announce).mock.calls).toEqual([
+      ['Fret 5 on the G string', 'polite'],
+      ['Undid Set fret 5', 'polite'],
+      ['Redid Set fret 12', 'polite'],
+      [strings['tab.editFailed'], 'assertive'],
+    ]);
   });
 
   it('the banner sits above the title', () => {

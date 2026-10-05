@@ -10,7 +10,10 @@ import { strings } from '../../src/ui/strings';
 const session = (busy: boolean) => ({ isBusy: () => busy });
 
 // The app's stores, for reloadApp itself: recording idle, analysing as set by each test.
-const stores = vi.hoisted(() => ({ analysing: false, recording: false }));
+const stores = vi.hoisted(() => ({ analysing: false, recording: false, unsavedEdits: false }));
+vi.mock('../../src/session/take-session', () => ({
+  hasUnsavedEdits: () => stores.unsavedEdits,
+}));
 vi.mock('../../src/session/analysis', () => ({
   analysis: { isAnalysing: () => stores.analysing },
 }));
@@ -65,6 +68,14 @@ describe('isAppBusy', () => {
     stores.recording = false;
     stores.analysing = true;
     expect(isAppBusy()).toBe(true);
+  });
+
+  // Story "Change a fret and undo it": an edit save pending, in flight or failed is busy too.
+  it('is true while a Tab edit is unsaved', () => {
+    stores.unsavedEdits = true;
+    expect(isAppBusy()).toBe(true);
+    stores.unsavedEdits = false;
+    expect(isAppBusy()).toBe(false);
   });
 });
 
