@@ -3,7 +3,7 @@ title: 'Change a fret and undo it (tracer)'
 type: 'feature'
 ticket: '1'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: '27dc30f5b784f27f3493acacc233eb3cb5410444'
 route: 'full'
 route_source: 'auto'
