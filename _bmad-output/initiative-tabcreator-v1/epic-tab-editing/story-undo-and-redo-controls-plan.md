@@ -3,7 +3,7 @@ title: 'Undo and redo controls'
 type: 'feature'
 ticket: '4'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: 'ee1a3df85049147b6ac52905335431ead725062e'
 route: 'full'
 route_source: 'auto'
