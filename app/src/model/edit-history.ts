@@ -12,10 +12,26 @@
 // former neighbours), sending every note of it with a lock for each locked note in it; the
 // result moves unlocked notes only. Locked notes, notes in other phrases and `deletedStartMs`
 // (but for a delete) are kept as they were (the same objects), and note ids never change.
+//
+// Story "Analysis settings and re-analysis" (US-4.6, spine AD-4): a re-analysis is one snapshot
+// step, `{notes, deletedStartMs, settings, trimStartMs, trimEndMs, warnings, analysisVersion}`
+// before and after, restored whole on undo and redo. Its pure parts live here: the new notes'
+// low-confidence flag (`freshNotes`), the merge with the locked notes and the deleted times
+// (`mergeReanalysis`), the one fret-mapping request with a lock per locked note, and placing its
+// result (`placeReanalysed`). An inserted note is marked `inserted`, and deleting it records no
+// `deletedStartMs`.
 
 import { playedOrder } from './notes';
 import { phraseOf } from './phrase';
-import { OPEN_MIDI, type Note, type StringNo, type Tab } from './types';
+import {
+  OPEN_MIDI,
+  type AnalysisSettings,
+  type DetectedNote,
+  type Note,
+  type StringNo,
+  type Tab,
+  type Take,
+} from './types';
 
 /** The parts of a Tab a command changes and a history step restores. */
 export interface TabState {
@@ -61,7 +77,8 @@ export type CommandLabel =
   | { kind: 'moveString'; string: StringNo; fret: number }
   | { kind: 'delete' }
   | { kind: 'insert' }
-  | { kind: 'confirm' };
+  | { kind: 'confirm' }
+  | { kind: 'reanalyse' };
 
 export interface EditCommand {
   /** The note the command edits; the selection follows it on undo and redo. */
@@ -265,8 +282,8 @@ function neighbours(notes: readonly Note[], noteId: string) {
 }
 
 /**
- * Deletes note `noteId`: it is removed and its `startMs` appended to `deletedStartMs` (so a
- * re-analysis never brings it back); then the phrase or phrases of its former neighbours (in
+ * Deletes note `noteId`: it is removed and, unless it was inserted, its `startMs` appended to
+ * `deletedStartMs` (so a re-analysis never brings it back); then the phrase or phrases of its former neighbours (in
  * played order) are re-fitted. Locks nothing. The selection moves to the note that followed it,
  * else the one before it, else clears.
  */
@@ -285,9 +302,13 @@ export function deleteNote(noteId: string): EditCommand {
         if (i < 0 || phrases.some((p) => p.includes(i))) continue;
         phrases.push(phraseOf(notes, i));
       }
+      const deleted = state.notes[index]!;
       return {
         notes,
-        deletedStartMs: [...state.deletedStartMs, state.notes[index]!.startMs],
+        // A note the player inserted was never detected: a re-analysis cannot bring it back.
+        deletedStartMs: deleted.inserted
+          ? state.deletedStartMs
+          : [...state.deletedStartMs, deleted.startMs],
         phrases,
       };
     },
@@ -307,7 +328,8 @@ export const INSERT_LENGTH_MS = 100;
  * Inserts a note with id `newId` after note `afterNoteId` in played order: midway to the next
  * note, or `INSERT_OFFSET_MS` after the last. With `afterNoteId` null it goes
  * `INSERT_OFFSET_MS` before the first note (not before the take's start). It takes the
- * reference note's string at fret 0, is locked, unflagged and fully confident, and lands in
+ * reference note's string at fret 0, is locked, unflagged, fully confident and marked
+ * `inserted`, and lands in
  * `startMs` order; then its phrase is re-fitted. An unknown reference note, no notes at all, or
  * an id already in use: nothing happens. The selection moves to the new note.
  */
@@ -352,6 +374,7 @@ export function insertNote(newId: string, afterNoteId: string | null): EditComma
         fret: 0,
         locked: true,
         lowConfidence: false,
+        inserted: true,
       };
       let index = before
         ? state.notes.indexOf(before)
@@ -364,15 +387,41 @@ export function insertNote(newId: string, afterNoteId: string | null): EditComma
   );
 }
 
-/** One undo step: the Tab's state before and after, and what did it. */
-export interface HistoryStep {
+/** One edit's undo step: the Tab's state before and after, and what did it. */
+export interface EditStep {
   label: CommandLabel;
   target: string;
   before: TabState;
   after: TabState;
   /** Set on a step a later command may merge into (the first of two digits). */
   mergeKey: string | null;
+  snapshot?: undefined;
 }
+
+/**
+ * What a re-analysis changes and its undo restores (spine AD-4): the Tab's state and the
+ * analysis-owned Take fields, restored together through `commitAnalysis`.
+ */
+export interface AnalysisSnapshot extends TabState {
+  settings: AnalysisSettings;
+  trimStartMs: number;
+  trimEndMs: number | null;
+  warnings: Take['warnings'];
+  analysisVersion: string | null;
+}
+
+/** A re-analysis's undo step: the whole snapshot before and after; no target note. */
+export interface SnapshotStep {
+  label: CommandLabel;
+  target: null;
+  before: AnalysisSnapshot;
+  after: AnalysisSnapshot;
+  mergeKey: null;
+  snapshot: true;
+}
+
+/** One undo step. */
+export type HistoryStep = EditStep | SnapshotStep;
 
 export interface History {
   undo: readonly HistoryStep[];
@@ -417,7 +466,8 @@ export function refingered(
 export function pushStep(history: History, step: HistoryStep, mergeInto?: string | null): History {
   const top = history.undo.at(-1);
   if (mergeInto && top?.mergeKey === mergeInto && history.redo.length === 0) {
-    const merged: HistoryStep = { ...step, before: top.before };
+    // Only edit steps carry a merge key, so both are edit steps.
+    const merged = { ...step, before: top.before } as HistoryStep;
     return { undo: [...history.undo.slice(0, -1), merged], redo: [] };
   }
   const undo = [...history.undo, step];
@@ -432,7 +482,7 @@ export function undoStep(history: History): { step: HistoryStep; history: Histor
     step,
     history: {
       undo: history.undo.slice(0, -1),
-      redo: [...history.redo, { ...step, mergeKey: null }],
+      redo: [...history.redo, step.snapshot ? step : { ...step, mergeKey: null }],
     },
   };
 }
@@ -442,4 +492,96 @@ export function redoStep(history: History): { step: HistoryStep; history: Histor
   const step = history.redo.at(-1);
   if (!step) return null;
   return { step, history: { undo: [...history.undo, step], redo: history.redo.slice(0, -1) } };
+}
+
+/** A note is flagged low confidence below the engine's threshold plus this margin (US-4.5). */
+export const LOW_CONFIDENCE_MARGIN = 0.15;
+
+/** Whether a note of `confidence` is flagged, given the engine's `confidenceThreshold` c. */
+export function isLowConfidence(confidence: number, confidenceThreshold: number): boolean {
+  return confidence < confidenceThreshold + LOW_CONFIDENCE_MARGIN;
+}
+
+/** A newly detected note before fret mapping: a new id, unlocked, flagged by confidence. */
+export interface FreshNote extends DetectedNote {
+  id: string;
+  locked: false;
+  lowConfidence: boolean;
+}
+
+/**
+ * The detected notes of a re-analysis as fresh notes: each with a new id (`newId`), unlocked,
+ * and flagged low confidence below `confidenceThreshold` + `LOW_CONFIDENCE_MARGIN`.
+ */
+export function freshNotes(
+  detected: readonly DetectedNote[],
+  confidenceThreshold: number,
+  newId: () => string,
+): FreshNote[] {
+  return detected.map(({ startMs, endMs, midi, confidence }) => ({
+    startMs,
+    endMs,
+    midi,
+    confidence,
+    id: newId(),
+    locked: false,
+    lowConfidence: isLowConfidence(confidence, confidenceThreshold),
+  }));
+}
+
+/** How near (ms, inclusive) a fresh note's start may be to a locked note or a deleted time. */
+export const REANALYSIS_WINDOW_MS = 50;
+
+/** A merged note: a locked note of the current tab (kept as it is) or a fresh one. */
+export type MergedNote = Note | FreshNote;
+
+/**
+ * The re-analysis merge (US-4.6): the fresh notes, less any starting within 50 ms of a locked
+ * note of `current` or of a `deletedStartMs` entry, plus every locked note of `current`
+ * unchanged (the same objects), sorted by `startMs` (stable). Unlocked current notes go.
+ */
+export function mergeReanalysis(
+  fresh: readonly FreshNote[],
+  current: readonly Note[],
+  deletedStartMs: readonly number[],
+): MergedNote[] {
+  const near = (a: number, b: number) => Math.abs(a - b) <= REANALYSIS_WINDOW_MS;
+  const locked = current.filter((n) => n.locked);
+  const kept = fresh.filter(
+    (n) =>
+      !locked.some((l) => near(l.startMs, n.startMs)) &&
+      !deletedStartMs.some((d) => near(d, n.startMs)),
+  );
+  return [...kept, ...locked].sort((a, b) => a.startMs - b.startMs);
+}
+
+/** The one fret-mapping request for `merged`: every note, with a lock for each locked one. */
+export function reanalysisRequest(merged: readonly MergedNote[], maxFret: number): MapFretsRequest {
+  return {
+    kind: 'mapFrets',
+    notes: merged.map(({ midi, startMs, endMs }) => ({ midi, startMs, endMs })),
+    locks: merged.flatMap((n, index) =>
+      n.locked ? [{ index, string: n.string, fret: n.fret }] : [],
+    ),
+    maxFret,
+  };
+}
+
+/**
+ * The re-analysed notes: each locked note as it was (whatever the mapper said), each fresh note
+ * at its position; a fresh note with no position (null: none within the highest fret) is
+ * dropped, as the first analysis drops it.
+ */
+export function placeReanalysed(merged: readonly MergedNote[], positions: EngineResult): Note[] {
+  const notes: Note[] = [];
+  merged.forEach((n, i) => {
+    if (n.locked) {
+      notes.push(n);
+      return;
+    }
+    const position = positions[i];
+    if (!position) return;
+    notes.push({ ...n, string: position.string, fret: position.fret });
+  });
+  return notes;
 }

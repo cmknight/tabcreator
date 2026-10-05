@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../src/model/errors';
 import type { Note, Tab, Take } from '../../src/model/types';
-import type { AnalysisOutcome, ProgressListener } from '../../src/session/analysis';
+import type { AnalysisOutcome, ProgressListener, ReanalysisRun } from '../../src/session/analysis';
 import {
   activeTakeSession,
   capTitle,
   createTakeSession,
+  hasAudio,
   hasUnsavedEdits,
   isTabShown,
   onPageHide,
@@ -56,6 +57,10 @@ function harness(take: Take | null, tab: Tab | null = null) {
       getTake: vi.fn(async () => take),
       getTab: vi.fn(async () => tab),
       patchTake: vi.fn(async (_id: string, patch: Partial<Take>) => ({ ...take!, ...patch })),
+      commitAnalysis: vi.fn(async (_id: string, t: Tab, patch: Partial<Take>) => ({
+        take: { ...take!, ...patch },
+        tab: t,
+      })),
     },
     analysis: {
       ensureAnalysed: vi.fn((_take, onProgress, onSaving) => {
@@ -72,7 +77,10 @@ function harness(take: Take | null, tab: Tab | null = null) {
       }),
       retryCommit: vi.fn(() => newRun()),
       pendingCommit: vi.fn(() => false),
+      reanalyse: vi.fn(() => new Promise<never>(() => {})),
     },
+    hasRaw: vi.fn(async () => false),
+    deleteRaw: vi.fn(async () => {}),
     cancel: vi.fn(),
     subscribeStorage: vi.fn((listener) => {
       storageListener = listener;
@@ -112,6 +120,8 @@ describe('take session', () => {
       saveFailed: null,
       undoLabel: null,
       redoLabel: null,
+      reanalysis: null,
+      hasRaw: false,
     });
     expect(h.deps.analysis.ensureAnalysed).not.toHaveBeenCalled();
   });
@@ -212,6 +222,8 @@ describe('take session', () => {
       saveFailed: null,
       undoLabel: null,
       redoLabel: null,
+      reanalysis: null,
+      hasRaw: false,
       missing: true,
     });
   });
@@ -1528,6 +1540,7 @@ describe('take session edits', () => {
         fret: 0,
         locked: true,
         lowConfidence: false,
+        inserted: true,
       });
       expect(session.getSnapshot().selectedNoteId).toBe('new1');
       expect(events).toEqual([
@@ -1935,5 +1948,500 @@ describe('onPageHide', () => {
     window.dispatchEvent(new Event('pagehide'));
     document.dispatchEvent(new Event('visibilitychange'));
     expect(listener).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Story "Analysis settings and re-analysis" (US-4.6, spine AD-4, AD-14, AD-15).
+describe('take session analysis settings and re-analysis', () => {
+  const note = (id: string, startMs: number, fret: number, over: Partial<Note> = {}): Note => ({
+    id,
+    startMs,
+    endMs: startMs + 100,
+    midi: 64 + fret,
+    confidence: 0.9,
+    string: 1,
+    fret,
+    locked: false,
+    lowConfidence: false,
+    ...over,
+  });
+  const detected = (startMs: number, fret: number, confidence = 0.9) => ({
+    startMs,
+    endMs: startMs + 100,
+    midi: 64 + fret,
+    confidence,
+  });
+  const run = (notes: ReturnType<typeof detected>[], fromRaw = false): ReanalysisRun => ({
+    result: { notes, tuningOffsetCents: 4, belowRangeNotes: 0, confidenceThreshold: 0.35 },
+    analysisVersion: '0.5.0',
+    fromRaw,
+  });
+  /** Locks kept; everything else on the high e string (null past the highest fret). */
+  const fakeMap = (r: Parameters<TakeSessionDeps['mapFrets']>[1]) =>
+    r.notes.map((n, i) => {
+      const lock = r.locks.find((l) => l.index === i);
+      if (lock) return { string: lock.string, fret: lock.fret };
+      const fret = n.midi - 64;
+      return fret >= 0 && fret <= r.maxFret ? { string: 1 as const, fret } : null;
+    });
+
+  const LOCKED = note('L', 1000, 7, { locked: true });
+  const PLAIN = note('P', 2000, 3);
+  const TAB2: Tab = { ...TAB, notes: [LOCKED, PLAIN], deletedStartMs: [1500] };
+  const opened: ReturnType<typeof createTakeSession>[] = [];
+  afterEach(() => {
+    for (const s of opened.splice(0)) s.dispose();
+  });
+
+  async function open(tab: Tab = TAB2, take: Take = ANALYZED, hasRaw = false) {
+    const h = harness(take, tab);
+    const engine = { run: deferred<ReanalysisRun>(), progress: null as ProgressListener | null };
+    engine.run.promise.catch(() => {}); // a cancel before any run rejects this unused one
+    vi.mocked(h.deps.analysis.reanalyse).mockImplementation((_take, onProgress) => {
+      engine.run = deferred<ReanalysisRun>();
+      engine.progress = onProgress ?? null;
+      return engine.run.promise;
+    });
+    vi.mocked(h.deps.analysis.cancel).mockImplementation(() => {
+      engine.run.reject(new AppError('analysis-cancelled', 'cancelled'));
+      return true;
+    });
+    vi.mocked(h.deps.mapFrets).mockImplementation(async (_id, r) => fakeMap(r));
+    vi.mocked(h.deps.hasRaw).mockResolvedValue(hasRaw);
+    let ids = 0;
+    h.deps.newId = () => `new${++ids}`;
+    const session = createTakeSession('t1', h.deps);
+    opened.push(session);
+    const events: EditEvent[] = [];
+    session.onEditEvent((e) => events.push(e));
+    session.subscribe(() => {});
+    await settle();
+    return { h, session, events, engine };
+  }
+
+  describe('setSettings', () => {
+    it('saves the settings to the take at once (patchTake), shows them, and makes no undo step', async () => {
+      const { h, session } = await open();
+      const done = session.setSettings({ sensitivity: 0.3 });
+      expect(session.getSnapshot().take!.settings).toEqual({
+        sensitivity: 0.3,
+        minNoteMs: 40,
+        maxFret: 24,
+      });
+      await done;
+      expect(h.deps.db.patchTake).toHaveBeenCalledWith(
+        't1',
+        { settings: { sensitivity: 0.3, minNoteMs: 40, maxFret: 24 } },
+        'take-session',
+      );
+      expect(session.getSnapshot().undoLabel).toBeNull();
+      expect(session.canUndo()).toBe(false);
+    });
+
+    it('clamps to the ranges: a minimum length of 5 stores 20; unchanged writes nothing', async () => {
+      const { h, session } = await open();
+      await session.setSettings({ minNoteMs: 5 });
+      expect(h.deps.db.patchTake).toHaveBeenLastCalledWith(
+        't1',
+        { settings: { sensitivity: 0.5, minNoteMs: 20, maxFret: 24 } },
+        'take-session',
+      );
+      await session.setSettings({ minNoteMs: 20, maxFret: NaN });
+      expect(h.deps.db.patchTake).toHaveBeenCalledTimes(1);
+    });
+
+    it('a take read while a settings write is pending does not become the stored settings', async () => {
+      const { h, session } = await open();
+      const write = deferred<Take>();
+      vi.mocked(h.deps.db.patchTake).mockReturnValueOnce(write.promise);
+      const done = session.setSettings({ sensitivity: 0.8 });
+      // The Library renames the take meanwhile: its take-put is re-read.
+      vi.mocked(h.deps.db.getTake).mockResolvedValueOnce({ ...ANALYZED, title: 'Renamed' });
+      h.emit({ type: 'take-put', takeId: 't1', writer: 'library-session' });
+      await settle();
+      expect(session.getSnapshot().take).toMatchObject({
+        title: 'Renamed',
+        settings: { sensitivity: 0.8 },
+      });
+      write.reject(new AppError('storage-full', 'full'));
+      await done;
+      expect(session.getSnapshot().take).toMatchObject({
+        title: 'Renamed',
+        settings: { sensitivity: 0.5 },
+      });
+    });
+
+    it('refused while an undo of a re-analysis commits', async () => {
+      const { h, session, engine } = await open();
+      const done = session.reanalyse();
+      await settle();
+      engine.run.resolve(run([detected(1200, 3)]));
+      await done;
+      const restore = deferred<{ take: Take; tab: Tab }>();
+      vi.mocked(h.deps.db.commitAnalysis).mockReturnValueOnce(restore.promise);
+      const undo = session.undo();
+      await settle();
+      await session.setSettings({ sensitivity: 0.9 });
+      expect(h.deps.db.patchTake).not.toHaveBeenCalled();
+      restore.resolve({ take: ANALYZED, tab: TAB2 });
+      await undo;
+      expect(session.getSnapshot().take!.settings.sensitivity).toBe(0.5);
+    });
+
+    it('a failed save puts the stored value back', async () => {
+      const { h, session } = await open();
+      vi.mocked(h.deps.db.patchTake).mockRejectedValueOnce(new AppError('storage-full', 'full'));
+      await session.setSettings({ sensitivity: 0.8 });
+      expect(session.getSnapshot().take!.settings.sensitivity).toBe(0.5);
+    });
+  });
+
+  describe('reanalyse', () => {
+    it('merges: the locked note kept exactly, near ones and deleted times dropped; one commit; one undo step', async () => {
+      const { h, session, events, engine } = await open();
+      session.select('P');
+      const done = session.reanalyse();
+      await settle();
+      expect(session.getSnapshot().reanalysis).toEqual({ progress: 0 });
+      engine.progress!(0.45);
+      expect(session.getSnapshot().reanalysis).toEqual({ progress: 0.45 });
+      engine.progress!(0.2); // never backward
+      expect(session.getSnapshot().reanalysis).toEqual({ progress: 0.45 });
+      engine.run.resolve(
+        run(
+          [detected(980, 2), detected(1200, 3, 0.4), detected(1530, 1), detected(3000, 30)],
+          true,
+        ),
+      );
+      await done;
+      expect(h.deps.analysis.reanalyse).toHaveBeenCalledWith(ANALYZED, expect.any(Function));
+      const request = vi.mocked(h.deps.mapFrets).mock.calls[0]![1];
+      expect(request.locks).toEqual([{ index: 0, string: 1, fret: 7 }]);
+      const [id, tab, patch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]!;
+      expect(id).toBe('t1');
+      // 980 is within 50 ms of the locked note, 1530 of a deleted time; fret 30 has no place.
+      expect(tab.notes.map((n) => n.id)).toEqual(['L', 'new2']);
+      expect(tab.notes[0]).toBe(LOCKED);
+      expect(tab.notes[1]).toMatchObject({
+        startMs: 1200,
+        fret: 3,
+        locked: false,
+        lowConfidence: true,
+      });
+      expect(tab.deletedStartMs).toEqual([1500]);
+      expect(patch).toEqual({
+        analysisVersion: '0.5.0',
+        warnings: { tuningOffsetCents: 4, belowRangeNotes: 0 },
+      });
+      const snap = session.getSnapshot();
+      expect(snap.reanalysis).toBeNull();
+      expect(snap.tab!.notes.map((n) => n.id)).toEqual(['L', 'new2']);
+      expect(snap.take!.analysisVersion).toBe('0.5.0');
+      expect(snap.selectedNoteId).toBeNull(); // its note is gone
+      expect(snap.undoLabel).toEqual({ kind: 'reanalyse' });
+      expect(h.deps.deleteRaw).toHaveBeenCalledWith('t1'); // read from the raw file
+      expect(events).toEqual([{ kind: 'reanalysed', notes: 2 }]);
+    });
+
+    it('while it runs, edits, undo and redo do nothing and the labels read null', async () => {
+      const { h, session, engine } = await open();
+      session.select('P');
+      session.typeDigit(5);
+      await settle();
+      expect(session.getSnapshot().undoLabel).toEqual({ kind: 'setFret', fret: 5 });
+      const done = session.reanalyse();
+      await settle();
+      expect(session.getSnapshot().undoLabel).toBeNull();
+      expect(session.canUndo()).toBe(false);
+      session.select('P');
+      session.typeDigit(9);
+      await session.undo();
+      await session.deleteSelected();
+      await session.setSettings({ sensitivity: 0.9 });
+      expect(h.deps.mapFrets).toHaveBeenCalledTimes(1); // the digit before the run only
+      expect(h.deps.db.patchTake).not.toHaveBeenCalled();
+      engine.run.resolve(run([]));
+      await done;
+      // A re-analysis does not reset history: the digit's step is still there under it.
+      await session.undo();
+      await session.undo();
+      expect(session.getSnapshot().tab!.notes).toEqual(TAB2.notes);
+    });
+
+    it('Cancel: the tab, history and settings stay as they were, and it is announced', async () => {
+      const { h, session, events } = await open();
+      session.select('P');
+      session.typeDigit(5);
+      await settle();
+      await session.setSettings({ sensitivity: 0.8 });
+      const edited = session.getSnapshot().tab;
+      const done = session.reanalyse();
+      await settle();
+      session.cancelReanalysis();
+      await done;
+      expect(h.deps.analysis.cancel).toHaveBeenCalledWith('t1');
+      expect(h.deps.cancel).toHaveBeenCalledWith('t1');
+      const snap = session.getSnapshot();
+      expect(snap.reanalysis).toBeNull();
+      expect(snap.tab).toBe(edited);
+      expect(snap.take!.settings).toEqual({ sensitivity: 0.8, minNoteMs: 40, maxFret: 24 });
+      expect(snap.undoLabel).toEqual({ kind: 'setFret', fret: 5 });
+      expect(session.canUndo()).toBe(true);
+      expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+      expect(events.at(-1)).toEqual({ kind: 'reanalyseCancelled' });
+    });
+
+    it('Cancel while it maps the frets: the fret mapping is cancelled, nothing committed', async () => {
+      const { h, session, events, engine } = await open();
+      const frets = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+      vi.mocked(h.deps.mapFrets).mockReturnValueOnce(frets.promise);
+      const done = session.reanalyse();
+      await settle();
+      engine.run.resolve(run([detected(1200, 3)]));
+      await settle();
+      expect(h.deps.mapFrets).toHaveBeenCalledTimes(1);
+      session.cancelReanalysis();
+      expect(h.deps.cancel).toHaveBeenCalledWith('t1');
+      frets.reject(new AppError('analysis-cancelled', 'cancelled'));
+      await done;
+      expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+      expect(session.getSnapshot()).toMatchObject({ reanalysis: null, tab: TAB2, undoLabel: null });
+      expect(events).toEqual([{ kind: 'reanalyseCancelled' }]);
+    });
+
+    it('the take deleted while it runs: cleared, nothing committed', async () => {
+      const { h, session, engine } = await open();
+      const done = session.reanalyse();
+      await settle();
+      h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+      expect(session.getSnapshot()).toMatchObject({ reanalysis: null, missing: true });
+      engine.run.resolve(run([detected(1200, 3)]));
+      await done;
+      expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+      expect(session.getSnapshot()).toMatchObject({ reanalysis: null, tab: null });
+    });
+
+    it('the commit failing storage-full: nothing changes, announced with its code, no undo step', async () => {
+      const { h, session, events, engine } = await open();
+      vi.mocked(h.deps.db.commitAnalysis).mockRejectedValueOnce(new AppError('storage-full', 'x'));
+      const done = session.reanalyse();
+      await settle();
+      engine.run.resolve(run([detected(1200, 3)]));
+      await expect(done).rejects.toMatchObject({ code: 'storage-full' });
+      expect(session.getSnapshot()).toMatchObject({ reanalysis: null, tab: TAB2, undoLabel: null });
+      expect(events).toEqual([{ kind: 'reanalyseFailed', code: 'storage-full' }]);
+    });
+
+    it('queued behind other work: shown as running at once; edits meanwhile do nothing', async () => {
+      const { h, session, engine } = await open();
+      const frets = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+      vi.mocked(h.deps.mapFrets).mockReturnValueOnce(frets.promise);
+      session.select('P');
+      session.typeDigit(5); // in flight on the engine
+      await settle();
+      const done = session.reanalyse();
+      expect(session.getSnapshot().reanalysis).toEqual({ progress: 0 });
+      expect(session.getSnapshot().undoLabel).toBeNull();
+      session.typeDigit(7);
+      await session.deleteSelected();
+      frets.resolve([
+        { string: 1, fret: 7 },
+        { string: 1, fret: 5 },
+      ]);
+      await settle();
+      expect(h.deps.analysis.reanalyse).toHaveBeenCalledTimes(1);
+      engine.run.resolve(run([]));
+      await done;
+      // The digit before the click applied; the ones after did nothing.
+      expect(session.getSnapshot().tab!.notes.find((n) => n.id === 'P')).toMatchObject({
+        fret: 5,
+        locked: true,
+      });
+      expect(h.deps.mapFrets).toHaveBeenCalledTimes(2); // the digit, then the re-analysis
+    });
+
+    it('cancelled while queued: it never runs', async () => {
+      const { h, session, events } = await open();
+      const frets = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+      vi.mocked(h.deps.mapFrets).mockReturnValueOnce(frets.promise);
+      session.select('P');
+      session.typeDigit(5);
+      await settle();
+      const done = session.reanalyse();
+      session.cancelReanalysis();
+      expect(session.getSnapshot().reanalysis).toBeNull();
+      frets.resolve([
+        { string: 1, fret: 7 },
+        { string: 1, fret: 5 },
+      ]);
+      await done;
+      expect(h.deps.analysis.reanalyse).not.toHaveBeenCalled();
+      expect(events).toContainEqual({ kind: 'reanalyseCancelled' });
+    });
+
+    it('a pending edit save never lands after a fast re-analysis commit', async () => {
+      const { h, session, engine } = await open();
+      vi.useFakeTimers();
+      try {
+        session.select('P');
+        session.typeDigit(5);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(session.getSnapshot().undoLabel).toEqual({ kind: 'setFret', fret: 5 });
+        const done = session.reanalyse(); // within the 300 ms save debounce
+        await vi.advanceTimersByTimeAsync(0);
+        engine.run.resolve(run([detected(1200, 3)]));
+        await done;
+        expect(h.deps.db.commitAnalysis).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(h.deps.putTab).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a failed restore commit with an unsaved edit: the edit is saved afterwards', async () => {
+      const { h, session, engine } = await open();
+      const done = session.reanalyse();
+      await settle();
+      engine.run.resolve(run([detected(1200, 3)]));
+      await done;
+      vi.useFakeTimers();
+      try {
+        session.select('L');
+        session.typeDigit(9);
+        await vi.advanceTimersByTimeAsync(400); // saved
+        expect(h.deps.putTab).toHaveBeenCalledTimes(1);
+        void session.undo(); // the edit: unsaved again, its save pending
+        await vi.advanceTimersByTimeAsync(0);
+        const shown = session.getSnapshot().tab;
+        vi.mocked(h.deps.db.commitAnalysis).mockRejectedValueOnce(
+          new AppError('storage-full', 'x'),
+        );
+        void session.undo(); // the re-analysis: its commit fails
+        await vi.advanceTimersByTimeAsync(0);
+        expect(session.getSnapshot().undoLabel).toEqual({ kind: 'reanalyse' });
+        await vi.advanceTimersByTimeAsync(400);
+        expect(h.deps.putTab).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(h.deps.putTab).mock.calls[1]![0]).toBe(shown);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a raw-only take whose raw file is not checked yet: not refused; analysis decides', async () => {
+      const h0 = harness({ ...ANALYZED, audioMime: null }, TAB2);
+      vi.mocked(h0.deps.hasRaw).mockReturnValue(new Promise<boolean>(() => {}));
+      vi.mocked(h0.deps.analysis.reanalyse).mockReturnValue(new Promise<never>(() => {}));
+      const session = createTakeSession('t1', h0.deps);
+      opened.push(session);
+      session.subscribe(() => {});
+      await settle();
+      expect(session.getSnapshot().hasRaw).toBeNull();
+      expect(hasAudio(session.getSnapshot())).toBe(true);
+      void session.reanalyse();
+      await settle();
+      expect(h0.deps.analysis.reanalyse).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failure leaves everything as it was, announced; the call rejects with its code', async () => {
+      const { h, session, events, engine } = await open();
+      const done = session.reanalyse();
+      await settle();
+      engine.run.reject(new AppError('analysis-failed', 'boom'));
+      await expect(done).rejects.toMatchObject({ code: 'analysis-failed' });
+      expect(session.getSnapshot()).toMatchObject({ reanalysis: null, tab: TAB2 });
+      expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+      expect(events).toEqual([{ kind: 'reanalyseFailed', code: 'analysis-failed' }]);
+    });
+
+    it('no audio (audioMime null, no raw file): rejects audio-missing, announced, no engine call', async () => {
+      const { h, session, events } = await open(TAB2, { ...ANALYZED, audioMime: null });
+      expect(hasAudio(session.getSnapshot())).toBe(false);
+      await expect(session.reanalyse()).rejects.toMatchObject({ code: 'audio-missing' });
+      expect(h.deps.analysis.reanalyse).not.toHaveBeenCalled();
+      expect(events).toEqual([{ kind: 'reanalyseFailed', code: 'audio-missing' }]);
+    });
+
+    it('no compressed audio but a raw file: it runs', async () => {
+      const { h, session } = await open(TAB2, { ...ANALYZED, audioMime: null }, true);
+      expect(session.getSnapshot().hasRaw).toBe(true);
+      expect(hasAudio(session.getSnapshot())).toBe(true);
+      void session.reanalyse();
+      await settle();
+      expect(h.deps.analysis.reanalyse).toHaveBeenCalledTimes(1);
+    });
+
+    it('undo restores the previous tab with the analysed-with settings, warnings and version; redo the new', async () => {
+      const take: Take = { ...ANALYZED, warnings: { tuningOffsetCents: -2, belowRangeNotes: 1 } };
+      const { h, session, events, engine } = await open(TAB2, take);
+      await session.setSettings({ sensitivity: 0.8 });
+      const done = session.reanalyse();
+      await settle();
+      engine.run.resolve(run([detected(500, 2)]));
+      await done;
+      const after = session.getSnapshot();
+      await session.undo();
+      const [, tab, patch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[1]!;
+      expect({ notes: tab.notes, deletedStartMs: tab.deletedStartMs }).toEqual({
+        notes: TAB2.notes,
+        deletedStartMs: [1500],
+      });
+      expect(patch).toEqual({
+        settings: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 }, // as the old tab was analysed
+        trimStartMs: 0,
+        trimEndMs: null,
+        warnings: { tuningOffsetCents: -2, belowRangeNotes: 1 },
+        analysisVersion: '0.4.0',
+      });
+      expect(session.getSnapshot().tab!.notes).toEqual(TAB2.notes);
+      expect(session.getSnapshot().take!.settings.sensitivity).toBe(0.5);
+      expect(session.getSnapshot().redoLabel).toEqual({ kind: 'reanalyse' });
+      await session.redo();
+      const [, redoTab, redoPatch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[2]!;
+      expect(redoTab.notes).toEqual(after.tab!.notes);
+      expect(redoPatch).toMatchObject({
+        settings: { sensitivity: 0.8, minNoteMs: 40, maxFret: 24 },
+        analysisVersion: '0.5.0',
+        warnings: { tuningOffsetCents: 4, belowRangeNotes: 0 },
+      });
+      expect(session.getSnapshot().take!.settings.sensitivity).toBe(0.8);
+      expect(events.slice(-2)).toEqual([
+        { kind: 'undo', label: { kind: 'reanalyse' } },
+        { kind: 'redo', label: { kind: 'reanalyse' } },
+      ]);
+    });
+
+    it('a failed restore keeps the history and announces the failure', async () => {
+      const { h, session, events, engine } = await open();
+      const done = session.reanalyse();
+      await settle();
+      engine.run.resolve(run([]));
+      await done;
+      vi.mocked(h.deps.db.commitAnalysis).mockRejectedValueOnce(new AppError('storage-full', 'x'));
+      await session.undo();
+      expect(session.getSnapshot().undoLabel).toEqual({ kind: 'reanalyse' });
+      expect(events.at(-1)).toEqual({ kind: 'failed' });
+    });
+
+    it('No notes found: notes appear; undo returns to the empty tab', async () => {
+      const { session, engine } = await open({ ...TAB, notes: [], deletedStartMs: [] });
+      expect(isTabShown(session.getSnapshot())).toBe(false);
+      const done = session.reanalyse();
+      await settle();
+      engine.run.resolve(run([detected(100, 0), detected(400, 2)]));
+      await done;
+      expect(isTabShown(session.getSnapshot())).toBe(true);
+      expect(session.getSnapshot().tab!.notes).toHaveLength(2);
+      await session.undo();
+      expect(session.getSnapshot().tab!.notes).toEqual([]);
+    });
+
+    it('a second call while one runs does nothing', async () => {
+      const { h, session } = await open();
+      void session.reanalyse();
+      await settle();
+      await session.reanalyse();
+      expect(h.deps.analysis.reanalyse).toHaveBeenCalledTimes(1);
+    });
   });
 });

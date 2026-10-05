@@ -17,7 +17,8 @@
   cursor: pointer;
 }
 
-.primary[aria-disabled='true'] {
+.primary[aria-disabled='true'],
+.primary:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
@@ -34,8 +35,10 @@
 }
 
 /* A toggle button (DESIGN.md Pressed / selected: button-pressed): a secondary button that shows
-   the pressed style while `aria-pressed` is true. */
-.toggle[aria-pressed='true'] {
+   the pressed style while `aria-pressed` is true, or (a disclosure, the Analysis settings
+   toggle) while `aria-expanded` is true. */
+.toggle[aria-pressed='true'],
+.toggle[aria-expanded='true'] {
   background: color-mix(in srgb, var(--color-primary) 14%, var(--color-surface));
   color: var(--color-text);
   font-weight: 600;

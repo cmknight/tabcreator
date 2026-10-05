@@ -80,8 +80,30 @@ describe('prefs', () => {
       ...CUSTOM,
       micGranted: false,
       countIn: { on: true, bpm: 100 },
-      analysisDefaults: { sensitivity: 0.5, minNoteMs: 60, maxFret: 24 },
+      // Out-of-range analysis defaults are clamped to the UI ranges (story 8.6).
+      analysisDefaults: { sensitivity: 1, minNoteMs: 60, maxFret: 24 },
       theme: 'system',
+    });
+  });
+
+  it('clamps the analysis defaults to the UI ranges: sensitivity snapped to 0.05, 20–100 ms, frets 12–24', () => {
+    const parse = (analysisDefaults: unknown) =>
+      parsePrefs(JSON.stringify({ ...CUSTOM, analysisDefaults })).analysisDefaults;
+    expect(parse({ sensitivity: 0.33, minNoteMs: 5, maxFret: 6 })).toEqual({
+      sensitivity: 0.35,
+      minNoteMs: 20,
+      maxFret: 12,
+    });
+    expect(parse({ sensitivity: -1, minNoteMs: 500, maxFret: 22.4 })).toEqual({
+      sensitivity: 0,
+      minNoteMs: 100,
+      maxFret: 22,
+    });
+    // Not a number: that field's default.
+    expect(parse({ sensitivity: 'high', minNoteMs: null, maxFret: 18 })).toEqual({
+      sensitivity: 0.5,
+      minNoteMs: 40,
+      maxFret: 18,
     });
   });
 
@@ -168,7 +190,7 @@ describe('prefs', () => {
     expect(result).toEqual({
       ...CUSTOM,
       countIn: DEFAULT_PREFS.countIn,
-      analysisDefaults: { sensitivity: 0.5, minNoteMs: 60, maxFret: 20 },
+      analysisDefaults: { sensitivity: 1, minNoteMs: 60, maxFret: 20 },
     });
     expect(loadPrefs()).toEqual(result);
   });

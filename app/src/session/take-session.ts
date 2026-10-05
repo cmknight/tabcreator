@@ -37,12 +37,34 @@
 // Story "Undo and redo controls": the snapshot carries the labels of the top undo and redo
 // steps (`undoLabel`, `redoLabel`), republished whenever the history changes, for the toolbar's
 // Undo and Redo buttons.
+//
+// Story "Analysis settings and re-analysis" (US-4.6, spine AD-4, AD-14, AD-15): `setSettings`
+// saves a changed analysis setting to the take at once (`patchTake`; no undo step; a failed
+// write puts the stored value back). `reanalyse` queues a re-analysis like a command: it runs
+// the engine on the take's audio with its current settings (`analysis.reanalyse`), merges the
+// result with the locked notes and the deleted times (`mergeReanalysis`), maps the frets with a
+// lock per locked note, and commits the Tab with the new `warnings` and `analysisVersion` in one
+// `commitAnalysis`, deleting the raw file after when it was read. While it runs the snapshot's
+// `reanalysis` carries its progress (the tab stays shown), and edits, undo and redo do nothing
+// (the undo and redo labels read null); `cancelReanalysis` stops it with nothing changed. A
+// finished re-analysis is one snapshot step (`{kind: 'reanalyse'}`): undo and redo restore the
+// Tab and the analysis-owned Take fields together through `commitAnalysis`. Its `before`
+// settings are those the replaced tab was analysed with (`analysedSettings`). A re-analysis does
+// not reset history.
 
 import { engineClient } from '../engine/engine-client';
-import { isAppError, type AppErrorCode } from '../model/errors';
+import { AppError, isAppError, type AppErrorCode } from '../model/errors';
 import { devDb } from '../dev/hooks/analysis';
+import { clampAnalysisSettings, sameSettings } from '../model/analysis-settings';
 import {
   EMPTY_HISTORY,
+  freshNotes,
+  mergeReanalysis,
+  placeReanalysed,
+  reanalysisRequest,
+  type AnalysisSnapshot,
+  type HistoryStep,
+  type SnapshotStep,
   pushStep,
   redoStep,
   refingered,
@@ -62,7 +84,8 @@ import {
 } from '../model/edit-history';
 import { devWarn } from '../model/log';
 import { playedOrder } from '../model/notes';
-import type { StringNo, Tab, Take } from '../model/types';
+import type { AnalysisSettings, StringNo, Tab, Take } from '../model/types';
+import { audioStore } from '../storage/audio-store';
 import { db, type TakeDb } from '../storage/db';
 import { subscribe as subscribeStorage, type StorageListener } from '../storage/events';
 import { analysis as appAnalysis, type Analysis, type AnalysisOutcome } from './analysis';
@@ -106,6 +129,25 @@ export interface TakeSnapshot {
   undoLabel: CommandLabel | null;
   /** The label of the step a redo would restore, or null with nothing to redo. Agrees with `canRedo()`. */
   redoLabel: CommandLabel | null;
+  /**
+   * A re-analysis in flight (US-4.6): its progress, 0–0.9 from the engine, 1 once the frets are
+   * mapped (never backward); null otherwise. The tab stays shown meanwhile.
+   */
+  reanalysis: { progress: number } | null;
+  /**
+   * Whether the take still has its raw file, read at load; null until read (or when the read
+   * failed). With no compressed audio and no raw file it cannot be re-analysed.
+   */
+  hasRaw: boolean | null;
+}
+
+/**
+ * Whether the take may have audio to re-analyse (spine AD-15): compressed audio, a raw file, or
+ * a raw file not yet checked (then `analysis.reanalyse` decides). Re-analyse is disabled without
+ * it ("No audio to analyse").
+ */
+export function hasAudio(snapshot: Pick<TakeSnapshot, 'take' | 'hasRaw'>): boolean {
+  return !!snapshot.take && (snapshot.take.audioMime !== null || snapshot.hasRaw !== false);
 }
 
 /** An announceable outcome of an edit, undo or redo (the screen words it, spine AD-18). */
@@ -122,7 +164,13 @@ export type EditEvent =
       refingered?: string[];
     }
   | { kind: 'undo' | 'redo'; label: CommandLabel }
-  | { kind: 'failed' };
+  | { kind: 'failed' }
+  /** A re-analysis committed, with this many notes. */
+  | { kind: 'reanalysed'; notes: number }
+  /** A re-analysis was cancelled: nothing changed. */
+  | { kind: 'reanalyseCancelled' }
+  /** A re-analysis failed (`audio-missing`: no audio): nothing changed. */
+  | { kind: 'reanalyseFailed'; code: AppErrorCode };
 
 /** The debounce before an edited Tab is saved (EXPERIENCE.md Saving). */
 export const SAVE_DEBOUNCE_MS = 300;
@@ -145,11 +193,16 @@ export function isTabShown(
 }
 
 export interface TakeSessionDeps {
-  db: Pick<TakeDb, 'getTake' | 'getTab' | 'patchTake'>;
+  /** `commitAnalysis` commits a re-analysis and restores its snapshot on undo and redo. */
+  db: Pick<TakeDb, 'getTake' | 'getTab' | 'patchTake' | 'commitAnalysis'>;
   analysis: Pick<
     Analysis,
-    'ensureAnalysed' | 'detach' | 'cancel' | 'retryCommit' | 'pendingCommit'
+    'ensureAnalysed' | 'detach' | 'cancel' | 'retryCommit' | 'pendingCommit' | 'reanalyse'
   >;
+  /** Whether the take has a raw file (`audio-store` `rawSampleCount` > 0). */
+  hasRaw(takeId: string): Promise<boolean>;
+  /** Deletes the take's raw file, after a re-analysis read from it committed (spine AD-9). */
+  deleteRaw(takeId: string): Promise<void>;
   /** The engine client's `cancel` (spine AD-16: a deleted take's engine work is cancelled). */
   cancel(takeId: string): void;
   subscribeStorage(listener: StorageListener): () => void;
@@ -257,6 +310,21 @@ export interface TakeSession {
    * nothing. The new title shows at once; a failed write puts the old one back.
    */
   rename(title: string): Promise<void>;
+  /**
+   * Saves changed analysis settings to the take at once (clamped to the UI ranges; no undo
+   * step). The new values show at once; a failed write puts the stored ones back. Does nothing
+   * while a re-analysis runs.
+   */
+  setSettings(patch: Partial<AnalysisSettings>): Promise<void>;
+  /**
+   * Re-analyses the take with its current settings (US-4.6), queued like a command; one undo
+   * step. Resolves once it settled (done, cancelled or not started); rejects with the
+   * `AppError` it failed with, `audio-missing` when the take has no audio. The failure is also
+   * announced through `onEditEvent`.
+   */
+  reanalyse(): Promise<void>;
+  /** Cancel during a re-analysis: stops it; the tab, history and settings stay as they were. */
+  cancelReanalysis(): void;
 }
 
 /** The longest take title, in characters. */
@@ -303,6 +371,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     saveFailed: null,
     undoLabel: null,
     redoLabel: null,
+    reanalysis: null,
+    hasRaw: null,
   };
   const listeners = new Set<() => void>();
   const editListeners = new Set<(event: EditEvent) => void>();
@@ -344,11 +414,42 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   /** Counts renames; only the latest one's settlement clears or reverts the pending title. */
   let renameSeq = 0;
 
-  function publish(patch: Partial<TakeSnapshot>, fromRename = false) {
+  /** The settings last read from or written to storage (a failed `setSettings` reverts to them). */
+  let storedSettings: AnalysisSettings | null = null;
+  /** Counts settings changes; only the latest one's failure reverts. */
+  let settingsSeq = 0;
+  /** The settings writes' tail (never rejects): a re-analysis or a restore waits for it. */
+  let settingsWrites: Promise<void> = Promise.resolve();
+  /** Settings writes not yet settled: a take read meanwhile does not replace `storedSettings`. */
+  let settingsPending = 0;
+  /** Set while an undo or redo of a re-analysis commits: settings changes are refused. */
+  let restoring = false;
+  /**
+   * The settings the shown tab was analysed with (US-4.6): the take's at load or after its
+   * first analysis, then each re-analysis's, or those an undo or redo restored. A re-analysis
+   * step's `before` settings.
+   */
+  let analysedSettings: AnalysisSettings | null = null;
+  /** Set from a re-analysis call until its queued run settles: a second call does nothing. */
+  let reanalysisQueued = false;
+  /** Set while a queued re-analysis runs: commands and undo or redo do not apply. */
+  let reanalysisRunning = false;
+  /** Counts re-analysis calls; a cancel bumps it, so the cancelled run is skipped or ignored. */
+  let reanalysisSeq = 0;
+  /** Set while a re-analysis commits its result: too late to cancel. */
+  let reanalysisCommitting = false;
+
+  /**
+   * Publishes `patch`. `local`: a take this store changed itself (a rename, a settings change),
+   * not one read from storage.
+   */
+  function publish(patch: Partial<TakeSnapshot>, local = false) {
     // A take read from storage (load, analysis, re-read) may predate a rename still being
     // written (its own take-put is skipped), so the pending title stays over it.
-    if (patch.take && !fromRename) {
+    if (patch.take && !local) {
       storedTitle = patch.take.title;
+      // A settings write in flight decides the stored settings (a failure reverts to them).
+      if (settingsPending === 0) storedSettings = patch.take.settings;
       if (pendingTitle !== null && patch.take.title !== pendingTitle) {
         patch = { ...patch, take: { ...patch.take, title: pendingTitle } };
       }
@@ -358,8 +459,10 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     snapshot = { ...snapshot, ...patch };
     // The undo and redo labels follow the history, which changes only just before a publish
     // (a command, a merge, undo, redo, and the reset of a load, an analysis or a deletion).
-    const undoLabel = history.undo.at(-1)?.label ?? null;
-    const redoLabel = history.redo.at(-1)?.label ?? null;
+    // While a re-analysis runs, undo and redo act as with no history.
+    const reanalysing = snapshot.reanalysis !== null;
+    const undoLabel = reanalysing ? null : (history.undo.at(-1)?.label ?? null);
+    const redoLabel = reanalysing ? null : (history.redo.at(-1)?.label ?? null);
     if (snapshot.undoLabel !== undoLabel || snapshot.redoLabel !== redoLabel) {
       snapshot = { ...snapshot, undoLabel, redoLabel };
     }
@@ -416,7 +519,9 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
         if (snapshot.missing) return;
         resetEdits();
         heldTabs.delete(takeId); // the new analysis replaces any unsaved edit
+        analysedSettings = outcome.take.settings;
         publish({ take: outcome.take, tab: outcome.tab, analysis: { kind: 'idle' } });
+        checkRaw();
       },
       (err: unknown) => {
         if (seq !== runSeq) return;
@@ -473,6 +578,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
         return;
       }
       resetEdits();
+      analysedSettings = take.settings;
+      checkRaw();
       // An edit an earlier session could not save (storage full) wins over the stored Tab.
       const held = take.status === 'analyzed' ? heldTabs.get(takeId) : undefined;
       if (held) {
@@ -488,6 +595,16 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       devWarn(`could not read take ${takeId}`, err);
       publish({ loading: false, analysis: { kind: 'failed', code: errorCode(err) } });
     }
+  }
+
+  /** Reads whether the take still has its raw file (`hasRaw`); a failed read leaves it unknown. */
+  function checkRaw() {
+    deps.hasRaw(takeId).then(
+      (hasRaw) => {
+        if (!snapshot.missing && hasRaw !== snapshot.hasRaw) publish({ hasRaw });
+      },
+      (err: unknown) => devWarn(`could not check the raw file of take ${takeId}`, err),
+    );
   }
 
   /**
@@ -522,8 +639,10 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
         selectedNoteId: null,
         lastFocusedNoteId: null,
         saveFailed: null,
+        reanalysis: null,
         missing: true,
       });
+      reanalysisQueued = false; // its queued run is dropped with the epoch
       return;
     }
     if (event.writer === WRITER) return;
@@ -702,7 +821,11 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
    */
   function travelable(): boolean {
     return (
-      !snapshot.missing && snapshot.analysis.kind === 'idle' && !!snapshot.tab && !!snapshot.take
+      !snapshot.missing &&
+      snapshot.analysis.kind === 'idle' &&
+      !reanalysisRunning &&
+      !!snapshot.tab &&
+      !!snapshot.take
     );
   }
 
@@ -791,6 +914,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
    * key pressed several times acts on the state each earlier press left); null: nothing.
    */
   function applyLazy(build: () => EditCommand | null, merge: { key?: string; into?: string } = {}) {
+    // Edits do nothing while a re-analysis runs (they would otherwise queue behind it).
+    if (snapshot.reanalysis !== null || reanalysisQueued) return Promise.resolve();
     const at = epoch;
     return enqueue(() => {
       if (at !== epoch || !editable()) return;
@@ -806,10 +931,14 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
 
   function travel(direction: 'undo' | 'redo') {
     pendingDigit = null;
+    // Undo and redo do nothing while a re-analysis runs (they would otherwise queue behind it).
+    if (snapshot.reanalysis !== null || reanalysisQueued) return Promise.resolve();
+    const at = epoch;
     return enqueue(() => {
       if (!travelable()) return;
       const moved = direction === 'undo' ? undoStep(history) : redoStep(history);
       if (!moved) return;
+      if (moved.step.snapshot) return restoreSnapshot(moved.step, moved.history, direction, at);
       history = moved.history;
       const restore = direction === 'undo' ? moved.step.before : moved.step.after;
       publish({
@@ -819,6 +948,248 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       scheduleSave();
       emitEdit({ kind: direction, label: moved.step.label });
     });
+  }
+
+  /**
+   * Stops the debounced save before a `commitAnalysis` writes the Tab, and waits for saves in
+   * flight, so no older Tab lands after it. Returns whether the shown Tab had unsaved edits (put
+   * back by `resumeSave` if the commit fails).
+   */
+  async function holdSaves(): Promise<boolean> {
+    const wasDirty = dirty;
+    dirty = false;
+    if (saveTimer !== null) clearTimeout(saveTimer);
+    saveTimer = null;
+    trackUnsaved();
+    await saving;
+    return wasDirty;
+  }
+
+  /** After a failed commit: the unsaved edits held by `holdSaves` are saved as before. */
+  function resumeSave(wasDirty: boolean) {
+    if (wasDirty && !snapshot.missing) scheduleSave();
+  }
+
+  /** Commits `tab` with the snapshot's Take fields (`patch`), holding the edit saves meanwhile. */
+  async function commitTab(tab: Tab, patch: Parameters<TakeDb['commitAnalysis']>[2]) {
+    await settingsWrites;
+    const wasDirty = await holdSaves();
+    try {
+      return await deps.db.commitAnalysis(takeId, tab, patch);
+    } catch (err) {
+      resumeSave(wasDirty);
+      throw err;
+    }
+  }
+
+  /** Undo or redo of a re-analysis step: the whole snapshot, through `commitAnalysis`. */
+  async function restoreSnapshot(
+    step: SnapshotStep,
+    next: History,
+    direction: 'undo' | 'redo',
+    at: number,
+  ) {
+    const restore: AnalysisSnapshot = direction === 'undo' ? step.before : step.after;
+    const tab = snapshot.tab!;
+    let committed: { take: Take; tab: Tab };
+    restoring = true;
+    try {
+      committed = await commitTab(
+        { ...tab, notes: restore.notes, deletedStartMs: restore.deletedStartMs },
+        {
+          settings: restore.settings,
+          trimStartMs: restore.trimStartMs,
+          trimEndMs: restore.trimEndMs,
+          warnings: restore.warnings,
+          analysisVersion: restore.analysisVersion,
+        },
+      );
+    } catch (err) {
+      if (at !== epoch || snapshot.missing) return;
+      devWarn(`${direction} of the re-analysis of take ${takeId} failed`, err);
+      emitEdit({ kind: 'failed' });
+      return;
+    } finally {
+      restoring = false;
+    }
+    if (at !== epoch || snapshot.missing) return;
+    history = next;
+    analysedSettings = restore.settings;
+    heldTabs.delete(takeId);
+    publish({ take: committed.take, tab: committed.tab, saveFailed: null });
+    emitEdit({ kind: direction, label: step.label });
+  }
+
+  async function setSettings(patch: Partial<AnalysisSettings>): Promise<void> {
+    const take = snapshot.take;
+    if (!take || snapshot.missing || restoring || reanalysisQueued) return;
+    const settings = clampAnalysisSettings({ ...take.settings, ...patch }, take.settings);
+    if (sameSettings(settings, take.settings)) return;
+    storedSettings ??= take.settings;
+    const seq = ++settingsSeq;
+    publish({ take: { ...take, settings } }, true);
+    settingsPending++;
+    const write = settingsWrites.then(() => deps.db.patchTake(takeId, { settings }, WRITER));
+    settingsWrites = write.then(
+      () => {},
+      () => {},
+    );
+    try {
+      await write;
+      storedSettings = settings;
+      settingsPending--;
+    } catch (err) {
+      settingsPending--;
+      devWarn(`could not save the analysis settings of take ${takeId}`, err);
+      if (seq !== settingsSeq) return; // a later change decides what shows
+      const current = snapshot.take;
+      if (current && !snapshot.missing && storedSettings !== null) {
+        publish({ take: { ...current, settings: storedSettings } }, true);
+      }
+    }
+  }
+
+  /** Publishes the re-analysis's progress, never backward. */
+  function reanalysisProgress(progress: number) {
+    const current = snapshot.reanalysis;
+    if (current === null || progress <= current.progress) return;
+    publish({ reanalysis: { progress } });
+  }
+
+  function reanalyse(): Promise<void> {
+    if (
+      reanalysisQueued ||
+      snapshot.missing ||
+      snapshot.loading ||
+      !snapshot.take ||
+      !snapshot.tab ||
+      snapshot.analysis.kind !== 'idle'
+    ) {
+      return Promise.resolve();
+    }
+    if (!hasAudio(snapshot)) {
+      emitEdit({ kind: 'reanalyseFailed', code: 'audio-missing' });
+      return Promise.reject(new AppError('audio-missing', `No audio for take ${takeId}`));
+    }
+    pendingDigit = null;
+    reanalysisQueued = true;
+    const at = epoch;
+    const seq = ++reanalysisSeq;
+    // Shown at once, even queued behind other work: edits, undo and redo look disabled now.
+    publish({ reanalysis: { progress: 0 } });
+    let failure: AppError | null = null;
+    return enqueue(async () => {
+      try {
+        failure = await runReanalysis(at, seq);
+      } finally {
+        reanalysisQueued = false;
+        reanalysisRunning = false;
+      }
+    }).then(() => {
+      if (failure) throw failure;
+    });
+  }
+
+  /** The queued re-analysis; returns the error it failed with, or null. */
+  async function runReanalysis(at: number, seq: number): Promise<AppError | null> {
+    const current = () => seq === reanalysisSeq && at === epoch && !snapshot.missing;
+    await settingsWrites;
+    if (!current()) return null; // cancelled while queued, or the take deleted
+    if (!travelable()) {
+      publish({ reanalysis: null });
+      return null;
+    }
+    reanalysisRunning = true;
+    const take = snapshot.take!;
+    const tab = snapshot.tab!;
+    try {
+      const run = await deps.analysis.reanalyse(take, (p) => {
+        if (current()) reanalysisProgress(p);
+      });
+      if (!current()) return null;
+      const fresh = freshNotes(run.result.notes, run.result.confidenceThreshold, newId);
+      const merged = mergeReanalysis(fresh, tab.notes, tab.deletedStartMs);
+      const positions =
+        merged.length > 0
+          ? await deps.mapFrets(takeId, reanalysisRequest(merged, take.settings.maxFret))
+          : [];
+      if (!current()) return null;
+      reanalysisProgress(1);
+      const notes = placeReanalysed(merged, positions);
+      const warnings = {
+        tuningOffsetCents: run.result.tuningOffsetCents,
+        belowRangeNotes: run.result.belowRangeNotes,
+      };
+      const before: AnalysisSnapshot = {
+        notes: tab.notes,
+        deletedStartMs: tab.deletedStartMs,
+        settings: analysedSettings ?? take.settings,
+        trimStartMs: take.trimStartMs,
+        trimEndMs: take.trimEndMs,
+        warnings: take.warnings,
+        analysisVersion: take.analysisVersion,
+      };
+      const after: AnalysisSnapshot = {
+        notes,
+        deletedStartMs: tab.deletedStartMs,
+        settings: take.settings,
+        trimStartMs: take.trimStartMs,
+        trimEndMs: take.trimEndMs,
+        warnings,
+        analysisVersion: run.analysisVersion,
+      };
+      reanalysisCommitting = true;
+      const committed = await commitTab(
+        { ...tab, notes },
+        { analysisVersion: run.analysisVersion, warnings },
+      );
+      if (at !== epoch || snapshot.missing) return null;
+      const reanalysed: HistoryStep = {
+        label: { kind: 'reanalyse' },
+        target: null,
+        before,
+        after,
+        mergeKey: null,
+        snapshot: true,
+      };
+      history = pushStep(history, reanalysed);
+      analysedSettings = take.settings;
+      heldTabs.delete(takeId);
+      publish({ take: committed.take, tab: committed.tab, reanalysis: null, saveFailed: null });
+      emitEdit({ kind: 'reanalysed', notes: committed.tab.notes.length });
+      if (run.fromRaw) {
+        // The raw file goes only after the commit (spine AD-9); a failed delete leaves an orphan.
+        try {
+          await deps.deleteRaw(takeId);
+          if (!snapshot.missing) publish({ hasRaw: false });
+        } catch (err) {
+          devWarn(`could not delete the raw file of take ${takeId}`, err);
+        }
+      }
+      return null;
+    } catch (err) {
+      if (!current()) return null; // cancelled, or the take deleted
+      const code = errorCode(err);
+      publish({ reanalysis: null });
+      if (code === 'analysis-cancelled') {
+        emitEdit({ kind: 'reanalyseCancelled' });
+        return null;
+      }
+      devWarn(`re-analysis of take ${takeId} failed`, err);
+      emitEdit({ kind: 'reanalyseFailed', code });
+      return isAppError(err) ? err : new AppError(code, 're-analysis failed', { cause: err });
+    } finally {
+      reanalysisCommitting = false;
+    }
+  }
+
+  function cancelReanalysis() {
+    if (snapshot.reanalysis === null || reanalysisCommitting) return;
+    reanalysisSeq++; // the cancelled run's results are ignored
+    deps.analysis.cancel(takeId);
+    deps.cancel(takeId); // its fret mapping, if it got that far
+    publish({ reanalysis: null });
+    emitEdit({ kind: 'reanalyseCancelled' });
   }
 
   function typeDigit(digit: number) {
@@ -936,8 +1307,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     },
     undo: () => travel('undo'),
     redo: () => travel('redo'),
-    canUndo: () => history.undo.length > 0,
-    canRedo: () => history.redo.length > 0,
+    canUndo: () => snapshot.reanalysis === null && history.undo.length > 0,
+    canRedo: () => snapshot.reanalysis === null && history.redo.length > 0,
     onEditEvent(listener) {
       editListeners.add(listener);
       return () => {
@@ -976,6 +1347,9 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     selectPrev: (from) => step(-1, from),
     selectNextFlagged: nextFlagged,
     rename,
+    setSettings,
+    reanalyse,
+    cancelReanalysis,
   };
 }
 
@@ -999,8 +1373,15 @@ export function activeTakeSession(): TakeSession | null {
 export function createAppTakeSession(takeId: string): TakeSession {
   const store = import.meta.env.DEV ? devDb(db) : db;
   return createTakeSession(takeId, {
-    db,
+    db: {
+      getTake: (id) => db.getTake(id),
+      getTab: (id) => db.getTab(id),
+      patchTake: (id, patch, writer) => db.patchTake(id, patch, writer),
+      commitAnalysis: (id, tab, patch) => store.commitAnalysis(id, tab, patch),
+    },
     analysis: appAnalysis,
+    hasRaw: async (id) => (await audioStore.rawSampleCount(id)) > 0,
+    deleteRaw: (id) => audioStore.deleteRaw(id),
     cancel: (id) => engineClient.cancel(id),
     subscribeStorage,
     putTab: (tab, writer) => store.putTab(tab, writer),

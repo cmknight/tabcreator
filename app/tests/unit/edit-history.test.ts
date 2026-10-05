@@ -19,7 +19,19 @@ import {
   type EngineResult,
   type HistoryStep,
   type MapFretsRequest,
+  freshNotes,
+  isLowConfidence,
+  mergeReanalysis,
+  placeReanalysed,
+  reanalysisRequest,
+  type AnalysisSnapshot,
+  type FreshNote,
 } from '../../src/model/edit-history';
+import {
+  clampAnalysisSettings,
+  clampSensitivity,
+  sameSettings,
+} from '../../src/model/analysis-settings';
 import { OPEN_MIDI, type Note, type StringNo } from '../../src/model/types';
 
 // Story "Change a fret and undo it" (spine AD-4): the set-fret command and the undo history.
@@ -309,6 +321,7 @@ describe('insertNote', () => {
       fret: 0,
       locked: true,
       lowConfidence: false,
+      inserted: true,
     });
     expect(cmd.plan(state)[0]!.locks).toContainEqual({ index: 1, string: 3, fret: 0 });
     expect(cmd.selectAfter!(state, next)).toBe('new');
@@ -541,5 +554,162 @@ describe('refingered', () => {
   it('ignores an inserted note (not in before)', () => {
     const d = note('d', 400, 2, 1);
     expect(refingered([a, b, c], [a, b, note('x', 350, 1, 0), d], 'x')).toEqual([]);
+  });
+});
+
+// Story "Analysis settings and re-analysis" (US-4.6): inserted notes, the merge, the snapshot step.
+describe('inserted notes', () => {
+  it('deleting an inserted note leaves deletedStartMs unchanged; a detected note is recorded', () => {
+    const inserted = run(insertNote('new', 'a'), STATE);
+    const added = inserted.notes.find((n) => n.id === 'new')!;
+    expect(added.inserted).toBe(true);
+    const afterDelete = run(deleteNote('new'), inserted);
+    expect(afterDelete.notes.some((n) => n.id === 'new')).toBe(false);
+    expect(afterDelete.deletedStartMs).toBe(inserted.deletedStartMs);
+    expect(run(deleteNote('a'), STATE).deletedStartMs).toEqual([1500, 0]);
+  });
+});
+
+describe('re-analysis merge', () => {
+  const fresh = (id: string, startMs: number, midi = 60, confidence = 0.9): FreshNote => ({
+    id,
+    startMs,
+    endMs: startMs + 100,
+    midi,
+    confidence,
+    locked: false,
+    lowConfidence: false,
+  });
+
+  it('freshNotes: new ids, unlocked, flagged below c + 0.15', () => {
+    let n = 0;
+    const out = freshNotes(
+      [
+        { startMs: 0, endMs: 100, midi: 60, confidence: 0.49 },
+        { startMs: 200, endMs: 300, midi: 62, confidence: 0.5 },
+      ],
+      0.35,
+      () => `f${++n}`,
+    );
+    expect(out).toEqual([
+      {
+        startMs: 0,
+        endMs: 100,
+        midi: 60,
+        confidence: 0.49,
+        id: 'f1',
+        locked: false,
+        lowConfidence: true,
+      },
+      {
+        startMs: 200,
+        endMs: 300,
+        midi: 62,
+        confidence: 0.5,
+        id: 'f2',
+        locked: false,
+        lowConfidence: false,
+      },
+    ]);
+    expect(isLowConfidence(0.5, 0.35)).toBe(false);
+  });
+
+  it('a locked note at 1000 ms: a new note at 980 goes, 1200 stays; the locked note is kept as it is', () => {
+    const locked = note('L', 1000, 3, 7, { locked: true });
+    const unlocked = note('U', 2000, 2, 1);
+    const merged = mergeReanalysis(
+      [fresh('n980', 980), fresh('n1200', 1200)],
+      [locked, unlocked],
+      [],
+    );
+    expect(merged.map((n) => n.id)).toEqual(['L', 'n1200']);
+    expect(merged[0]).toBe(locked);
+  });
+
+  it('a new note within 50 ms of a deleted start is dropped; 51 ms away it stays', () => {
+    const merged = mergeReanalysis(
+      [fresh('a', 1530), fresh('b', 1450), fresh('c', 1551), fresh('d', 1449)],
+      [],
+      [1500],
+    );
+    expect(merged.map((n) => n.id)).toEqual(['d', 'c']);
+  });
+
+  it('sorted by startMs; locked notes with new ids never; deletedStartMs untouched', () => {
+    const deleted = [5000];
+    const l1 = note('l1', 500, 1, 0, { locked: true, inserted: true });
+    const merged = mergeReanalysis([fresh('x', 900), fresh('y', 100)], [l1], deleted);
+    expect(merged.map((n) => n.id)).toEqual(['y', 'l1', 'x']);
+    expect(deleted).toEqual([5000]);
+  });
+
+  it('one request with a lock per locked note; placing keeps locked notes exactly and drops unplaceable new ones', () => {
+    const locked = note('L', 500, 3, 7, { locked: true });
+    const merged = mergeReanalysis([fresh('a', 100, 64), fresh('b', 900, 30)], [locked], []);
+    const request = reanalysisRequest(merged, 22);
+    expect(request).toEqual({
+      kind: 'mapFrets',
+      notes: [
+        { midi: 64, startMs: 100, endMs: 200 },
+        { midi: locked.midi, startMs: 500, endMs: 700 },
+        { midi: 30, startMs: 900, endMs: 1000 },
+      ],
+      locks: [{ index: 1, string: 3, fret: 7 }],
+      maxFret: 22,
+    });
+    // A mapper that (wrongly) moves the locked note: it is kept as it was anyway.
+    const placed = placeReanalysed(merged, [{ string: 1, fret: 0 }, { string: 2, fret: 11 }, null]);
+    expect(placed.map((n) => n.id)).toEqual(['a', 'L']);
+    expect(placed[0]).toMatchObject({ string: 1, fret: 0, locked: false });
+    expect(placed[1]).toBe(locked);
+  });
+});
+
+describe('snapshot steps', () => {
+  const snap = (n: number): AnalysisSnapshot => ({
+    notes: [note(`s${n}`, n, 1, 0)],
+    deletedStartMs: [n],
+    settings: { sensitivity: n / 10, minNoteMs: 40, maxFret: 24 },
+    trimStartMs: 0,
+    trimEndMs: null,
+    warnings: undefined,
+    analysisVersion: `v${n}`,
+  });
+  const reanalysed: HistoryStep = {
+    label: { kind: 'reanalyse' },
+    target: null,
+    before: snap(1),
+    after: snap(2),
+    mergeKey: null,
+    snapshot: true,
+  };
+
+  it('undo and redo carry the whole snapshot', () => {
+    const h = pushStep(EMPTY_HISTORY, reanalysed);
+    const u = undoStep(h)!;
+    expect(u.step).toBe(reanalysed);
+    expect(redoStep(u.history)!.step.after).toEqual(snap(2));
+  });
+});
+
+describe('analysis settings ranges', () => {
+  const fallback = { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 };
+  it('clamps to 0–1 (0.05 steps), 20–100 ms and frets 12–24; not a number: the fallback', () => {
+    expect(
+      clampAnalysisSettings({ sensitivity: 0.31, minNoteMs: 5, maxFret: 30 }, fallback),
+    ).toEqual({
+      sensitivity: 0.3,
+      minNoteMs: 20,
+      maxFret: 24,
+    });
+    expect(
+      clampAnalysisSettings({ sensitivity: NaN, minNoteMs: 150, maxFret: 3 }, fallback),
+    ).toEqual({
+      sensitivity: 0.5,
+      minNoteMs: 100,
+      maxFret: 12,
+    });
+    expect(clampSensitivity(0.35, 0)).toBe(0.35);
+    expect(sameSettings(fallback, { ...fallback })).toBe(true);
   });
 });

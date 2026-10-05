@@ -127,3 +127,35 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* The Analysis settings panel (DESIGN.md: inline, not a dialog; mockup tab.html .settings): a
+   surface with a hairline border below the toolbar. */
+.panel {
+  margin-block-start: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.panelTitle {
+  margin: 0 0 var(--space-3);
+  font: var(--font-ui);
+  font-weight: 600;
+}
+
+/* A re-analysis's progress, under the fields. */
+.panelProgress {
+  margin-block-start: var(--space-4);
+}
+
+/* The No notes found tip's "Analysis settings": a button that looks like a link. */
+.linkButton {
+  padding: 0;
+  background: none;
+  color: var(--color-primary);
+  font: inherit;
+  text-decoration: underline;
+  border: 0;
+  cursor: pointer;
+}

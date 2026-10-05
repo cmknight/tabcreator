@@ -3,12 +3,13 @@ title: 'Analysis settings and re-analysis'
 type: 'feature'
 ticket: '6'
 created: '2026-10-05'
-status: 'draft'
+status: 'built'
+baseline_revision: '57cd442a0455a8e81063f98aa4707da308cb0eb0'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -91,7 +92,7 @@ deferred: []
 
 | Scenario | Input / State | Expected Output / Behavior | Error Handling |
 |----------|--------------|---------------------------|----------------|
-| Sensitivity | c_major noisy at 0.2 vs 0.8 | fewer notes at 0.2 | — |
+| Sensitivity | repeated_notes_16th_160bpm_noisy at 0.2 vs 0.8 | more notes flagged low-confidence at 0.2; never more notes at 0.2 than at 0.8 | — |
 | Change saves | slider to 0.3 | take.settings.sensitivity 0.3 stored; shown on reopen; no undo step | save fails: value reverts |
 | Number clamp | min length 5, Enter | 20 stored | — |
 | Locked kept | an edited note at 1000 ms; new notes at 980 and 1200 | 980 removed; the locked note kept exactly; 1200 kept | — |
@@ -154,7 +155,7 @@ deferred: []
 - [ ] `app/tests/e2e/reanalyse.dev.spec.ts` -- the ACs.
 
 **Acceptance Criteria:**
-- Given a take recorded from `c_major_scale_pos1_noisy`, when the player re-analyses at sensitivity 0.2 and then at 0.8, then the 0.2 tab has fewer notes than the 0.8 tab.
+- Given a take recorded from `repeated_notes_16th_160bpm_noisy`, when the player re-analyses at sensitivity 0.2 and then at 0.8, then the 0.2 tab flags more notes low-confidence than the 0.8 tab and has no more notes than it (user, 2026-10-05).
 - Given that take, when the player edits one note's fret, deletes another, raises sensitivity, re-analyses and confirms the dialog, then:
   - the edited note is unchanged in string, fret and `startMs`, and still locked;
   - no note starts within 50 ms of the deleted note's `startMs`.
@@ -166,7 +167,41 @@ deferred: []
 
 ## Plan Change Log
 
+- 2026-10-05, after the step-3 halt (user ruling): sensitivity does not change the note count on any noisy synth fixture, so the sensitivity matrix row and the first AC now prove it via the low-confidence flags on repeated_notes_16th_160bpm_noisy (0.2 flags more than 0.8; never more notes at 0.2). The engine follow-up is in deferred-work. KEEP everything implemented.
+
 ## Review Triage Log
+
+### 2026-10-05 — Review pass
+- verdicts: 28 findings — high 0, medium 0, low 27, false 1, maybe-false 0
+- findings:
+  - `[low]` `[patch]` (blind) A foreign `take-put` re-read sets `storedSettings` to an unsaved value, so a failed settings write doesn't revert — guarded like `pendingTitle`.
+  - `[low]` `[patch]` (blind) `hasRaw` is false until checked, so a raw-only take is briefly refused — `hasRaw` is unknown until checked, and unknown doesn't disable or refuse (`analysis.reanalyse` decides).
+  - `[low]` `[reject]` (blind) A storage-full re-analysis commit discards the result with no Retry — the plan rules that any failure leaves everything unchanged and announced; re-running takes seconds; the held-result Retry is the first analysis's.
+  - `[low]` `[reject]` (blind) Undoing or redoing a re-analysis overwrites settings changed since — the AD-4 snapshot includes settings, and the user ruling restores the analysed-with settings.
+  - `[low]` `[patch]` (blind) `tab.noNotesTipSensitivity` is dead, with a stale comment — removed.
+  - `[low]` `[reject]` (blind) The `reanalyse` case in `editText` is unreachable — it is there for type exhaustiveness.
+  - `[low]` `[patch]` (blind) The snapshot-step merge guard is dead and its test vacuous — removed the guard; snapshot steps never carry a merge key.
+  - `[low]` `[reject]` (blind) `onStorage` calls `cancelRun` twice — correct as written; cosmetic.
+  - `[low]` `[reject]` (blind) Clamping one field rewrites out-of-range stored values silently — no UI could set values outside the ranges before; defaults were 40 ms and 24.
+  - `[low]` `[patch]` (blind) Edits during a re-analysis are dropped silently; the popover stays open — the popover closes when a re-analysis starts, and the toolbar and shortcuts show the paused state at once (see the edge finding below).
+  - `[low]` `[patch]` (blind) Missing tests (cancel during `mapFrets`, take-deleted mid-run, e2e cancel, defaults round trip) — added session tests for cancel during `mapFrets` and take-deleted mid-run; the e2e and round-trip gaps are rejected (unit-covered, and take-lifecycle's copy of the defaults is tested in recording-take).
+  - `[low]` `[reject]` (blind) The `before` snapshot uses the current trim, not the analysed trim — trim can't change between analyses until 8.7, whose trim is itself a snapshot command (noted for 8.7).
+  - `[low]` `[patch]` (edge) `setSettings` during a snapshot restore leaves the screen and storage out of step — settings changes are refused while a restore commits.
+  - `[low]` `[patch]` (edge) A foreign `take-put` during a settings write — the same as the blind finding.
+  - `[low]` `[patch]` (edge) `setAnalysisDefaults` publishes even when the prefs write fails — it now reverts to the stored prefs on failure.
+  - `[low]` `[patch]` (edge) A re-analysis queued behind other work leaves the controls looking enabled while they are dropped — `reanalysis: {progress: 0}` now publishes when it is queued.
+  - `[low]` `[reject]` (edge) `analysedSettings` at load is the take's current settings (cross-session) — undo history is session-only; persisting analysed settings would be a new Take field; recorded as a residual risk.
+  - `[low]` `[patch]` (edge) Esc in the panel discards a number field's uncommitted draft — drafts commit when the panel closes.
+  - `[low]` `[patch]` (verification-gap) `holdSaves`/`resumeSave` around the re-analysis and restore commits are untested — added fake-timer tests (no stale `putTab` after a commit; a held edit saved after a failed restore).
+  - `[low]` `[patch]` (verification-gap) Re-analysis progress announcements are untested — the assertion is added.
+  - `[low]` `[patch]` (verification-gap) The re-analysis commit-failure path is untested — added session and screen tests for `storage-full`.
+  - `[low]` `[patch]` (verification-gap, other) The merge guard test is vacuous — the same as the blind finding.
+  - `[low]` `[reject]` (verification-gap, other) `cancelRun` twice — the same as the blind finding.
+  - `[low]` `[reject]` (intent) "Never more notes" is checked by one run pair — the user's ruling names that fixture pair.
+  - `[low]` `[patch]` (intent) Cancel keeping existing history and edited settings is not tested — the cancel test now starts with history and edited settings.
+  - `[low]` `[reject]` (intent) Audio availability comes from metadata: `audioMime` set but the file gone stays enabled — the run then fails with `audio-missing`, announced; AD-15's metadata check is what the UI can know cheaply.
+  - `[low]` `[reject]` (intent) No test links a changed default to a new take — covered by recording-take ("creates the take … with the copied defaults") together with the settings-session tests.
+  - `[false]` `[reject]` (intent) lowConfidence uses c + 0.15, not c — that is 5.4's shipped rule ("from the c the engine reports"), shared with the first analysis.
 
 ## Design Notes
 
@@ -185,3 +220,59 @@ deferred: []
 **Commands:**
 - `cd app && npx -y pnpm@12.6.0 lint && npx -y pnpm@12.6.0 typecheck && npx -y pnpm@12.6.0 format:check && npx -y pnpm@12.6.0 test` -- expected: pass.
 - `cd app && export PATH="$HOME/.cargo/bin:$PATH" && npx -y pnpm@12.6.0 exec playwright test --project=dev tests/e2e/reanalyse.dev.spec.ts tests/e2e/tab-edit.dev.spec.ts tests/e2e/tab-states.dev.spec.ts` -- expected: pass.
+
+## Auto Run Result
+
+**Status:** built, 2026-10-05.
+
+**Summary:**
+- **Analysis settings panel:** an inline panel on the Tab screen (toolbar toggle; Sensitivity slider "Fewer notes" ↔ "More notes", Minimum note length 20–100 ms, Highest fret 12–24) saves each change to the take at once. Re-analyse is the screen's one primary button, disabled with "No audio to analyse" when there is no compressed audio and no raw file.
+- **Re-analysis:**
+  - `analysis.reanalyse` reads the audio and runs the engine without committing.
+  - take-session merges: locked notes replace new notes within 50 ms; new notes within 50 ms of a detected-and-deleted start are dropped; lowConfidence uses c + 0.15.
+  - It maps frets with locks, commits through `commitAnalysis`, and pushes one snapshot undo step restored through `commitAnalysis`, with the analysed-with settings.
+  - Progress and Cancel show in the panel, the tab stays, and Cancel changes nothing.
+- **Confirm dialog:** reusable (`ConfirmDialog`, overlays), "Re-analyse <title>?", Cancel first and focused. It guards a run when notes are locked.
+- **Inserted notes** are marked, and deleting one records nothing.
+- **Settings screen:** "Defaults for new takes" through settings-session into `prefs.analysisDefaults` (clamped to the UI ranges).
+- **No notes found:** the tip opens the panel.
+
+**Files:**
+- Model: `app/src/model/types.ts`, `edit-history.ts`, `analysis-settings.ts` (new).
+- Session: `app/src/session/analysis.ts`, `take-session.ts`, `settings-session.ts`.
+- Storage: `app/src/storage/prefs.ts`.
+- UI:
+  - `app/src/ui/components/ConfirmDialog.tsx`, `AnalysisSettingsFields.tsx` (new, + CSS);
+  - `app/src/ui/screens/Tab.tsx`, `Settings.tsx`;
+  - icons, `strings.ts`, `session/README.md`.
+- Tests:
+  - unit: `edit-history`, `analysis`, `take-session`, `settings-session`, `prefs`, `tab-screen`, `settings-screen`;
+  - e2e: `tests/e2e/reanalyse.dev.spec.ts` (sensitivity flags on repeated_notes_16th_160bpm_noisy; edited and deleted notes across a re-analysis; settings persisting on reopen; undo exact; Confirm dialog focus and axe), and No notes found in `tab-edit.dev.spec.ts`.
+
+**Review:** thorough, 28 findings (27 low, 1 false).
+- **Patched (low):**
+  - the stored-settings guard;
+  - unknown `hasRaw`;
+  - the paused state when a re-analysis is queued;
+  - the popover closing when a re-analysis starts;
+  - settings refused during a restore;
+  - the failed-defaults revert;
+  - Esc committing drafts;
+  - the dead merge guard and the dead string removed;
+  - tests for the save hold and resume, the commit failures, cancel during mapFrets, take-deleted mid-run, and progress announcements.
+- **Deferred:** none.
+- **Rejected:** with reasons in the triage log.
+
+**Follow-up review: not recommended.** No high or medium.
+
+**Verification:**
+- lint, typecheck, format:check and test pass (1393).
+- Dev and chromium e2e: 181/181.
+- prod-mic: 4/4.
+
+**Residual risks:**
+- **Sensitivity and note count:** the engine finds the same notes at every sensitivity on the synth fixtures; it is proven via the low-confidence flags (user ruling; engine follow-up in deferred-work).
+- **analysedSettings across sessions:** they are the take's settings at load, so settings changed in an earlier session without re-analysing are what a later undo restores.
+- **Storage-full commit:** a storage-full re-analysis commit discards the result, and the player re-runs it.
+- **Unversioned field:** `Note.inserted` is a new optional persisted field with no shape-version bump; older notes lack it.
+- **Copy:** the new strings are not yet in EXPERIENCE.md (deferred-work).

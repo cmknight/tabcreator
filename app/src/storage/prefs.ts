@@ -2,7 +2,8 @@
 // One key, `tabcreator.prefs.v1`, holding a typed, versioned `Prefs`. A missing, corrupt or
 // older value loads as typed defaults; each invalid field falls back to its default alone.
 
-import type { AnalysisSettings, Prefs, ThemePref } from '../model/types';
+import { clampAnalysisSettings } from '../model/analysis-settings';
+import type { Prefs, ThemePref } from '../model/types';
 import { assertWritable, toStorageError } from './write-guard';
 
 export const PREFS_KEY = 'tabcreator.prefs.v1';
@@ -32,8 +33,6 @@ const isObject = (v: unknown): v is Json =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 const isInt = (v: unknown, min: number, max: number): v is number =>
   typeof v === 'number' && Number.isInteger(v) && v >= min && v <= max;
-const isNum = (v: unknown, min: number, max: number): v is number =>
-  typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
 const bool = (v: unknown, fallback: boolean) => (typeof v === 'boolean' ? v : fallback);
 const THEMES: readonly ThemePref[] = ['system', 'light', 'dark'];
 
@@ -49,15 +48,9 @@ function sanitize(raw: Json): Prefs {
   const d = cloneDefaults();
   const countIn = isObject(raw.countIn) ? raw.countIn : {};
   const analysis = isObject(raw.analysisDefaults) ? raw.analysisDefaults : {};
-  const analysisDefaults: AnalysisSettings = {
-    sensitivity: isNum(analysis.sensitivity, 0, 1)
-      ? analysis.sensitivity
-      : d.analysisDefaults.sensitivity,
-    minNoteMs: isNum(analysis.minNoteMs, 1, 10_000)
-      ? analysis.minNoteMs
-      : d.analysisDefaults.minNoteMs,
-    maxFret: isInt(analysis.maxFret, 0, 24) ? analysis.maxFret : d.analysisDefaults.maxFret,
-  };
+  // Clamped to the ranges the Settings screen offers (sensitivity 0–1 in 0.05 steps, minimum
+  // note length 20–100 ms, highest fret 12–24); a field that is not a number takes its default.
+  const analysisDefaults = clampAnalysisSettings(analysis, d.analysisDefaults);
   return {
     version: 1,
     micGranted: bool(raw.micGranted, d.micGranted),

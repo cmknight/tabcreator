@@ -110,3 +110,63 @@ describe('settings session prefs (Bar lines)', () => {
     expect(v).toHaveBeenCalledTimes(1);
   });
 });
+
+// Story "Analysis settings and re-analysis" (US-4.6): the defaults for new takes.
+describe('settings session prefs (Defaults for new takes)', () => {
+  const version = () => new Promise<string>(() => {});
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('loads analysisDefaults; setAnalysisDefaults writes prefs.analysisDefaults and publishes', () => {
+    const session = createSettingsSession({ version });
+    expect(session.getSnapshot().prefs.analysisDefaults).toEqual(DEFAULT_PREFS.analysisDefaults);
+    const listener = vi.fn();
+    session.subscribePrefs(listener);
+    session.setAnalysisDefaults({ sensitivity: 0.7 });
+    expect(session.getSnapshot().prefs.analysisDefaults).toEqual({
+      sensitivity: 0.7,
+      minNoteMs: 40,
+      maxFret: 24,
+    });
+    expect(loadPrefs().analysisDefaults.sensitivity).toBe(0.7);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(
+      createSettingsSession({ version }).getSnapshot().prefs.analysisDefaults.sensitivity,
+    ).toBe(0.7);
+    session.setAnalysisDefaults({ sensitivity: 0.7 }); // unchanged: nothing published
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('clamps to the UI ranges and keeps barLines', () => {
+    const session = createSettingsSession({ version });
+    session.setBarLines(false);
+    session.setAnalysisDefaults({ minNoteMs: 5, maxFret: 40 });
+    expect(session.getSnapshot().prefs).toEqual({
+      barLines: false,
+      analysisDefaults: { sensitivity: 0.5, minNoteMs: 20, maxFret: 24 },
+    });
+    expect(loadPrefs()).toMatchObject({
+      barLines: false,
+      analysisDefaults: { sensitivity: 0.5, minNoteMs: 20, maxFret: 24 },
+    });
+  });
+});
+
+describe('settings session prefs (a failed defaults write)', () => {
+  it('shows the stored defaults again, which new takes copy', () => {
+    const stored: Prefs = { ...DEFAULT_PREFS };
+    const session = createSettingsSession(
+      { version: () => new Promise<string>(() => {}) },
+      {
+        loadPrefs: () => stored,
+        updatePrefs: () => {
+          throw new AppError('storage-full', 'full');
+        },
+      },
+    );
+    session.setAnalysisDefaults({ sensitivity: 0.7 });
+    expect(session.getSnapshot().prefs.analysisDefaults).toEqual(DEFAULT_PREFS.analysisDefaults);
+  });
+});

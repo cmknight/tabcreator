@@ -818,3 +818,104 @@ describe('review fixes', () => {
     await done;
   });
 });
+
+// Story "Analysis settings and re-analysis" (US-4.6): the re-analysis entry runs the engine and
+// commits nothing; take-session merges, maps and commits.
+describe('reanalyse', () => {
+  const ANALYSED: Take = { ...TAKE, status: 'analyzed', analysisVersion: '0.3.0' };
+
+  it("the take's current settings, trim and skip; progress 0.9·p; the result, version and source; no commit", async () => {
+    const h = harness({ take: ANALYSED });
+    const analysis = createAnalysis(h.deps);
+    const seen: number[] = [];
+    const take = { ...ANALYSED, settings: { sensitivity: 0.8, minNoteMs: 30, maxFret: 20 } };
+    const done = analysis.reanalyse(take, (p) => seen.push(p));
+    await settle();
+    expect(analysis.isAnalysing()).toBe(true);
+    h.progress(0.5);
+    h.progress(0.2); // never backward
+    h.finishAnalyze();
+    await expect(done).resolves.toEqual({
+      result: RESULT,
+      analysisVersion: '0.4.0',
+      fromRaw: true,
+    });
+    expect(seen).toEqual([0.45, 0.9]);
+    expect(vi.mocked(h.deps.engine.analyze).mock.calls[0]![3]).toStrictEqual({
+      sensitivity: 0.8,
+      minNoteMs: 30,
+      maxFret: 20,
+      trimStartMs: 120,
+      trimEndMs: 3_800,
+      skipStartMs: 100,
+    });
+    expect(h.calls).toEqual(['readRaw', 'analyze']);
+    expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+    expect(h.deps.engine.mapFrets).not.toHaveBeenCalled();
+    expect(analysis.isAnalysing()).toBe(false);
+  });
+
+  it('no raw file: the decoded compressed audio (fromRaw false)', async () => {
+    const h = harness({
+      take: ANALYSED,
+      readRaw: () => Promise.reject(new AppError('audio-missing', 'no raw')),
+      readCompressed: async () => new Blob(['x']),
+    });
+    const done = createAnalysis(h.deps).reanalyse(ANALYSED);
+    await settle();
+    h.finishAnalyze();
+    await expect(done).resolves.toMatchObject({ fromRaw: false });
+    expect(h.calls).toEqual(['readRaw', 'readCompressed', 'decode', 'analyze']);
+  });
+
+  it('neither raw nor compressed audio: rejects audio-missing, no engine call', async () => {
+    const h = harness({
+      take: { ...ANALYSED, audioMime: null },
+      readRaw: () => Promise.reject(new AppError('audio-missing', 'no raw')),
+    });
+    await expect(
+      createAnalysis(h.deps).reanalyse({ ...ANALYSED, audioMime: null }),
+    ).rejects.toMatchObject({ code: 'audio-missing' });
+    expect(h.deps.engine.analyze).not.toHaveBeenCalled();
+  });
+
+  it('cancel: rejects analysis-cancelled at once and cancels the engine work', async () => {
+    const h = harness({ take: ANALYSED });
+    const analysis = createAnalysis(h.deps);
+    const done = analysis.reanalyse(ANALYSED);
+    await settle();
+    expect(analysis.cancel('t1')).toBe(true);
+    await expect(done).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    expect(h.deps.engine.cancel).toHaveBeenCalledWith('t1');
+    expect(analysis.isAnalysing()).toBe(false);
+    expect(analysis.cancel('t1')).toBe(false);
+  });
+
+  it('the take deleted: cancelled', async () => {
+    const h = harness({ take: ANALYSED });
+    const analysis = createAnalysis(h.deps);
+    const done = analysis.reanalyse(ANALYSED);
+    await settle();
+    h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    await expect(done).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    expect(h.hasStorageListener()).toBe(false);
+  });
+
+  it('an engine failure rejects with its code', async () => {
+    const h = harness({ take: ANALYSED });
+    const done = createAnalysis(h.deps).reanalyse(ANALYSED);
+    await settle();
+    h.failAnalyze(new AppError('analysis-failed', 'boom'));
+    await expect(done).rejects.toMatchObject({ code: 'analysis-failed' });
+  });
+
+  it('a second re-analysis of the same take while one runs: rejected', async () => {
+    const h = harness({ take: ANALYSED });
+    const analysis = createAnalysis(h.deps);
+    const first = analysis.reanalyse(ANALYSED);
+    await expect(analysis.reanalyse(ANALYSED)).rejects.toMatchObject({ code: 'analysis-failed' });
+    await settle();
+    h.finishAnalyze();
+    await expect(first).resolves.toMatchObject({ fromRaw: true });
+  });
+});

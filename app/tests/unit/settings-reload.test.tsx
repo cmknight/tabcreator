@@ -10,12 +10,19 @@ import { dismissToast } from '../../src/ui/toast';
 // when it is not.
 
 const stores = vi.hoisted(() => ({
-  settings: { engine: { state: 'unavailable' }, prefs: { barLines: false } },
+  settings: {
+    engine: { state: 'unavailable' },
+    prefs: { barLines: false, analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 } },
+  },
   recording: false,
   analysing: false,
 }));
 vi.mock('../../src/session/settings-session', () => ({
-  settingsSession: { subscribe: () => () => {}, getSnapshot: () => stores.settings },
+  settingsSession: {
+    subscribe: () => () => {},
+    getSnapshot: () => stores.settings,
+    setAnalysisDefaults: () => {},
+  },
 }));
 vi.mock('../../src/session/recording-session', () => ({
   recordingSession: { isBusy: () => stores.recording },

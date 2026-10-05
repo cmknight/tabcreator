@@ -40,3 +40,9 @@
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-undo-and-redo-controls-plan.md`
   summary: EXPERIENCE.md and the mockup show only "Undo move to string 2", "Nothing to undo/redo" and "No notes yet"; story 8.4 added "Undo/Redo set fret N", "… delete note", "… insert note", "… confirm note" and "Select a note to delete" — owner: UX owner.
   evidence: commandPhrase, tab.undoAction/redoAction and the reasons in app/src/ui/strings.ts.
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-analysis-settings-and-re-analysis-plan.md`
+  summary: Sensitivity does not change the note count on any noisy synth fixture (0 to 1 give the same notes; only lowConfidence flags move), so US-4.6's "0.2 yields fewer false notes than 0.8" is not met by the engine — owner: engine (a retune story with an engine_version bump).
+  evidence: Measured in story 8.6: c_major_scale_pos1_noisy gives 7 notes (4 s) and 12 (8 s) at 0, 0.2, 0.5, 0.8 and 1; repeated_notes_16th_160bpm_noisy flags 12 notes at 0.2 and 2 at 0.8.
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-analysis-settings-and-re-analysis-plan.md`
+  summary: EXPERIENCE.md does not yet carry story 8.6's copy — the Confirm dialog title "Re-analyse <take title>?" and its buttons, "No audio to analyse", "Re-analysed: N notes", "Re-analysis cancelled", "Re-analysis failed — try again", the slider's value text, "Defaults for new takes" field hints, and "Undo re-analyse" — owner: UX owner.
+  evidence: Strings in app/src/ui/strings.ts; the dialog decision is in epic Tab editing's Notes (2026-10-05).

@@ -59,18 +59,26 @@ const note = (i: number, string: Note['string'], fret: number): Note => ({
 });
 
 /**
- * A snapshot; `selectedNoteId`, `lastFocusedNoteId`, `saveFailed`, `undoLabel` and `redoLabel`
- * default to null.
+ * A snapshot; `selectedNoteId`, `lastFocusedNoteId`, `saveFailed`, `undoLabel`, `redoLabel` and
+ * `reanalysis` default to null, `hasRaw` to false.
  */
 type Snap = Omit<
   TakeSnapshot,
-  'selectedNoteId' | 'lastFocusedNoteId' | 'saveFailed' | 'undoLabel' | 'redoLabel'
+  | 'selectedNoteId'
+  | 'lastFocusedNoteId'
+  | 'saveFailed'
+  | 'undoLabel'
+  | 'redoLabel'
+  | 'reanalysis'
+  | 'hasRaw'
 > & {
   selectedNoteId?: string | null;
   lastFocusedNoteId?: string | null;
   saveFailed?: TakeSnapshot['saveFailed'];
   undoLabel?: TakeSnapshot['undoLabel'];
   redoLabel?: TakeSnapshot['redoLabel'];
+  reanalysis?: TakeSnapshot['reanalysis'];
+  hasRaw?: boolean | null;
 };
 
 function mockSession(initial: Snap) {
@@ -80,6 +88,8 @@ function mockSession(initial: Snap) {
     saveFailed: null,
     undoLabel: null,
     redoLabel: null,
+    reanalysis: null,
+    hasRaw: false,
     ...initial,
   };
   const listeners = new Set<() => void>();
@@ -120,6 +130,9 @@ function mockSession(initial: Snap) {
     deleteSelected: vi.fn(() => Promise.resolve()),
     insert: vi.fn(() => Promise.resolve()),
     confirm: vi.fn(() => Promise.resolve()),
+    setSettings: vi.fn(() => Promise.resolve()),
+    reanalyse: vi.fn(() => Promise.resolve()),
+    cancelReanalysis: vi.fn(),
     onEditEvent: vi.fn((listener: (event: EditEvent) => void) => {
       editListeners.add(listener);
       return () => {
@@ -1025,7 +1038,7 @@ describe('Tab screen tab area, header and selection', () => {
     render(<Tab takeId="t1" createSession={create} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Tab tools' });
     const names = [...toolbar.querySelectorAll('button')].map((b) => b.textContent);
-    expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete']);
+    expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete', 'Analysis settings']);
     const insert = screen.getByRole('button', { name: 'Insert' }) as HTMLButtonElement;
     const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement;
     expect(insert.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
@@ -1196,7 +1209,7 @@ describe('Tab screen tab area, header and selection', () => {
         expect(screen.getByRole('heading', { name: 'No notes found' })).toBeTruthy();
         const toolbar = screen.getByRole('toolbar', { name: 'Tab tools' });
         const names = [...toolbar.querySelectorAll('button')].map((b) => b.textContent);
-        expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete']);
+        expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete', 'Analysis settings']);
         const expected: [string, string][] = [
           ['Undo', 'Nothing to undo'],
           ['Redo', 'Nothing to redo'],
@@ -1239,6 +1252,285 @@ describe('Tab screen tab area, header and selection', () => {
   });
 
   // Story "String moves, delete, insert and confirm": the edit popover.
+  // Story "Analysis settings and re-analysis" (US-4.6).
+  describe('analysis settings and re-analysis', () => {
+    const toggle = () =>
+      screen
+        .getByRole('toolbar', { name: 'Tab tools' })
+        .querySelector<HTMLElement>('button[aria-expanded]')!;
+    const panel = () => screen.queryByRole('region', { name: 'Analysis settings' });
+    const reanalyseButton = () =>
+      screen.getByRole('button', { name: 'Re-analyse' }) as HTMLButtonElement;
+    const openPanel = () => fireEvent.click(toggle());
+    const lockedTab = (): TabRecord => ({
+      ...TAB40,
+      notes: TAB40.notes.map((n, i) => (i === 3 ? { ...n, locked: true } : n)),
+    });
+
+    it('the toolbar toggle (after Delete) opens and closes the inline panel; not a dialog', () => {
+      const { create } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      expect(toggle().getAttribute('aria-expanded')).toBe('false');
+      expect(panel()).toBeNull();
+      openPanel();
+      expect(toggle().getAttribute('aria-expanded')).toBe('true');
+      expect(toggle().getAttribute('aria-controls')).toBe(panel()!.id);
+      expect(screen.getByRole('heading', { name: 'Analysis settings', level: 2 })).toBeTruthy();
+      expect(screen.queryByRole('dialog')).toBeNull();
+      const slider = screen.getByRole('slider', { name: 'Sensitivity' }) as HTMLInputElement;
+      expect(slider.value).toBe('0.5');
+      expect(slider.min).toBe('0');
+      expect(slider.max).toBe('1');
+      expect(slider.step).toBe('0.05');
+      expect(slider.getAttribute('aria-valuetext')).toMatch(/^0\.50/);
+      expect(panel()!.querySelector('output')!.textContent).toBe('0.50');
+      expect(screen.getByText('Fewer notes')).toBeTruthy();
+      expect(screen.getByText('More notes')).toBeTruthy();
+      const min = screen.getByRole('spinbutton', {
+        name: 'Minimum note length',
+      }) as HTMLInputElement;
+      expect([min.value, min.min, min.max]).toEqual(['40', '20', '100']);
+      const fret = screen.getByRole('spinbutton', { name: 'Highest fret' }) as HTMLInputElement;
+      expect([fret.value, fret.min, fret.max]).toEqual(['24', '12', '24']);
+      // Re-analyse is the screen's only primary button.
+      expect(reanalyseButton().className).toContain('primary');
+      expect(document.querySelectorAll('button[class*="primary"]')).toHaveLength(1);
+      openPanel();
+      expect(panel()).toBeNull();
+    });
+
+    it('Esc inside the panel closes it and returns focus to the toggle', () => {
+      const { create, session } = analysed('n3');
+      render(<Tab takeId="t1" createSession={create} />);
+      openPanel();
+      const slider = screen.getByRole('slider', { name: 'Sensitivity' });
+      act(() => slider.focus());
+      const event = new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+      });
+      act(() => {
+        slider.dispatchEvent(event);
+      });
+      expect(panel()).toBeNull();
+      expect(document.activeElement).toBe(toggle());
+      // The screen's Esc (clear the selection) did not run as well.
+      expect(event.defaultPrevented).toBe(true);
+      expect(session.select).not.toHaveBeenCalled();
+    });
+
+    it('Esc closing the panel commits a number typed but not yet committed', () => {
+      const { create, session } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      openPanel();
+      const min = screen.getByRole('spinbutton', { name: 'Minimum note length' });
+      act(() => min.focus());
+      fireEvent.change(min, { target: { value: '60' } });
+      expect(session.setSettings).not.toHaveBeenCalled();
+      fireEvent.keyDown(min, { key: 'Escape' });
+      expect(panel()).toBeNull();
+      expect(session.setSettings).toHaveBeenCalledWith({ minNoteMs: 60 });
+    });
+
+    it('a re-analysis starting closes the edit popover', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      fireEvent.doubleClick(noteButton('n3'));
+      expect(screen.getByTestId('edit-popover')).toBeTruthy();
+      set({ reanalysis: { progress: 0 } });
+      expect(screen.queryByTestId('edit-popover')).toBeNull();
+    });
+
+    it('the slider commits on change; number fields on Enter and blur (unclamped: the session clamps)', () => {
+      const { create, session } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      openPanel();
+      fireEvent.change(screen.getByRole('slider', { name: 'Sensitivity' }), {
+        target: { value: '0.3' },
+      });
+      expect(session.setSettings).toHaveBeenCalledWith({ sensitivity: 0.3 });
+      const min = screen.getByRole('spinbutton', { name: 'Minimum note length' });
+      fireEvent.change(min, { target: { value: '5' } });
+      expect(session.setSettings).toHaveBeenCalledTimes(1);
+      fireEvent.keyDown(min, { key: 'Enter' });
+      expect(session.setSettings).toHaveBeenLastCalledWith({ minNoteMs: 5 });
+      const fret = screen.getByRole('spinbutton', { name: 'Highest fret' });
+      fireEvent.change(fret, { target: { value: '19' } });
+      fireEvent.blur(fret);
+      expect(session.setSettings).toHaveBeenLastCalledWith({ maxFret: 19 });
+    });
+
+    it('shows the take settings, and settings a restore brings', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      openPanel();
+      set({ take: { ...TAKE, settings: { sensitivity: 0.35, minNoteMs: 60, maxFret: 19 } } });
+      expect((screen.getByRole('slider', { name: 'Sensitivity' }) as HTMLInputElement).value).toBe(
+        '0.35',
+      );
+      expect(panel()!.querySelector('output')!.textContent).toBe('0.35');
+      expect(
+        (screen.getByRole('spinbutton', { name: 'Minimum note length' }) as HTMLInputElement).value,
+      ).toBe('60');
+    });
+
+    it('no locked notes: Re-analyse runs at once, no dialog', () => {
+      const { create, session } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      openPanel();
+      fireEvent.click(reanalyseButton());
+      expect(session.reanalyse).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+    });
+
+    it('a locked note: the Confirm dialog, Cancel first and focused; Esc or Cancel runs nothing; Re-analyse runs', () => {
+      const session = mockSession({
+        take: TAKE,
+        tab: lockedTab(),
+        loading: false,
+        analysis: { kind: 'idle' },
+      });
+      render(<Tab takeId="t1" createSession={session.create} />);
+      openPanel();
+      fireEvent.click(reanalyseButton());
+      const dialog = screen.getByRole('alertdialog', { name: 'Re-analyse Take 3?' });
+      expect(dialog.getAttribute('aria-modal')).toBe('true');
+      expect(dialog.textContent).toContain(
+        "Re-analysing replaces notes you haven't edited. Your edited notes are kept.",
+      );
+      const buttonsIn = [...dialog.querySelectorAll('button')].map((b) => b.textContent);
+      expect(buttonsIn).toEqual(['Cancel', 'Re-analyse']);
+      expect(document.activeElement).toBe(dialog.querySelector('button'));
+      expect(dialog.querySelectorAll('button')[1]!.className).not.toContain('primary');
+      fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(document.activeElement).toBe(reanalyseButton());
+      fireEvent.click(reanalyseButton());
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(session.session.reanalyse).not.toHaveBeenCalled();
+      fireEvent.click(reanalyseButton());
+      const confirm = screen.getAllByRole('button', { name: 'Re-analyse' }).at(-1)!;
+      fireEvent.click(confirm);
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(session.session.reanalyse).toHaveBeenCalledTimes(1);
+    });
+
+    it('no audio: Re-analyse disabled with "No audio to analyse"', () => {
+      const { create } = mockSession({
+        take: { ...TAKE, audioMime: null },
+        tab: TAB40,
+        loading: false,
+        analysis: { kind: 'idle' },
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      openPanel();
+      const b = reanalyseButton();
+      expect(b.disabled).toBe(true);
+      expect(b.parentElement!.getAttribute('title')).toBe('No audio to analyse');
+      expect(document.getElementById(b.getAttribute('aria-describedby')!)!.textContent).toBe(
+        'No audio to analyse',
+      );
+    });
+
+    it('a raw file but no compressed audio: Re-analyse enabled', () => {
+      const { create } = mockSession({
+        take: { ...TAKE, audioMime: null },
+        tab: TAB40,
+        loading: false,
+        analysis: { kind: 'idle' },
+        hasRaw: true,
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      openPanel();
+      expect(reanalyseButton().disabled).toBe(false);
+    });
+
+    it('while it runs: the tab stays, the panel shows progress and Cancel; edits disabled; focus to Cancel and back', () => {
+      const { create, session, set } = analysed('n3');
+      render(<Tab takeId="t1" createSession={create} />);
+      openPanel();
+      act(() => reanalyseButton().focus());
+      set({ reanalysis: { progress: 0.45 } });
+      expect(announce).toHaveBeenLastCalledWith('Analysing, 25%');
+      expect(screen.getByRole('application', { name: 'Tab' })).toBeTruthy();
+      const progress = screen.getByRole('progressbar', { name: 'Analysing…' });
+      expect(progress.getAttribute('aria-valuetext')).toBe('45%');
+      expect(reanalyseButton().disabled).toBe(true);
+      expect(
+        (screen.getByRole('slider', { name: 'Sensitivity' }) as HTMLInputElement).disabled,
+      ).toBe(true);
+      expect((screen.getByRole('button', { name: 'Insert' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+      expect((screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+      const cancel = screen.getByRole('button', { name: 'Cancel' });
+      expect(document.activeElement).toBe(cancel);
+      // The toggle does not close the panel while it runs: its progress and Cancel are there.
+      openPanel();
+      expect(panel()).not.toBeNull();
+      fireEvent.click(cancel);
+      expect(session.cancelReanalysis).toHaveBeenCalledTimes(1);
+      set({ reanalysis: null });
+      expect(screen.queryByRole('progressbar')).toBeNull();
+      expect(document.activeElement).toBe(reanalyseButton());
+    });
+
+    it('announces the outcome: done, cancelled, failed by code', () => {
+      const { create, edit } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      edit({ kind: 'reanalysed', notes: 12 });
+      expect(announce).toHaveBeenLastCalledWith('Re-analysed: 12 notes', 'polite');
+      edit({ kind: 'reanalyseCancelled' });
+      expect(announce).toHaveBeenLastCalledWith('Re-analysis cancelled', 'polite');
+      edit({ kind: 'reanalyseFailed', code: 'audio-missing' });
+      expect(announce).toHaveBeenLastCalledWith('No audio to analyse', 'assertive');
+      edit({ kind: 'reanalyseFailed', code: 'storage-full' });
+      expect(announce).toHaveBeenLastCalledWith(strings['tab.storageFull'], 'assertive');
+      edit({ kind: 'reanalyseFailed', code: 'analysis-failed' });
+      expect(announce).toHaveBeenLastCalledWith('Re-analysis failed — try again', 'assertive');
+      edit({ kind: 'undo', label: { kind: 'reanalyse' } });
+      expect(announce).toHaveBeenLastCalledWith('Undid Re-analyse', 'polite');
+    });
+
+    it("Undo's tooltip names the re-analysis", () => {
+      const { create } = mockSession({
+        take: TAKE,
+        tab: TAB40,
+        loading: false,
+        analysis: { kind: 'idle' },
+        undoLabel: { kind: 'reanalyse' },
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      expect(
+        screen.getByRole('button', { name: 'Undo' }).parentElement!.getAttribute('title'),
+      ).toBe('Undo re-analyse');
+    });
+
+    it('No notes found: the tip\'s "Analysis settings" opens the panel and focuses Sensitivity', () => {
+      const { create } = mockSession({
+        take: TAKE,
+        tab: { ...TAB40, notes: [] },
+        loading: false,
+        analysis: { kind: 'idle' },
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      const tips = screen.getAllByRole('listitem').map((li) => li.textContent);
+      expect(tips.at(-1)).toBe('Raise sensitivity in Analysis settings');
+      expect(toggle().getAttribute('aria-expanded')).toBe('false');
+      const link = screen
+        .getAllByRole('button', { name: 'Analysis settings' })
+        .find((b) => b.closest('li'))!;
+      fireEvent.click(link);
+      expect(panel()).not.toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole('slider', { name: 'Sensitivity' }));
+      expect(reanalyseButton().disabled).toBe(false);
+    });
+  });
+
   describe('the edit popover', () => {
     /** Opens the popover on note n11 (D4 on the B string, fret 3) by double-clicking it. */
     function openOn() {
@@ -1419,7 +1711,7 @@ describe('Tab screen flags, warnings and bar lines', () => {
   function fakeSettings(barLines = true) {
     let snapshot: SettingsSnapshot = {
       engine: { state: 'loading' },
-      prefs: { barLines },
+      prefs: { barLines, analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 } },
     };
     const listeners = new Set<() => void>();
     return {

@@ -17,12 +17,20 @@
 // Ticket 12 (AD-15): the PCM source is the raw file, else the compressed audio decoded at the
 // take's recorded rate (`audio/decode.ts`); with neither, the run rejects with `audio-missing`.
 // The decoded audio is never written back, and the raw file is never recreated.
+//
+// Story "Analysis settings and re-analysis" (US-4.6): `reanalyse` runs the engine on an analysed
+// take's PCM (read as above) with its current settings, trim and count-in skip, reporting the
+// engine's progress scaled to 0–0.9, and returns the result, the engine version and where the
+// PCM came from. It commits nothing: `take-session` merges, maps the frets with locks, commits
+// and deletes the raw file. It is cancelled like a first analysis (`cancel`), counts as busy
+// (`isAnalysing`), and a deleted take's re-analysis is cancelled too.
 
 import { decodeTakeAudio, type DecodedAudio } from '../audio/decode';
 import { engineClient, type EngineClient } from '../engine/engine-client';
 import { AppError, isAppError } from '../model/errors';
 import { devWarn } from '../model/log';
-import type { EngineAnalyzeInput, Note, Tab, Take } from '../model/types';
+import { LOW_CONFIDENCE_MARGIN } from '../model/edit-history';
+import type { AnalysisResult, EngineAnalyzeInput, Note, Tab, Take } from '../model/types';
 import { devDb, devEngine, devHold, devSlowMs } from '../dev/hooks/analysis';
 import { audioStore, type AudioStore } from '../storage/audio-store';
 import { db, type TakeDb, type TakePatch } from '../storage/db';
@@ -31,7 +39,7 @@ import { subscribe as subscribeStorage, type StorageListener } from '../storage/
 /** The share of the progress bar the engine's analyze call fills (spine AD-8). */
 export const ANALYZE_SHARE = 0.9;
 /** A note is flagged low confidence below the engine's threshold plus this margin (US-4.5). */
-export const LOW_CONFIDENCE_MARGIN = 0.15;
+export { LOW_CONFIDENCE_MARGIN };
 /**
  * With a count-in, the engine skips this much from untrimmed 0 so the last click's bleed is not
  * detected as a note (US-4.1, US-4.5).
@@ -45,6 +53,15 @@ export type SavingListener = () => void;
 export interface AnalysisOutcome {
   take: Take;
   tab: Tab;
+}
+
+/** A re-analysis's engine run (nothing committed). */
+export interface ReanalysisRun {
+  result: AnalysisResult;
+  /** The engine's `engine_version()`, for `Take.analysisVersion`. */
+  analysisVersion: string;
+  /** Whether the PCM came from the raw file (deleted once the result is committed). */
+  fromRaw: boolean;
 }
 
 export interface AnalysisDeps {
@@ -92,6 +109,14 @@ export interface Analysis {
   retryCommit(takeId: string): Promise<AnalysisOutcome>;
   /** Whether a result is held for `takeId` after a `storage-full` commit. */
   pendingCommit(takeId: string): boolean;
+  /**
+   * Re-analysis (US-4.6): runs the engine on `take`'s PCM (the raw file, else the decoded
+   * compressed audio; `audio-missing` with neither) with its settings, trim and count-in skip,
+   * reporting progress 0–0.9 (monotone) to `onProgress`. Commits nothing. `cancel(takeId)` stops
+   * it (it rejects `analysis-cancelled`). Rejects `analysis-failed` while another analysis of the
+   * take runs.
+   */
+  reanalyse(take: Take, onProgress?: ProgressListener): Promise<ReanalysisRun>;
   /**
    * Whether any analysis is in flight (app-reload's busy check, spine AD-16). A pending commit
    * alone is not busy.
@@ -149,6 +174,8 @@ function toAppError(err: unknown): AppError {
 
 export function createAnalysis(deps: AnalysisDeps): Analysis {
   const runs = new Map<string, Run>();
+  /** Re-analyses in flight (US-4.6), by take id: no commit, so kept apart from `runs`. */
+  const reruns = new Map<string, RunProgress>();
   /** Results whose commit failed with `storage-full`, kept for `retryCommit` (memory only). */
   const pending = new Map<string, BuiltResult>();
   /** Takes deleted while held: a commit settling after the deletion never holds their result. */
@@ -160,6 +187,14 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
 
   /** Cancels `takeId`'s run unless it is committing; returns whether it did. */
   function cancelRun(takeId: string, reason: string): boolean {
+    const rerun = reruns.get(takeId);
+    if (rerun && !rerun.cancelled) {
+      rerun.cancelled = true;
+      reruns.delete(takeId);
+      deps.engine.cancel(takeId);
+      rerun.abort(new AppError('analysis-cancelled', reason));
+      return true;
+    }
     const run = runs.get(takeId);
     if (!run || run.state.cancelled || run.state.committing) return false;
     run.state.cancelled = true;
@@ -177,6 +212,7 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
   const onStorage: StorageListener = (event) => {
     if (event.type !== 'take-deleted') return;
     if (runs.has(event.takeId)) deleted.add(event.takeId);
+    cancelRun(event.takeId, `take ${event.takeId} was deleted`); // a re-analysis first
     pending.delete(event.takeId);
     cancelRun(event.takeId, `take ${event.takeId} was deleted`);
     releaseStorage();
@@ -184,7 +220,7 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
 
   /** Stops listening for deletions once nothing is held. */
   function releaseStorage() {
-    if (runs.size > 0 || pending.size > 0) return;
+    if (runs.size > 0 || reruns.size > 0 || pending.size > 0) return;
     unsubscribeStorage?.();
     unsubscribeStorage = null;
   }
@@ -398,7 +434,56 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
 
     pendingCommit: (takeId) => pending.has(takeId),
 
-    isAnalysing: () => runs.size > 0,
+    reanalyse(take, onProgress) {
+      if (runs.has(take.id) || reruns.has(take.id)) {
+        return Promise.reject(
+          new AppError('analysis-failed', `Take ${take.id} is already being analysed`),
+        );
+      }
+      unsubscribeStorage ??= deps.subscribeStorage(onStorage);
+      const state = newRun(onProgress);
+      const aborted = new Promise<never>((_, reject) => {
+        state.abort = reject;
+      });
+      reruns.set(take.id, state);
+      const work = async (): Promise<ReanalysisRun> => {
+        const checked = async <T>(step: Promise<T>): Promise<T> => {
+          const value = await step;
+          if (state.cancelled) {
+            throw new AppError(
+              'analysis-cancelled',
+              `re-analysis of take ${take.id} was cancelled`,
+            );
+          }
+          return value;
+        };
+        const { pcm, sampleRate, fromRaw } = await checked(readPcm(take));
+        const result = await checked(
+          deps.engine.analyze(take.id, pcm, sampleRate, engineInput(take), (p) =>
+            report(state, ANALYZE_SHARE * Math.min(1, Math.max(0, p))),
+          ),
+        );
+        report(state, ANALYZE_SHARE);
+        const analysisVersion = await checked(deps.engine.version());
+        return { result, analysisVersion, fromRaw };
+      };
+      const done = () => {
+        if (reruns.get(take.id) === state) reruns.delete(take.id);
+        releaseStorage();
+      };
+      return Promise.race([work(), aborted]).then(
+        (run) => {
+          done();
+          return run;
+        },
+        (err: unknown) => {
+          done();
+          throw toAppError(err);
+        },
+      );
+    },
+
+    isAnalysing: () => runs.size > 0 || reruns.size > 0,
   };
 }
 

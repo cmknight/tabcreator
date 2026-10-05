@@ -23,6 +23,12 @@ export interface Note extends DetectedNote {
   fret: number;
   locked: boolean;
   lowConfidence: boolean;
+  /**
+   * Set on a note the player inserted (story "Analysis settings and re-analysis"): deleting it
+   * records nothing in `deletedStartMs`, since a re-analysis could never bring it back. Older
+   * notes lack it.
+   */
+  inserted?: true;
 }
 
 export type TakeStatus = 'recording' | 'recorded' | 'analyzed';

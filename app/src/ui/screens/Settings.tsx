@@ -1,5 +1,15 @@
+// The Settings screen (mockup settings.html): the engine-failed banner, "Defaults for new takes"
+// (story "Analysis settings and re-analysis", US-4.6: the Tab screen's analysis settings fields
+// without Re-analyse, saved on each change to `prefs.analysisDefaults` through settings-session;
+// new takes copy them at creation), and About (the engine version).
+
 import { useSyncExternalStore } from 'react';
-import { settingsSession, type EngineStatus } from '../../session/settings-session';
+import {
+  settingsSession,
+  type EngineStatus,
+  type SettingsSession,
+} from '../../session/settings-session';
+import { AnalysisSettingsFields } from '../components/AnalysisSettingsFields';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
 import { ErrorIcon } from '../components/icons';
@@ -19,8 +29,13 @@ function engineLine(engine: EngineStatus): string {
   }
 }
 
-export function Settings() {
-  const { engine } = useSyncExternalStore(settingsSession.subscribe, settingsSession.getSnapshot);
+export interface SettingsProps {
+  /** The settings store; tests pass their own. */
+  session?: Pick<SettingsSession, 'subscribe' | 'getSnapshot' | 'setAnalysisDefaults'>;
+}
+
+export function Settings({ session = settingsSession }: SettingsProps = {}) {
+  const { engine, prefs } = useSyncExternalStore(session.subscribe, session.getSnapshot);
   return (
     <section className={styles.screen}>
       {engine.state === 'unavailable' && (
@@ -33,6 +48,16 @@ export function Settings() {
         </div>
       )}
       <h1 className={styles.title}>{strings['settings.title']}</h1>
+      <section className={settingsStyles.panel} aria-labelledby="settings-defaults">
+        <h2 id="settings-defaults" className={settingsStyles.panelTitle}>
+          {strings['settings.defaults']}
+        </h2>
+        <p className={settingsStyles.hint}>{strings['settings.defaultsHint']}</p>
+        <AnalysisSettingsFields
+          settings={prefs.analysisDefaults}
+          onChange={(patch) => session.setAnalysisDefaults(patch)}
+        />
+      </section>
       <section className={settingsStyles.panel} aria-labelledby="settings-about">
         <h2 id="settings-about" className={settingsStyles.panelTitle}>
           {strings['settings.about']}

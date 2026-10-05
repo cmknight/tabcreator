@@ -3,9 +3,13 @@
 // `prefs.barLines`). Read it with useSyncExternalStore. `recording-session` keeps its own
 // `updatePrefs` calls for the mic and count-in fields; `updatePrefs` patches only the fields it
 // is given, so the two never overwrite each other.
+//
+// Story "Analysis settings and re-analysis" (US-4.6): the Settings screen's "Defaults for new
+// takes", `prefs.analysisDefaults`, which `recording-session` copies into each new take.
 
 import { engineClient, type EngineClient } from '../engine/engine-client';
-import type { Prefs } from '../model/types';
+import { clampAnalysisSettings, sameSettings } from '../model/analysis-settings';
+import type { AnalysisSettings, Prefs } from '../model/types';
 import { loadPrefs, updatePrefs, type PrefsPatch } from '../storage/prefs';
 
 export type EngineStatus =
@@ -14,14 +18,15 @@ export type EngineStatus =
 export interface SettingsSnapshot {
   engine: EngineStatus;
   /**
-   * The prefs this store handles, loaded at start and kept with its own changes. So far only
-   * `barLines`; the other prefs belong to their writers (recording-session) and are not mirrored.
+   * The prefs this store handles, loaded at start and kept with its own changes: `barLines` and
+   * `analysisDefaults`; the other prefs belong to their writers (recording-session) and are not
+   * mirrored.
    */
   prefs: SettingsPrefs;
 }
 
 /** The prefs fields settings-session handles. */
-export type SettingsPrefs = Pick<Prefs, 'barLines'>;
+export type SettingsPrefs = Pick<Prefs, 'barLines' | 'analysisDefaults'>;
 
 export interface SettingsSession {
   /** Subscribes, asking the engine for its version on the first subscription. */
@@ -37,6 +42,11 @@ export interface SettingsSession {
    * changes the setting for this page session; only remembering it is lost.
    */
   setBarLines(on: boolean): void;
+  /**
+   * Changes the defaults for new takes (clamped to the UI ranges), saved to
+   * `prefs.analysisDefaults` at once. A failed write shows the stored defaults again.
+   */
+  setAnalysisDefaults(patch: Partial<AnalysisSettings>): void;
 }
 
 export interface SettingsPrefsDeps {
@@ -51,7 +61,10 @@ export function createSettingsSession(
 ): SettingsSession {
   let snapshot: SettingsSnapshot = {
     engine: { state: 'loading' },
-    prefs: { barLines: prefsDeps.loadPrefs().barLines },
+    prefs: (() => {
+      const { barLines, analysisDefaults } = prefsDeps.loadPrefs();
+      return { barLines, analysisDefaults };
+    })(),
   };
   const listeners = new Set<() => void>();
   let started = false;
@@ -91,7 +104,22 @@ export function createSettingsSession(
       } catch {
         // The toggle still works this page session; only remembering it is lost.
       }
-      publish({ prefs: { barLines: on } });
+      publish({ prefs: { ...snapshot.prefs, barLines: on } });
+    },
+    setAnalysisDefaults(patch) {
+      const current = snapshot.prefs.analysisDefaults;
+      const analysisDefaults = clampAnalysisSettings({ ...current, ...patch }, current);
+      if (sameSettings(analysisDefaults, current)) return;
+      try {
+        prefsDeps.updatePrefs({ analysisDefaults });
+      } catch {
+        // New takes copy the stored defaults, so the screen shows those, not the failed change.
+        publish({
+          prefs: { ...snapshot.prefs, analysisDefaults: prefsDeps.loadPrefs().analysisDefaults },
+        });
+        return;
+      }
+      publish({ prefs: { ...snapshot.prefs, analysisDefaults } });
     },
   };
 }

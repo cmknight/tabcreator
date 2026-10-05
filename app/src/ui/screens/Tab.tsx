@@ -44,6 +44,16 @@
 // say "Nothing to undo"; Insert and Delete say why they are disabled ("No notes yet", "Select a
 // note to delete"). A click undoes or redoes one step as the shortcuts do; a clicked button left
 // disabled hands focus to the other.
+//
+// Story "Analysis settings and re-analysis" (US-4.6): the toolbar's Analysis settings toggle
+// (after Bar lines; `aria-expanded`) opens an inline panel below the toolbar (not a dialog; Esc
+// inside it closes it): the shared settings fields (components/AnalysisSettingsFields), each
+// change saved to the take at once, and Re-analyse, the screen's only primary button (disabled
+// with "No audio to analyse" when the take has no audio). With an edited (locked) note,
+// Re-analyse asks first in the Confirm dialog (components/ConfirmDialog). While it runs the tab
+// stays shown and the panel shows "Analysing…", the bar and Cancel; edits, undo and redo are
+// disabled. The outcome (done, cancelled, failed) is announced. In No notes found the tip's
+// "Analysis settings" is a link-styled button that opens the panel and focuses Sensitivity.
 
 import {
   useEffect,
@@ -59,12 +69,13 @@ import {
 } from 'react';
 import type { CommandLabel } from '../../model/edit-history';
 import type { AppErrorCode } from '../../model/errors';
-import type { Take } from '../../model/types';
+import type { Tab as TabRecord, Take } from '../../model/types';
 import { activePlayback, setActivePlayback } from '../../session/playback';
 import { settingsSession, type SettingsSession } from '../../session/settings-session';
 import {
   setActiveTakeSession,
   activeTakeSession,
+  hasAudio,
   isTabShown,
   type EditEvent,
   type TakeAnalysisState,
@@ -77,6 +88,8 @@ import { focusSelectedNote } from '../a11y/shortcuts';
 import hidden from '../a11y/visually-hidden.module.css';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
+import { AnalysisSettingsFields } from '../components/AnalysisSettingsFields';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 import { EditPopover } from '../components/EditPopover';
 import {
   BarLinesIcon,
@@ -84,6 +97,7 @@ import {
   ErrorIcon,
   InsertIcon,
   RedoIcon,
+  SettingsIcon,
   UndoIcon,
 } from '../components/icons';
 import { StorageFullBannerView } from '../components/StorageFullBannerView';
@@ -102,6 +116,10 @@ import tabStyles from './Tab.module.css';
 
 /** The tab area's element id: the skip link's target. */
 const TAB_AREA_ID = 'tab-area';
+/** The Analysis settings panel's element id (the toggle's `aria-controls`). */
+const PANEL_ID = 'analysis-settings';
+/** The panel's Sensitivity slider's element id (the No notes found link focuses it). */
+const SENSITIVITY_ID = 'analysis-sensitivity';
 
 /** Moves focus into the tab area: onto its note in the tab order (the selected, else the first). */
 function focusTabArea() {
@@ -201,6 +219,8 @@ export function commandLabelText(label: CommandLabel): string {
       return strings['tab.commandInsert'];
     case 'confirm':
       return strings['tab.commandConfirm'];
+    case 'reanalyse':
+      return strings['tab.commandReanalyse'];
   }
 }
 
@@ -266,7 +286,17 @@ function editText(event: Extract<EditEvent, { kind: 'edit' }>): string {
       return strings['tab.editInserted'](event.string, event.fret);
     case 'confirm':
       return strings['tab.editConfirmed'];
+    case 'reanalyse': // not an edit: a re-analysis is announced as `reanalysed`
+      return strings['tab.commandReanalyse'];
   }
+}
+
+/** What a failed re-analysis announces, by its code. */
+function reanalyseFailedText(code: AppErrorCode): string {
+  if (code === 'audio-missing') return strings['tab.noAudioToAnalyse'];
+  if (code === 'engine-unavailable') return strings['global.engineFailed'];
+  if (code === 'storage-full') return strings['tab.storageFull'];
+  return strings['tab.reanalyseFailed'];
 }
 
 /** What an edit outcome announces, and how. */
@@ -280,7 +310,144 @@ export function editAnnouncement(event: EditEvent): [string, 'polite' | 'asserti
       return [strings['tab.redone'](commandLabelText(event.label)), 'polite'];
     case 'failed':
       return [strings['tab.editFailed'], 'assertive'];
+    case 'reanalysed':
+      return [strings['tab.reanalysed'](event.notes), 'polite'];
+    case 'reanalyseCancelled':
+      return [strings['tab.reanalyseCancelled'], 'polite'];
+    case 'reanalyseFailed':
+      return [reanalyseFailedText(event.code), 'assertive'];
   }
+}
+
+/**
+ * The Analysis settings panel (DESIGN.md, mockup tab.html (c)): an inline section, not a
+ * dialog. Its fields save to the take on each committed change; Re-analyse runs at once, or
+ * after the Confirm dialog when a note is locked. While a re-analysis runs: the fields and
+ * Re-analyse are disabled, and "Analysing…", the bar and Cancel show.
+ */
+function AnalysisSettingsPanel({
+  take,
+  tab,
+  reanalysis,
+  audio,
+  session,
+  onEscape,
+}: {
+  take: Take;
+  tab: TabRecord;
+  reanalysis: TakeSnapshot['reanalysis'];
+  /** Whether the take has audio to re-analyse. */
+  audio: boolean;
+  session: TakeSession;
+  onEscape(): void;
+}) {
+  const headingId = useId();
+  const reasonId = useId();
+  const [confirming, setConfirming] = useState(false);
+  const reanalyseButton = useRef<HTMLButtonElement>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const running = reanalysis !== null;
+  const reason = audio ? null : strings['tab.noAudioToAnalyse'];
+
+  // Focus follows the run: from Re-analyse (disabled) to Cancel when it starts, and back to
+  // Re-analyse when it ends with focus lost (Cancel gone).
+  const wasRunning = useRef(running);
+  useLayoutEffect(() => {
+    const before = wasRunning.current;
+    wasRunning.current = running;
+    if (before === running) return;
+    const active = document.activeElement;
+    const lost = active === null || active === document.body;
+    if (running && (lost || active === reanalyseButton.current)) cancelButton.current?.focus();
+    if (!running && lost) reanalyseButton.current?.focus();
+  }, [running]);
+
+  // Failures are announced through the session's edit events.
+  const start = () => void session.reanalyse().catch(() => {});
+  const percent = strings['tab.analysingPercent'](percentOf(reanalysis?.progress ?? 0));
+
+  return (
+    <section
+      id={PANEL_ID}
+      className={tabStyles.panel}
+      aria-labelledby={headingId}
+      data-testid="analysis-settings"
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault(); // the Tab screen's Esc (clear the selection) does not run too
+        onEscape();
+      }}
+    >
+      <h2 id={headingId} className={tabStyles.panelTitle}>
+        {strings['tab.analysisSettings']}
+      </h2>
+      <AnalysisSettingsFields
+        settings={take.settings}
+        onChange={(patch) => void session.setSettings(patch)}
+        disabled={running}
+        sensitivityId={SENSITIVITY_ID}
+      >
+        <span className={tabStyles.toolWrap} title={reason ?? undefined}>
+          <button
+            ref={reanalyseButton}
+            type="button"
+            className={buttons.primary}
+            disabled={!audio || running}
+            aria-describedby={reason !== null ? reasonId : undefined}
+            onClick={() => {
+              if (tab.notes.some((n) => n.locked)) setConfirming(true);
+              else start();
+            }}
+          >
+            {strings['tab.reanalyse']}
+          </button>
+          {reason !== null && (
+            <span id={reasonId} className={hidden.visuallyHidden}>
+              {reason}
+            </span>
+          )}
+        </span>
+      </AnalysisSettingsFields>
+      {running && (
+        <div className={tabStyles.panelProgress} data-testid="reanalysis-progress">
+          <label className={tabStyles.label} htmlFor="tab-reanalysis-progress">
+            {strings['tab.analysing']}
+          </label>
+          <div className={tabStyles.progressRow}>
+            <progress
+              id="tab-reanalysis-progress"
+              className={tabStyles.progress}
+              max={1}
+              value={reanalysis.progress}
+              aria-valuetext={percent}
+            />
+            <span className={tabStyles.percent}>{percent}</span>
+            <button
+              ref={cancelButton}
+              type="button"
+              className={buttons.secondary}
+              onClick={() => session.cancelReanalysis()}
+            >
+              {strings['tab.cancel']}
+            </button>
+          </div>
+        </div>
+      )}
+      {confirming && (
+        <ConfirmDialog
+          title={strings['tab.reanalyseConfirmTitle'](take.title)}
+          body={strings['tab.reanalyseConfirmBody']}
+          confirmLabel={strings['tab.reanalyse']}
+          opener={() => reanalyseButton.current}
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => {
+            setConfirming(false);
+            start();
+          }}
+        />
+      )}
+    </section>
+  );
 }
 
 /**
@@ -399,11 +566,19 @@ const NONE_DISMISSED: ReadonlySet<DismissibleWarning> = new Set();
 
 export function Tab({ takeId, createSession, settings = settingsSession, readAudio }: TabProps) {
   const { snapshot, session } = useTakeSession(takeId, createSession);
-  const { take, tab, analysis, missing, selectedNoteId } = snapshot;
-  useProgressAnnouncements(analysis);
+  const { take, tab, analysis, missing, selectedNoteId, reanalysis } = snapshot;
+  // A re-analysis's progress is announced as a first analysis's is.
+  useProgressAnnouncements(
+    reanalysis ? { kind: 'running', progress: reanalysis.progress } : analysis,
+  );
   useMaxLengthToast(missing ? null : take);
   const { barLines } = useSyncExternalStore(settings.subscribePrefs, settings.getSnapshot).prefs;
   const [noteList, setNoteList] = useState(false);
+  /** Whether the Analysis settings panel is open. */
+  const [panelOpen, setPanelOpen] = useState(false);
+  /** Set by the No notes found link: Sensitivity takes focus once the panel shows. */
+  const focusSensitivity = useRef(false);
+  const panelToggle = useRef<HTMLButtonElement>(null);
   /** The note the edit popover is open on, and the button it opened from. */
   const [popover, setPopover] = useState<{ noteId: string; anchor: HTMLElement } | null>(null);
   /**
@@ -452,7 +627,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
         const [message, politeness] = editAnnouncement(event);
         announce(message, politeness);
         // A failed edit takes the outline away; an edit that changed nothing leaves it.
-        if (event.kind === 'failed') clearRefit();
+        if (event.kind === 'failed' || event.kind === 'reanalysed') clearRefit();
         if (event.kind === 'edit' && event.refingered) {
           // A new re-fit replaces the outline (none: it goes); its news follows the edit's.
           showRefit(event.refingered);
@@ -507,6 +682,15 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
   const canUndo = snapshot.undoLabel !== null;
   const canRedo = snapshot.redoLabel !== null;
   const showToolbar = !missing && analysis.kind === 'idle' && !!tab && !!take;
+  /** Whether edits apply: the tab is shown and no re-analysis runs. */
+  const editable = showTab && reanalysis === null;
+  // The panel stays open while a re-analysis runs: its progress and Cancel are there.
+  const showPanel = showToolbar && (panelOpen || reanalysis !== null);
+  useLayoutEffect(() => {
+    if (!focusSensitivity.current || !showPanel) return;
+    focusSensitivity.current = false;
+    document.getElementById(SENSITIVITY_ID)?.focus();
+  }, [showPanel]);
   useLayoutEffect(() => {
     // A hidden toolbar takes its buttons (and their focus) with it, with no blur to release it.
     if (!showToolbar) {
@@ -586,8 +770,23 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
         <ul className={tabStyles.tips}>
           <li>{strings['tab.noNotesTipLevel']}</li>
           <li>{strings['tab.noNotesTipSingle']}</li>
-          {/* Plain text until story 8.6 makes it a link to the Analysis settings panel. */}
-          <li>{strings['tab.noNotesTipSensitivity']}</li>
+          <li>
+            {strings['tab.noNotesTipSensitivityLead']}
+            <button
+              type="button"
+              className={tabStyles.linkButton}
+              onClick={() => {
+                if (showPanel) {
+                  document.getElementById(SENSITIVITY_ID)?.focus();
+                  return;
+                }
+                focusSensitivity.current = true;
+                setPanelOpen(true);
+              }}
+            >
+              {strings['tab.analysisSettings']}
+            </button>
+          </li>
         </ul>
       </div>
     );
@@ -634,8 +833,9 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
   }
   const popoverNote =
     showTab && popover ? (tab.notes.find((n) => n.id === popover.noteId) ?? null) : null;
-  // A popover whose note went away (an undo, a re-analysis) stays closed if the note comes back.
-  if (popover !== null && popoverNote === null) setPopover(null);
+  // A popover whose note went away (an undo, a re-analysis) stays closed if the note comes back;
+  // a re-analysis starting closes it too (its edits would do nothing).
+  if (popover !== null && (popoverNote === null || reanalysis !== null)) setPopover(null);
   const showBarLines = showTab && take?.countInBpm !== undefined;
 
   return (
@@ -722,7 +922,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
             icon={<InsertIcon className={tabStyles.toolIcon} />}
             label={strings['tab.insert']}
             tooltip={showTab ? null : strings['tab.noNotesYet']}
-            disabled={!showTab}
+            disabled={!editable}
             onClick={() => void session.insert()}
           />
           <ToolButton
@@ -735,7 +935,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
                   ? strings['tab.selectToDelete']
                   : null
             }
-            disabled={!showTab || selectedNoteId === null}
+            disabled={!editable || selectedNoteId === null}
             onClick={() => void session.deleteSelected()}
           />
           {showBarLines && (
@@ -749,7 +949,33 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
               {strings['tab.barLines']}
             </button>
           )}
+          <button
+            ref={panelToggle}
+            type="button"
+            className={`${buttons.secondary} ${buttons.toggle} ${tabStyles.toolButton}`}
+            aria-expanded={showPanel}
+            aria-controls={showPanel ? PANEL_ID : undefined}
+            // While a re-analysis runs the panel stays open: its progress and Cancel are there.
+            onClick={() => setPanelOpen(reanalysis !== null || !showPanel)}
+          >
+            <SettingsIcon className={tabStyles.toolIcon} />
+            {strings['tab.analysisSettings']}
+          </button>
         </div>
+      )}
+      {showPanel && tab && take && (
+        <AnalysisSettingsPanel
+          take={take}
+          tab={tab}
+          reanalysis={reanalysis}
+          audio={hasAudio(snapshot)}
+          session={session}
+          onEscape={() => {
+            if (reanalysis !== null) return; // its progress and Cancel stay while it runs
+            setPanelOpen(false);
+            panelToggle.current?.focus();
+          }}
+        />
       )}
       {showTab && tab && (
         <TabStatusLine

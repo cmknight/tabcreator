@@ -44,6 +44,8 @@ function commandPhrase(label: CommandLabel): string {
       return 'insert note';
     case 'confirm':
       return 'confirm note';
+    case 'reanalyse':
+      return 're-analyse';
   }
 }
 
@@ -56,6 +58,20 @@ export const strings = {
   'global.navSettings': 'Settings',
   'global.engineFailed': 'The analysis engine failed to load',
   'global.reload': 'Reload',
+  'global.cancel': 'Cancel',
+  // The analysis settings (US-4.6; mockup tab.html (c), settings.html): the Tab screen's
+  // Analysis settings panel and the Settings screen's "Defaults for new takes".
+  'global.sensitivity': 'Sensitivity',
+  'global.fewerNotes': 'Fewer notes',
+  'global.moreNotes': 'More notes',
+  /** The sensitivity's shown value, 2 decimals: "0.35". */
+  'global.sensitivityValue': (value: number) => value.toFixed(2),
+  /** The slider's `aria-valuetext`: "0.35, fewer notes at 0, more at 1". */
+  'global.sensitivityValueText': (value: number) =>
+    `${value.toFixed(2)}, fewer notes at 0, more at 1`,
+  'global.minNoteLength': 'Minimum note length',
+  'global.ms': 'ms',
+  'global.highestFret': 'Highest fret',
   /**
    * The toast when a Reload (Settings' or the Tab screen's engine banner) is refused because a
    * take is being recorded or saved, or a recovered take rebuilt (story 5.2), or a take analysed
@@ -215,7 +231,20 @@ export const strings = {
   /** No notes found, tip 2: chords and ringing strings detect poorly. */
   'tab.noNotesTipSingle': 'Play single notes',
   /** No notes found, tip 3: plain text until story 8.6 links it to the Analysis settings panel. */
-  'tab.noNotesTipSensitivity': 'Raise sensitivity in Analysis settings',
+  /** The tip's text before its "Analysis settings" link (`tab.analysisSettings`). */
+  'tab.noNotesTipSensitivityLead': 'Raise sensitivity in ',
+  /** The toolbar toggle, the panel's heading and the No notes found tip's link. */
+  'tab.analysisSettings': 'Analysis settings',
+  'tab.reanalyse': 'Re-analyse',
+  /** Re-analyse's reason while the take has neither compressed audio nor a raw file. */
+  'tab.noAudioToAnalyse': 'No audio to analyse',
+  /** The Confirm dialog before re-analysing a take with edited (locked) notes (US-4.6). */
+  'tab.reanalyseConfirmTitle': (title: string) => `Re-analyse ${title}?`,
+  'tab.reanalyseConfirmBody':
+    "Re-analysing replaces notes you haven't edited. Your edited notes are kept.",
+  'tab.reanalyseCancelled': 'Re-analysis cancelled',
+  'tab.reanalyseFailed': 'Re-analysis failed — try again',
+  'tab.reanalysed': (n: number) => `Re-analysed: ${n} ${n === 1 ? 'note' : 'notes'}`,
   /** Shown in place of the progress bar while the result is being saved (no Cancel). */
   'tab.saving': 'Saving…',
   /** Shown when the take does not exist. */
@@ -340,6 +369,7 @@ export const strings = {
   'tab.commandDelete': 'Delete note',
   'tab.commandInsert': 'Insert note',
   'tab.commandConfirm': 'Confirm note',
+  'tab.commandReanalyse': 'Re-analyse',
   /** Announced after a string move (EXPERIENCE.md Accessibility floor): "Moved to G string, fret 7". */
   'tab.editMoved': (string: StringNo, fret: number) =>
     `Moved to ${TAB_STRING_NAMES[string]} string, fret ${fret}`,
@@ -406,6 +436,9 @@ export const strings = {
   'tuner.done': 'Done — go to Record',
   'settings.title': 'Settings',
   'settings.about': 'About',
+  'settings.defaults': 'Defaults for new takes',
+  'settings.defaultsHint':
+    'New takes start with these values. Each take keeps its own copy in its Analysis settings.',
   'settings.engineVersion': (version: string) => `Engine v${version}`,
   'settings.engineVersionUnavailable': 'Engine version unavailable',
 } as const;

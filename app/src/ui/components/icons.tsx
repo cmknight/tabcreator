@@ -137,3 +137,21 @@ export function DeleteIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/** Analysis settings: the Tab toolbar's Analysis settings toggle (three slider lines). */
+export function SettingsIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <circle cx="16" cy="6" r="2" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="10" cy="12" r="2" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="18" cy="18" r="2" fill="none" stroke="currentColor" strokeWidth="2" />
+    </svg>
+  );
+}

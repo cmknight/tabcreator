@@ -731,11 +731,27 @@ test('No notes found: Undo, Redo, Insert and Delete disabled with their reasons'
   await page.goto(`./#/tab/${encodeURIComponent(id)}`);
   await expect(page.getByRole('heading', { name: 'No notes found' })).toBeVisible();
   const toolbar = page.getByRole('toolbar', { name: 'Tab tools' });
-  await expect(toolbar.getByRole('button')).toHaveText(['Undo', 'Redo', 'Insert', 'Delete']);
+  await expect(toolbar.getByRole('button')).toHaveText([
+    'Undo',
+    'Redo',
+    'Insert',
+    'Delete',
+    'Analysis settings',
+  ]);
   await expectTool(page, 'Undo', false, 'Nothing to undo');
   await expectTool(page, 'Redo', false, 'Nothing to redo');
   await expectTool(page, 'Insert', false, 'No notes yet');
   await expectTool(page, 'Delete', false, 'No notes yet');
+  await expect(toolbar.getByRole('button', { name: 'Analysis settings' })).toBeEnabled();
+  await expectNoSeriousAxe(page);
+  // Story "Analysis settings and re-analysis": the tip's "Analysis settings" opens the panel and
+  // focuses Sensitivity; a seeded take has no audio, so Re-analyse says why it is disabled.
+  await page.getByTestId('tab-no-notes').getByRole('button', { name: 'Analysis settings' }).click();
+  const panel = page.getByRole('region', { name: 'Analysis settings' });
+  await expect(panel.getByRole('slider', { name: 'Sensitivity' })).toBeFocused();
+  const reanalyse = panel.getByRole('button', { name: 'Re-analyse' });
+  await expect(reanalyse).toBeDisabled();
+  await expect(reanalyse).toHaveAccessibleDescription('No audio to analyse');
   await expectNoSeriousAxe(page);
   expect(unexpected(errors)).toEqual([]);
 });
