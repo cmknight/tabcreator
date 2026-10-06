@@ -1921,6 +1921,33 @@ describe('take session edits', () => {
     );
   });
 
+  it('a save in flight counts as unsaved until it resolves', async () => {
+    const { h, session } = await open();
+    const write = deferred<Tab>();
+    vi.mocked(h.deps.putTab).mockReturnValueOnce(write.promise);
+    await session.setFret('b', 5);
+    await tick(300);
+    expect(h.deps.putTab).toHaveBeenCalledTimes(1);
+    expect(hasUnsavedEdits()).toBe(true);
+    write.resolve(session.getSnapshot().tab!);
+    await tick(0);
+    expect(hasUnsavedEdits()).toBe(false);
+  });
+
+  it('a clock stepping backward between two digits never merges them', async () => {
+    const { session } = await open();
+    session.select('b');
+    session.typeDigit(1);
+    await tick(0);
+    clock -= 60_000; // the wall clock is set back
+    session.typeDigit(2);
+    await tick(0);
+    expect(noteOf(session, 'b').fret).toBe(2);
+    expect(session.canUndo()).toBe(true);
+    await session.undo();
+    expect(noteOf(session, 'b').fret).toBe(1); // two steps
+  });
+
   it('edits do nothing while the tab is not shown (analysing)', async () => {
     const { h, session } = await open(TAB5, TAKE);
     await session.setFret('b', 5);
@@ -2435,6 +2462,138 @@ describe('take session analysis settings and re-analysis', () => {
       expect(session.getSnapshot().tab!.notes).toHaveLength(2);
       await session.undo();
       expect(session.getSnapshot().tab!.notes).toEqual([]);
+    });
+
+    it('an edit save in flight that fails while a re-analysis holds saves: saved after a failed commit', async () => {
+      const { h, session, engine } = await open();
+      vi.useFakeTimers();
+      try {
+        session.select('P');
+        session.typeDigit(5);
+        await vi.advanceTimersByTimeAsync(0);
+        const write = deferred<Tab>();
+        vi.mocked(h.deps.putTab).mockReturnValueOnce(write.promise);
+        await vi.advanceTimersByTimeAsync(300); // the save is in flight
+        const edited = session.getSnapshot().tab!;
+        vi.mocked(h.deps.db.commitAnalysis).mockRejectedValueOnce(
+          new AppError('storage-failed', 'x'),
+        );
+        const done = session.reanalyse();
+        await vi.advanceTimersByTimeAsync(0);
+        engine.run.resolve(run([detected(1200, 3)]));
+        await vi.advanceTimersByTimeAsync(0); // the commit holds saves, awaiting the one in flight
+        expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+        write.reject(new AppError('storage-full', 'quota')); // fails while the hold waits
+        await expect(done).rejects.toMatchObject({ code: 'storage-failed' });
+        await vi.advanceTimersByTimeAsync(400); // resumeSave
+        expect(h.deps.putTab).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(h.deps.putTab).mock.calls[1]![0]).toBe(edited);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    /** An edit whose save failed storage-full: `saveFailed` set and the Tab held. */
+    async function failedEditSave() {
+      const opened = await open();
+      vi.mocked(opened.h.deps.putTab).mockRejectedValueOnce(new AppError('storage-full', 'q'));
+      await opened.session.setFret('P', 5);
+      await opened.session.flush();
+      expect(opened.session.getSnapshot().saveFailed).toBe('storage-full');
+      return opened;
+    }
+
+    /** A second session for the take, reading `tab`: no banner, the committed tab. */
+    async function reopen(take: Take, tab: Tab) {
+      const h2 = harness(take, tab);
+      const second = createTakeSession('t1', h2.deps);
+      opened.push(second);
+      second.subscribe(() => {});
+      await settle();
+      expect(second.getSnapshot().saveFailed).toBeNull();
+      expect(second.getSnapshot().tab).toEqual(tab);
+    }
+
+    it('a failed edit save, then a re-analysis commits: no banner, here or in a new session', async () => {
+      const { h, session, engine } = await failedEditSave();
+      const done = session.reanalyse();
+      await settle();
+      engine.run.resolve(run([detected(1200, 3)]));
+      await done;
+      expect(session.getSnapshot().saveFailed).toBeNull();
+      const [, tab, patch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]!;
+      await reopen({ ...ANALYZED, ...patch }, tab);
+    });
+
+    it('a failed edit save, then a trim commits: no banner, here or in a new session', async () => {
+      const { h, session, engine } = await failedEditSave();
+      const done = session.trim(1500, null);
+      await settle();
+      engine.run.resolve(run([detected(2000, 3)]));
+      await done;
+      expect(session.getSnapshot().saveFailed).toBeNull();
+      const [, tab, patch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]!;
+      await reopen({ ...ANALYZED, ...patch }, tab);
+    });
+
+    it('a failed edit save, then an undo of a re-analysis commits: no banner, here or in a new session', async () => {
+      const { h, session, engine } = await open();
+      const done = session.reanalyse();
+      await settle();
+      engine.run.resolve(run([detected(1200, 3)]));
+      await done;
+      vi.mocked(h.deps.putTab).mockRejectedValueOnce(new AppError('storage-full', 'q'));
+      await session.setFret('L', 9);
+      await session.flush();
+      expect(session.getSnapshot().saveFailed).toBe('storage-full');
+      await session.undo(); // the edit
+      await session.undo(); // the re-analysis: a commit
+      expect(session.getSnapshot().saveFailed).toBeNull();
+      const [, tab, patch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls.at(-1)!;
+      await reopen({ ...ANALYZED, ...patch }, tab);
+    });
+
+    it('cancel while queued behind an edit: the edit’s engine request is left alone; edits work at once', async () => {
+      const { h, session, events } = await open();
+      const map = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+      vi.mocked(h.deps.mapFrets).mockReturnValueOnce(map.promise);
+      const edit = session.setFret('P', 5);
+      await settle();
+      const done = session.reanalyse(); // queued behind the edit
+      expect(session.getSnapshot().reanalysis).not.toBeNull();
+      session.cancelReanalysis();
+      expect(h.deps.analysis.cancel).not.toHaveBeenCalled();
+      expect(h.deps.cancel).not.toHaveBeenCalled();
+      expect(events).toEqual([{ kind: 'reanalyseCancelled' }]);
+      // No longer queued: settings and edits are taken at once.
+      await session.setSettings({ sensitivity: 0.7 });
+      expect(h.deps.db.patchTake).toHaveBeenCalledTimes(1);
+      const second = session.setFret('P', 6);
+      map.resolve([
+        { string: 1, fret: 7 },
+        { string: 1, fret: 5 },
+      ]);
+      await Promise.all([edit, done, second]);
+      expect(events).not.toContainEqual({ kind: 'failed' });
+      expect(h.deps.analysis.reanalyse).not.toHaveBeenCalled();
+      expect(session.getSnapshot().tab!.notes.find((n) => n.id === 'P')!.fret).toBe(6);
+    });
+
+    it('a queued re-analysis dequeued with the take no longer editable: announced as failed', async () => {
+      const { h, session, events } = await open();
+      const map = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+      vi.mocked(h.deps.mapFrets).mockReturnValueOnce(map.promise);
+      const edit = session.setFret('P', 5);
+      await settle();
+      const done = session.reanalyse(); // queued behind the edit
+      vi.mocked(h.deps.db.getTab).mockResolvedValue(null);
+      session.analyse(); // re-reads: the tab is gone
+      await settle();
+      map.resolve([null, null]);
+      await Promise.all([edit, done]);
+      expect(h.deps.analysis.reanalyse).not.toHaveBeenCalled();
+      expect(events).toContainEqual({ kind: 'reanalyseFailed', code: 'analysis-failed' });
+      expect(session.getSnapshot().reanalysis).toBeNull();
     });
 
     it('a second call while one runs does nothing', async () => {

@@ -13,6 +13,7 @@ import {
   type WaveformWorkerLike,
 } from '../../src/session/waveform';
 import type { StorageListener } from '../../src/storage/events';
+import { deferred } from './helpers';
 
 // Story "Trim": the Trim strip's waveform: the min/max reduction, the worker's handler, and the
 // session's PCM source, worker protocol, cache and release.
@@ -249,5 +250,72 @@ describe('session waveform', () => {
     await expect(waveform.loadPeaks(none, 2)).rejects.toMatchObject({ code: 'audio-missing' });
     readRaw.mockResolvedValueOnce(RAW());
     await expect(waveform.loadPeaks(none, 2)).resolves.toBeTruthy();
+  });
+
+  it('a release while the PCM is read: nothing is sent after it, the load rejects, and a later load reads again', async () => {
+    const read = deferred<Float32Array>();
+    const readRaw = vi.fn((): Promise<Float32Array> => read.promise);
+    const { waveform, workers } = setup({
+      audio: { readRaw, readCompressed: vi.fn(async () => null) },
+    });
+    const first = waveform.loadPeaks(TAKE, 2);
+    first.catch(() => {});
+    waveform.release('t1');
+    const released = workers[0]!.posted.length;
+    read.resolve(RAW());
+    await expect(first).rejects.toBeInstanceOf(AppError);
+    expect(workers[0]!.posted.slice(released).some((p) => p.message.kind === 'load')).toBe(false);
+    readRaw.mockResolvedValueOnce(RAW());
+    const again = waveform.loadPeaks(TAKE, 2);
+    await settle();
+    expect(readRaw).toHaveBeenCalledTimes(2);
+    const w = workers.at(-1)!;
+    w.reply((w.posted.at(-1)!.message as { reqId: number }).reqId);
+    await expect(again).resolves.toBeTruthy();
+  });
+
+  it('a worker error while the PCM is read: nothing is sent to it, the load rejects, and a later load reads again', async () => {
+    const read = deferred<Float32Array>();
+    const readRaw = vi.fn((): Promise<Float32Array> => read.promise);
+    const { waveform, workers } = setup({
+      audio: { readRaw, readCompressed: vi.fn(async () => null) },
+    });
+    const first = waveform.loadPeaks(TAKE, 2);
+    first.catch(() => {});
+    workers[0]!.onerror?.(new Event('error'));
+    read.resolve(RAW());
+    await expect(first).rejects.toBeInstanceOf(AppError);
+    expect(workers[0]!.posted).toEqual([]);
+    readRaw.mockResolvedValueOnce(RAW());
+    const again = waveform.loadPeaks(TAKE, 2);
+    await settle();
+    expect(readRaw).toHaveBeenCalledTimes(2);
+    expect(workers).toHaveLength(2);
+    const w = workers[1]!;
+    w.reply((w.posted.at(-1)!.message as { reqId: number }).reqId);
+    await expect(again).resolves.toBeTruthy();
+  });
+
+  it('a worker restart after the PCM was sent: it is loaded into the new worker before the peaks request', async () => {
+    let crashed = false;
+    const { waveform, workers } = setup();
+    const first = waveform.loadPeaks(TAKE, 2);
+    // The first worker fails right after taking the PCM.
+    await Promise.resolve();
+    const w0 = workers[0]!;
+    const post = w0.postMessage.bind(w0);
+    w0.postMessage = (message, transfer) => {
+      post(message, transfer);
+      if (message.kind === 'load' && !crashed) {
+        crashed = true;
+        w0.onerror?.(new Event('error'));
+      }
+    };
+    await settle();
+    expect(w0.posted.some((p) => p.message.kind === 'peaks')).toBe(false);
+    const w1 = workers[1]!;
+    expect(w1.posted.map((p) => p.message.kind)).toEqual(['load', 'peaks']);
+    w1.reply((w1.posted[1]!.message as { reqId: number }).reqId);
+    await expect(first).resolves.toBeTruthy();
   });
 });

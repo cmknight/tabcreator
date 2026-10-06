@@ -875,6 +875,34 @@ describe('the Tab edit shortcuts', () => {
     expect(session.typeDigit.mock.calls.map(([d]) => d)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
+  it('digits do nothing with focus in the toolbar; undo and redo still work there', () => {
+    const session = fakeSession('n1');
+    install(session);
+    const toolbar = add('div', { role: 'toolbar', 'aria-label': 'Tab tools' });
+    const undoButton = toolbar.appendChild(document.createElement('button'));
+    undoButton.focus();
+    expect(press(undoButton, '5').defaultPrevented).toBe(false);
+    expect(session.typeDigit).not.toHaveBeenCalled();
+    expect(press(undoButton, 'z', { ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(session.undo).toHaveBeenCalledTimes(1);
+    expect(press(undoButton, 'y', { ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(session.redo).toHaveBeenCalledTimes(1);
+  });
+
+  it('undo and redo match the physical key on non-Latin layouts (Ctrl+я is Ctrl+Z)', () => {
+    const session = fakeSession('n1');
+    install(session);
+    expect(press(document.body, 'я', { ctrlKey: true, code: 'KeyZ' }).defaultPrevented).toBe(true);
+    expect(session.undo).toHaveBeenCalledTimes(1);
+    expect(
+      press(document.body, 'Я', { ctrlKey: true, shiftKey: true, code: 'KeyZ' }).defaultPrevented,
+    ).toBe(true);
+    expect(press(document.body, 'н', { ctrlKey: true, code: 'KeyY' }).defaultPrevented).toBe(true);
+    expect(session.redo).toHaveBeenCalledTimes(2);
+    // Without a modifier, a code alone matches nothing.
+    expect(press(document.body, 'я', { code: 'KeyZ' }).defaultPrevented).toBe(false);
+  });
+
   it('digits need a selected note and a shown tab, and are left to the page otherwise', () => {
     const none = fakeSession(null);
     install(none);

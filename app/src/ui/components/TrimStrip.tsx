@@ -95,8 +95,11 @@ function draw(canvas: HTMLCanvasElement, peaks: Peaks, from: number, to: number)
   const columns = peaks.min.length;
   // The backing store at device pixels; drawing stays in CSS pixels (one column each).
   const dpr = typeof devicePixelRatio === 'number' && devicePixelRatio > 0 ? devicePixelRatio : 1;
-  canvas.width = Math.round(columns * dpr);
-  canvas.height = Math.round(WAVE_HEIGHT * dpr);
+  // Resized only when the size changes: a handle move redraws without reallocating.
+  const width = Math.round(columns * dpr);
+  const height = Math.round(WAVE_HEIGHT * dpr);
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const style = getComputedStyle(canvas);
   const surface = style.getPropertyValue('--color-surface').trim() || '#fff';
@@ -149,6 +152,8 @@ export function TrimStrip({
   const [confirming, setConfirming] = useState<'save' | 'reset' | null>(null);
   const saveButton = useRef<HTMLButtonElement>(null);
   const resetButton = useRef<HTMLButtonElement>(null);
+  const startHandle = useRef<HTMLDivElement>(null);
+  const progressId = useId();
   const cancelButton = useRef<HTMLButtonElement>(null);
 
   // Focus follows the run: from Save or Reset trim (disabled) to Cancel when it starts, and back
@@ -163,7 +168,12 @@ export function TrimStrip({
     const lost = active === null || active === document.body;
     const onButton = active instanceof HTMLButtonElement && active.disabled;
     if (isRunning && (lost || onButton)) cancelButton.current?.focus();
-    if (!isRunning && lost) saveButton.current?.focus();
+    if (!isRunning && lost) {
+      // Save (or else Reset trim) when enabled; after a successful run both may be disabled,
+      // so then the start handle.
+      const target = [saveButton.current, resetButton.current].find((b) => b && !b.disabled);
+      (target ?? startHandle.current)?.focus();
+    }
   }, [isRunning]);
 
   // The handle's time, announced politely once it has not moved for TRIM_ANNOUNCE_MS.
@@ -198,6 +208,8 @@ export function TrimStrip({
   };
 
   const onHandleKey = (handle: Handle, event: KeyboardEvent<HTMLDivElement>) => {
+    // While a run goes the handles are disabled; a modified key is left to the page.
+    if (running !== null || event.ctrlKey || event.altKey || event.metaKey) return;
     const current = handle === 'start' ? start : end;
     const step = event.shiftKey ? TRIM_BIG_STEP_MS : TRIM_STEP_MS;
     const limits = limitsOf(handle);
@@ -234,7 +246,7 @@ export function TrimStrip({
     return ((clientX - rect.left) / rect.width) * duration;
   };
   const onPointerDown = (handle: Handle, event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || running !== null) return;
     event.preventDefault();
     event.currentTarget.focus();
     try {
@@ -249,6 +261,11 @@ export function TrimStrip({
   const onPointerMove = (handle: Handle, event: PointerEvent<HTMLDivElement>) => {
     const drag = dragging.current;
     if (drag?.handle !== handle) return;
+    // No button down (the release was missed) or a run started: the drag is over.
+    if (event.buttons === 0 || running !== null) {
+      dragging.current = null;
+      return;
+    }
     const ms = msAt(event.clientX);
     if (ms !== null) move(handle, ms - drag.offset);
   };
@@ -266,9 +283,16 @@ export function TrimStrip({
   useLayoutEffect(() => {
     const el = track.current;
     if (!el) return;
-    const measure = () => setColumns(Math.round(el.clientWidth) || FALLBACK_COLUMNS);
+    // Without layout (no ResizeObserver: jsdom) a fixed column count; with it, a width of 0
+    // (not laid out yet) waits for a measured one.
+    const layout = typeof ResizeObserver !== 'undefined';
+    const measure = () => {
+      const width = Math.round(el.clientWidth);
+      if (width > 0) setColumns(width);
+      else if (!layout) setColumns(FALLBACK_COLUMNS);
+    };
     measure();
-    if (typeof ResizeObserver === 'undefined') return;
+    if (!layout) return;
     // A resize reloads the peaks only once the width has settled.
     let timer: ReturnType<typeof setTimeout> | null = null;
     const observer = new ResizeObserver(() => {
@@ -293,9 +317,12 @@ export function TrimStrip({
     const takeId = take.id;
     return () => release.current(takeId);
   }, [take.id]);
-  const [peaks, setPeaks] = useState<{ key: string; peaks: Peaks | null; failed: boolean } | null>(
-    null,
-  );
+  /** The latest peaks loaded for the take (kept while another width loads), or its failure. */
+  const [peaks, setPeaks] = useState<{
+    takeId: string;
+    peaks: Peaks | null;
+    failed: boolean;
+  } | null>(null);
   const peaksKey = `${take.id}:${columns}`;
   const loader = useRef(loadPeaks);
   useLayoutEffect(() => {
@@ -307,10 +334,16 @@ export function TrimStrip({
     let cancelled = false;
     loader.current(take, columns).then(
       (p) => {
-        if (!cancelled) setPeaks({ key: peaksKey, peaks: p, failed: false });
+        if (!cancelled) setPeaks({ takeId: take.id, peaks: p, failed: false });
       },
       () => {
-        if (!cancelled) setPeaks({ key: peaksKey, peaks: null, failed: true });
+        if (!cancelled)
+          setPeaks((prev) => ({
+            takeId: take.id,
+            // A failed reload keeps the waveform already drawn.
+            peaks: prev?.takeId === take.id ? prev.peaks : null,
+            failed: true,
+          }));
       },
     );
     return () => {
@@ -319,7 +352,8 @@ export function TrimStrip({
     // The take's audio never changes: its id and the width decide the peaks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [peaksKey]);
-  const shownPeaks = peaks?.key === peaksKey ? peaks : null;
+  // The last peaks drawn stay until the new width's arrive: no flash on a resize.
+  const shownPeaks = peaks?.takeId === take.id ? peaks : null;
   const canvas = useRef<HTMLCanvasElement>(null);
   const fromFraction = duration > 0 ? start / duration : 0;
   const toFraction = duration > 0 ? end / duration : 1;
@@ -379,8 +413,10 @@ export function TrimStrip({
               key={handle}
               className={`${styles.handle} ${handle === 'start' ? styles.startHandle : styles.endHandle}`}
               style={h.style}
+              ref={handle === 'start' ? startHandle : undefined}
               role="slider"
               tabIndex={0}
+              aria-disabled={running !== null || undefined}
               aria-label={h.label}
               aria-valuemin={h.limits.min}
               aria-valuemax={h.limits.max}
@@ -393,6 +429,9 @@ export function TrimStrip({
               onPointerMove={(event) => onPointerMove(handle, event)}
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
+              onLostPointerCapture={() => {
+                dragging.current = null;
+              }}
             >
               <span className={styles.bar} aria-hidden="true" />
               <span className={styles.time} aria-hidden="true">
@@ -430,12 +469,12 @@ export function TrimStrip({
       </div>
       {running !== null && (
         <div className={styles.progressBlock} data-testid="trim-progress">
-          <label className={styles.label} htmlFor="tab-trim-progress">
+          <label className={styles.label} htmlFor={progressId}>
             {strings['tab.analysing']}
           </label>
           <div className={styles.progressRow}>
             <progress
-              id="tab-trim-progress"
+              id={progressId}
               className={styles.progress}
               max={1}
               value={running.progress}

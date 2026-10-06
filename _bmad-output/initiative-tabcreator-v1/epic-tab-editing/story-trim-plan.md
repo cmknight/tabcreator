@@ -11,7 +11,7 @@ review: 'thorough'
 review_source: 'auto'
 lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
-followup_review_recommended: true
+followup_review_recommended: false
 context:
   - '{project-root}/_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-analysis-settings-and-re-analysis-plan.md'
 warnings: ['oversized']
@@ -204,6 +204,38 @@ deferred: []
   - `[false]` `[reject]` (intent) The disabled reason is on the toggle, not on Save and Reset — the ticket names the Trim entry point; Save and Reset aren't reachable without audio.
   - `[false]` `[reject]` (intent) Decoding runs on the main thread — Chrome workers have no OfflineAudioContext, and AD-2 puts decoding in `audio/decode.ts`; only the reduction is the worker's job (the ticket's "min/max … in an audio/ worker").
 
+### 2026-10-06 — Review pass (follow-up: waveform worker lifecycle and the trim strip, current code against the 8.7 baseline)
+- verdicts: 28 findings — high 0, medium 0, low 24, false 4, maybe-false 0
+- findings:
+  - `[low]` `[patch]` (edge) The handles move by key or drag while a trim run is in flight — they ignore input and carry `aria-disabled` during a run.
+  - `[low]` `[patch]` (edge) After a successful Save (or Reset) focus goes to a now-disabled button and falls to the body — it falls back to an enabled control (the start handle).
+  - `[low]` `[patch]` (edge) A lost pointer capture leaves `dragging` set, so hovering moves a handle — cleared on `lostpointercapture` and on a move with no button down.
+  - `[low]` `[patch]` (edge) Arrow, Home and End with Ctrl, Alt or Meta are swallowed by the handles — modifier combinations are left alone.
+  - `[low]` `[patch]` (edge) A worker restart between `ensureLoaded` and `request` sends a peaks request to a worker without the PCM — the request re-checks the worker and reloads.
+  - `[false]` `[reject]` (edge) Releasing take `a` drops `a:b`'s peaks by prefix — take ids are `crypto.randomUUID()` values, which contain no `:`.
+  - `[low]` `[reject]` (edge) Debounced announcements don't announce every move — carried (8.7 notes: only the settled value is announced, 300 ms after the last key).
+  - `[low]` `[patch]` (blind) Focus is lost after a successful Save — the same as the edge finding.
+  - `[low]` `[patch]` (blind) The handles move during a run — the same as the edge finding.
+  - `[false]` `[reject]` (blind) Esc in the Confirm dialog also closes the strip — `overlays.ts` handles Esc in a document capture listener and calls `stopPropagation`, so React's root listener never sees it (8.3's overlays test "no other keydown listener sees that Esc").
+  - `[low]` `[patch]` (blind) The waveform blanks and shows "Loading waveform…" on every resize — the last peaks stay drawn until the new ones arrive.
+  - `[low]` `[reject]` (blind) A failed waveform load can't be retried — carried (8.7 triage: reopening the strip retries).
+  - `[low]` `[patch]` (blind) The canvas backing store is reallocated on every handle move — width and height are set only when they change.
+  - `[low]` `[reject]` (blind) No redraw on a theme or DPR change — carried (8.7 triage).
+  - `[low]` `[reject]` (blind) Waveform failures reuse `analysis-failed` — carried (8.7 triage: only logged).
+  - `[false]` `[reject]` (blind) Prefix-matched release — the same as the edge finding.
+  - `[low]` `[reject]` (blind) LRU eviction doesn't free the worker's PCM — the PCM is released on strip unmount and take-deleted; eviction only caps peak sets.
+  - `[low]` `[patch]` (blind) The progress element has a hard-coded id — `useId()`.
+  - `[false]` `[reject]` (blind) The diff lacks dependencies and tests — the follow-up diff was scoped to the four waveform files; the tests and imports exist outside it.
+  - `[low]` `[patch]` (blind) A zero-width track loads 600 columns in real browsers — width 0 now waits for a measured width; the fallback is kept only where layout is unavailable.
+  - `[low]` `[patch]` (verification-gap) Releasing a take while its PCM is still being read is untested — test added (nothing posted, the request rejects, a later load reads again; plus an onerror variant).
+  - `[low]` `[patch]` (verification-gap) The strip's focus-follows-the-run effect is untested — tests added with the focus fix.
+  - `[low]` `[reject]` (intent) The real module Worker path isn't asserted — the dev e2e runs the browser path (a Worker exists there) and shows the waveform; asserting which thread ran it adds little.
+  - `[low]` `[reject]` (intent) The cache lasts per strip mount, not per take — release on unmount was 8.7's memory fix (medium); the per-take cache would keep the PCM.
+  - `[low]` `[reject]` (intent) The PCM read re-implements analysis's fallback — `session/waveform.ts` follows the same order (raw, then decoded compressed) per AD-15; sharing the helper is a later sweep item.
+  - `[low]` `[reject]` (intent) `releasePeaks` goes beyond the `loadPeaks` contract — added by the 8.7 memory fix.
+  - `[low]` `[reject]` (intent) Columns per CSS pixel, not device pixel — the defensible reading; the backing store is DPR-scaled.
+  - `[low]` `[reject]` (intent) A failure state beyond "Loading" — it adds to the intent and doesn't contradict it.
+
 ## Design Notes
 
 - **Why the end is stored as null:** take-lifecycle starts takes at `trimEndMs: null`, so "full" means start 0 and end null. That keeps Reset's snapshot equal to a never-trimmed take.
@@ -272,3 +304,26 @@ deferred: []
 - In-range notes the trimmed run does not re-detect are kept as they were, so a trim adds new detections but never removes in-range notes. That follows the user ruling's outcome (every existing note keeps its time).
 - Undo and redo still work from a trim handle (deliberate).
 - The new copy is not yet in EXPERIENCE.md (deferred-work).
+
+## Auto Run Result (follow-up review, 2026-10-06)
+
+**Scope:** the waveform worker lifecycle and the trim strip (waveform-worker.ts, session/waveform.ts, model/waveform.ts and TrimStrip.tsx against the 8.7 baseline). Thorough, 4 lenses, 28 findings (24 low, 4 false).
+
+**Patched (all low):**
+- **Handles:** they are inert (`aria-disabled`) during a run.
+- **Focus:** after a run ends it falls back to an enabled control.
+- **Dragging:** a drag ends on lost pointer capture or a buttonless move.
+- **Modifier keys:** combinations on the handles are left alone.
+- **Markup and canvas:**
+  - `useId` for the progress element;
+  - the last peaks stay drawn on resize;
+  - the canvas is reallocated only when its size changes;
+  - a zero width waits for a measured width.
+- **Worker restart:** a restart between load and request reloads the PCM.
+- **Tests:** release and worker error during the PCM read, and focus following the run.
+
+**Deferred:** none.
+
+**Follow-up review: not recommended.** No high was patched; the work has converged.
+
+**Verification:** the same as story 8.1's follow-up run (shared working tree): unit tests 1510, Playwright 188 plus perf.

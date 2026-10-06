@@ -76,7 +76,7 @@ function mainThreadWorker(): WaveformWorkerLike {
 export function createWaveform(deps: WaveformDeps): Waveform {
   const peaks = new Map<string, Promise<Peaks>>();
   /** The takes whose PCM the current worker holds (or is being read for it). */
-  const loaded = new Map<string, Promise<void>>();
+  const loaded = new Map<string, Promise<WaveformWorkerLike>>();
   const pending = new Map<number, { resolve(p: Peaks): void; reject(e: Error): void }>();
   let worker: WaveformWorkerLike | null = null;
   let nextId = 0;
@@ -122,18 +122,22 @@ export function createWaveform(deps: WaveformDeps): Waveform {
     return (await deps.decode(blob, take.sampleRate)).pcm;
   }
 
-  /** Sends the take's PCM to the worker once (until released or the worker restarts). */
-  function ensureLoaded(take: WaveformTake): Promise<void> {
+  /**
+   * Sends the take's PCM to the worker once (until released or the worker restarts); resolves
+   * with the worker that holds it.
+   */
+  function ensureLoaded(take: WaveformTake): Promise<WaveformWorkerLike> {
     const existing = loaded.get(take.id);
     if (existing) return existing;
     const w = current();
-    const entry: { load: Promise<void> | null } = { load: null };
+    const entry: { load: Promise<WaveformWorkerLike> | null } = { load: null };
     const load = readPcm(take).then((pcm) => {
       // Released, or the worker restarted, while reading: not sent.
       if (loaded.get(take.id) !== entry.load || worker !== w) {
         throw new AppError('analysis-failed', `Waveform of take ${take.id} superseded`);
       }
       w.postMessage({ kind: 'load', takeId: take.id, pcm }, [pcm.buffer as ArrayBuffer]);
+      return w;
     });
     entry.load = load;
     loaded.set(take.id, load);
@@ -143,13 +147,30 @@ export function createWaveform(deps: WaveformDeps): Waveform {
     return load;
   }
 
-  function request(takeId: string, columns: number): Promise<Peaks> {
-    const w = current();
+  /** One `peaks` request to `w`, the worker holding the take's PCM. */
+  function request(w: WaveformWorkerLike, takeId: string, columns: number): Promise<Peaks> {
     const reqId = ++nextId;
     return new Promise<Peaks>((resolve, reject) => {
       pending.set(reqId, { resolve, reject });
       w.postMessage({ kind: 'peaks', reqId, takeId, columns });
     });
+  }
+
+  /**
+   * The take's peaks from the worker holding its PCM. A worker restarted after the PCM was sent
+   * (it no longer holds it) loads it again first; a take released meanwhile rejects.
+   */
+  async function peaksFor(take: WaveformTake, columns: number): Promise<Peaks> {
+    for (;;) {
+      const w = await ensureLoaded(take);
+      if (worker === w) {
+        if (!loaded.has(take.id)) {
+          throw new AppError('analysis-failed', `Waveform of take ${take.id} released`);
+        }
+        return request(w, take.id, columns);
+      }
+      // The worker restarted since: its PCM is gone, so load it into the new one.
+    }
   }
 
   function release(takeId: string) {
@@ -173,7 +194,7 @@ export function createWaveform(deps: WaveformDeps): Waveform {
         peaks.set(key, cached);
         return cached;
       }
-      const load = ensureLoaded(take).then(() => request(take.id, columns));
+      const load = peaksFor(take, columns);
       peaks.set(key, load);
       load.catch(() => {
         if (peaks.get(key) === load) peaks.delete(key);

@@ -183,12 +183,12 @@ describe('TrimStrip', () => {
       toJSON: () => ({}),
     });
     fireEvent.pointerDown(start, { button: 0, pointerId: 1, clientX: 100 });
-    fireEvent.pointerMove(start, { pointerId: 1, clientX: 300 }); // halfway: 2000 ms
+    fireEvent.pointerMove(start, { pointerId: 1, buttons: 1, clientX: 300 }); // halfway: 2000 ms
     expect(start.getAttribute('aria-valuenow')).toBe('2000');
-    fireEvent.pointerMove(start, { pointerId: 1, clientX: 500 }); // the end: stops at 3500
+    fireEvent.pointerMove(start, { pointerId: 1, buttons: 1, clientX: 500 }); // the end: stops at 3500
     expect(start.getAttribute('aria-valuenow')).toBe('3500');
     fireEvent.pointerUp(start, { pointerId: 1 });
-    fireEvent.pointerMove(start, { pointerId: 1, clientX: 100 }); // released: no move
+    fireEvent.pointerMove(start, { pointerId: 1, buttons: 1, clientX: 100 }); // released: no move
     expect(start.getAttribute('aria-valuenow')).toBe('3500');
   });
 
@@ -283,9 +283,9 @@ describe('TrimStrip', () => {
     });
     // The end handle's bar sits 8 px left of its time (4000 ms at x 400): grabbed at x 396.
     fireEvent.pointerDown(end, { button: 0, pointerId: 1, clientX: 396 });
-    fireEvent.pointerMove(end, { pointerId: 1, clientX: 396 });
+    fireEvent.pointerMove(end, { pointerId: 1, buttons: 1, clientX: 396 });
     expect(end.getAttribute('aria-valuenow')).toBe('4000');
-    fireEvent.pointerMove(end, { pointerId: 1, clientX: 296 }); // 100 px left: 1000 ms earlier
+    fireEvent.pointerMove(end, { pointerId: 1, buttons: 1, clientX: 296 }); // 100 px left: 1000 ms earlier
     expect(end.getAttribute('aria-valuenow')).toBe('3000');
   });
 
@@ -344,5 +344,146 @@ describe('TrimStrip', () => {
     cleanup();
     expect(props.releasePeaks).toHaveBeenCalledWith('t1');
     vi.unstubAllGlobals();
+  });
+
+  const trackRect = (el: HTMLElement) =>
+    vi.spyOn(el.parentElement!, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      width: 400,
+      top: 0,
+      height: 64,
+      right: 400,
+      bottom: 64,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+  it('while a run goes the handles are aria-disabled and ignore keys and drags', () => {
+    const { rerender } = setup();
+    rerender({ running: { progress: 0.1 } });
+    const start = handle('Trim start');
+    expect(start.getAttribute('aria-disabled')).toBe('true');
+    key(start, 'ArrowRight');
+    key(start, 'End');
+    trackRect(start);
+    fireEvent.pointerDown(start, { button: 0, pointerId: 1, clientX: 0 });
+    fireEvent.pointerMove(start, { pointerId: 1, buttons: 1, clientX: 200 });
+    expect(start.getAttribute('aria-valuenow')).toBe('0');
+    rerender({ running: null });
+    expect(handle('Trim start').hasAttribute('aria-disabled')).toBe(false);
+  });
+
+  it('a drag ends on lostpointercapture and on a move with no button down', () => {
+    setup();
+    const start = handle('Trim start');
+    trackRect(start);
+    fireEvent.pointerDown(start, { button: 0, pointerId: 1, clientX: 0 });
+    fireEvent.lostPointerCapture(start, { pointerId: 1 });
+    fireEvent.pointerMove(start, { pointerId: 1, buttons: 1, clientX: 200 });
+    expect(start.getAttribute('aria-valuenow')).toBe('0');
+    fireEvent.pointerDown(start, { button: 0, pointerId: 1, clientX: 0 });
+    fireEvent.pointerMove(start, { pointerId: 1, buttons: 0, clientX: 200 }); // release missed
+    fireEvent.pointerMove(start, { pointerId: 1, buttons: 1, clientX: 200 });
+    expect(start.getAttribute('aria-valuenow')).toBe('0');
+  });
+
+  it('arrow, Home and End with Ctrl, Alt or ⌘ are left to the page', () => {
+    setup();
+    const start = handle('Trim start');
+    for (const mod of ['ctrlKey', 'altKey', 'metaKey'] as const) {
+      const event = new KeyboardEvent('keydown', {
+        key: 'ArrowRight',
+        [mod]: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      start.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(start.getAttribute('aria-valuenow')).toBe('0');
+  });
+
+  it('focus: Save → Cancel when the run starts; after a successful run an enabled control', () => {
+    const { rerender } = setup();
+    key(handle('Trim start'), 'ArrowRight', true);
+    act(() => save().focus());
+    rerender({ running: { progress: 0 } });
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: strings['tab.cancel'] }),
+    );
+    // Saved: the take now carries the trim, so Save is disabled again; Reset trim is enabled.
+    rerender({ running: null, take: { ...TAKE, trimStartMs: 100 } });
+    expect(document.activeElement).toBe(reset());
+    // Reset back to the full take: Save and Reset trim both disabled, so the start handle.
+    act(() => reset().focus());
+    rerender({ running: { progress: 0 }, take: { ...TAKE, trimStartMs: 100 } });
+    rerender({ running: null, take: TAKE });
+    expect(document.activeElement).toBe(handle('Trim start'));
+  });
+
+  it('the progress bar is labelled through a generated id', () => {
+    setup({ running: { progress: 0.5 } });
+    const bar = screen.getByRole('progressbar', { name: strings['tab.analysing'] });
+    expect(bar.id).not.toBe('');
+    expect(bar.id).not.toBe('tab-trim-progress');
+  });
+
+  it('a resize keeps the drawn waveform while the new width loads; no "Loading" flash', async () => {
+    vi.useFakeTimers();
+    let resize: (() => void) | null = null;
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(cb: () => void) {
+          resize = cb;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(500);
+    const { peaks } = setup();
+    await act(async () => peaks.resolve(PEAKS));
+    expect(screen.queryByTestId('trim-loading')).toBeNull();
+    width.mockReturnValue(450);
+    act(() => resize!());
+    act(() => vi.advanceTimersByTime(RESIZE_DEBOUNCE_MS));
+    expect(screen.queryByTestId('trim-loading')).toBeNull();
+    expect((screen.getByTestId('trim-waveform') as HTMLCanvasElement).hidden).toBe(false);
+    vi.unstubAllGlobals();
+  });
+
+  it('with layout, a width of 0 waits for a measured width', () => {
+    vi.useFakeTimers();
+    let resize: (() => void) | null = null;
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(cb: () => void) {
+          resize = cb;
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    const width = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(0);
+    const { props } = setup();
+    expect(props.loadPeaks).not.toHaveBeenCalled();
+    width.mockReturnValue(320);
+    act(() => resize!());
+    act(() => vi.advanceTimersByTime(RESIZE_DEBOUNCE_MS));
+    expect(props.loadPeaks).toHaveBeenCalledWith(TAKE, 320);
+    vi.unstubAllGlobals();
+  });
+
+  it('a redraw at the same size does not reallocate the canvas', async () => {
+    const { peaks } = setup();
+    await act(async () => peaks.resolve(PEAKS));
+    const canvas = screen.getByTestId('trim-waveform') as HTMLCanvasElement;
+    const set = vi.spyOn(canvas, 'width', 'set');
+    key(handle('Trim start'), 'ArrowRight');
+    expect(drawn.length).toBeGreaterThan(600); // redrawn
+    expect(set).not.toHaveBeenCalled();
   });
 });

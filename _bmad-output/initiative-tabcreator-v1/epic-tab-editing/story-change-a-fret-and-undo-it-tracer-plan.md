@@ -11,12 +11,19 @@ review: 'thorough'
 review_source: 'auto'
 lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
-followup_review_recommended: true
+followup_review_recommended: false
 context:
   - '{project-root}/_bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md'
   - '{project-root}/_bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md'
 warnings: ['oversized']
-deferred: []
+deferred:
+  - summary: >-
+      Unsaved edits on browser close rely on an async putTab started from pagehide; there is no beforeunload prompt for a pending or held (storage-full) edit.
+    evidence: |-
+      Unverified (8.1 follow-up review, 2026-10-06): settle by testing whether Chrome completes an IndexedDB write started in pagehide or visibilitychange→hidden. If it does not, add a beforeunload prompt when hasUnsavedEdits() is true (UX copy needed).
+    location: >-
+      app/src/session/take-session.ts onPageHide/flush; app/src/session/app-reload.ts
+    severity: medium (unverified)
 ---
 
 <intent-contract>
@@ -213,6 +220,41 @@ Digits set the selected note's fret. Ctrl/⌘+Z undoes; Ctrl/⌘+Shift+Z and Ctr
   - `[low]` `[reject]` (intent) The two unknowns are resolved by decision, not evidence — recorded in the plan (capped, accepted wait); 8.5 measures latency.
   - `[low]` `[reject]` (intent) Out-of-scope additions (isAppBusy, announcements, CI grep) — required by AD-16 and AD-18 and the plan's Boundaries.
 
+### 2026-10-06 — Review pass (follow-up: save path and shortcut dispatch, current code against the 8.1 baseline)
+- verdicts: 31 findings — high 0, medium 0, low 29, false 1, maybe-false 1
+- findings:
+  - `[low]` `[patch]` (blind) Digit shortcuts fire with focus on a toolbar button, contrary to the doc — the digit entries now skip the toolbar; undo and redo stay available there (Ctrl/⌘+Z from the Undo button is natural), and the comment is corrected.
+  - `[low]` `[reject]` (blind) A non-quota save failure is silent and keeps the app busy — carried: the same claim as the 8.1 review-pass row; the code still reads as described.
+  - `[maybe-false]` `[defer]` (blind) Closing the browser during the 300 ms debounce or with a held storage-full edit relies on an async putTab from pagehide; there is no beforeunload prompt — settle by testing whether Chrome completes an IndexedDB write started in pagehide; medium if true.
+  - `[low]` `[reject]` (blind) No insert into an empty tab — carried (8.3 review: EXPERIENCE disables Insert in No notes found).
+  - `[low]` `[reject]` (blind) Two digits above maxFret are capped — the ticket says "capped at maxFret"; carried.
+  - `[low]` `[reject]` (blind) Ctrl/⌘+Z is swallowed with nothing to undo while the tab is shown — the text-field guard keeps native undo where it matters; there is nothing else to undo.
+  - `[low]` `[reject]` (blind) `pendingInsertId`, the settings flags and `analysedSettings` aren't reset on take-deleted — the session is missing and inert; `resetEdits` clears history, so `canUndo()` is false.
+  - `[low]` `[reject]` (blind) In dev, reads and settings writes bypass `devDb` — dev tooling; the hooks cover the save and commit paths that need fault injection.
+  - `[low]` `[reject]` (blind) take-session.ts is ~1500 lines in one closure — already deferred by the 8.8 sweep to a later sweep after these follow-up reviews.
+  - `[low]` `[reject]` (blind) The "edits allowed" rule is re-derived in shortcuts — the same later sweep (expose `canEdit`/`canTravel`).
+  - `[low]` `[reject]` (blind) A held Tab never reopened stays in memory for the page's life — small; lost on reload like analysis's held result (recorded residual).
+  - `[false]` `[reject]` (blind) Mac detection fails in Safari and Firefox — `navigator.platform` is still present there ("MacIntel"), and `isMacPlatform` falls back to it.
+  - `[low]` `[reject]` (edge) A non-quota failure leaves the app busy — carried, as above.
+  - `[low]` `[patch]` (edge) `holdSaves` records `wasDirty` before awaiting the in-flight save, so a save that fails meanwhile is cleared by the hold — `wasDirty` now includes a failure that lands during the await.
+  - `[low]` `[patch]` (edge) Cancel while a re-analysis is still queued behind an edit's re-fit cancels that edit's engine request — the engine is cancelled only when the re-analysis is actually running.
+  - `[low]` `[patch]` (edge) Cancelling a queued re-analysis leaves `reanalysisQueued` set until it dequeues, silently ignoring edits — cleared at cancel.
+  - `[low]` `[patch]` (edge) A queued re-analysis dequeued when the take is no longer editable resolves as success with nothing announced — it now emits `reanalyseFailed`.
+  - `[low]` `[patch]` (edge) Digits and undo apply from the toolbar — the same root cause as the blind finding for digits (undo kept, as above).
+  - `[low]` `[reject]` (edge) Undo and redo from the toolbar — deliberate (above).
+  - `[low]` `[patch]` (edge) On non-Latin layouts Ctrl+Z gives a non-Latin `event.key`, so undo and redo never fire — modifier entries also match `event.code` (`KeyZ`, `KeyY`).
+  - `[low]` `[patch]` (edge) A wall clock stepping backward merges distant digits — the window requires `0 <= dt <= 400`.
+  - `[low]` `[patch]` (verification-gap) An in-flight save counting as unsaved is untested — a deferred-`putTab` test is added.
+  - `[low]` `[patch]` (verification-gap) Clearing the held storage-full edit on re-analysis, trim and restore is untested — tests are added (a second session shows the committed tab, no banner).
+  - `[low]` `[patch]` (verification-gap, other) The Mac e2e claims Ctrl+Y does nothing, but Ctrl+Y redoes on every platform (plan) — the e2e is corrected to undo with ⌘Z and redo with Ctrl+Y.
+  - `[low]` `[reject]` (intent) `shiftOk` goes beyond the three enumerated `mod` values — added in 8.1's review for AZERTY; other modifier combinations are still refused.
+  - `[low]` `[reject]` (intent) Busy accounting counts a failed save only while retryable — 8.1's recorded decision; carried.
+  - `[low]` `[reject]` (intent) Re-analysis doesn't reset history — 8.6's design (one snapshot undo step), per AD-4.
+  - `[low]` `[reject]` (intent) The held Tab outlives the session (wider than "the session keeps") — 8.1's review patch, so the banner's Library link doesn't lose the edit.
+  - `[low]` `[reject]` (intent) Ctrl+Y means Ctrl on every platform — the plan's literal reading.
+  - `[low]` `[reject]` (intent) An in-flight putTab isn't cancelled on take-deleted — its `take-not-found` result is dropped (AD-16); nothing is written to a deleted take.
+  - `[low]` `[reject]` (intent) A set-fret that changes nothing still announces — 8.1 behaviour; harmless confirmation.
+
 ## Design Notes
 
 - **Digit merge:** the first digit applies at once, so a single digit is never delayed by 400 ms. The second digit's command replaces the top step's "after" state and keeps its "before". Merge only when the top step is the same note's digit step and nothing else ran between.
@@ -277,3 +319,25 @@ Digits set the selected note's fret. Ctrl/⌘+Z undoes; Ctrl/⌘+Shift+Z and Ctr
 - An edit can wait about 2 s behind another take's running analysis (ticket unknown).
 - Held Tabs live in memory only, so a page reload drops them, as it does analysis's held result.
 - The new announcement copy (`tab.editFret`, `tab.undone`, `tab.redone`, `tab.editFailed`) is not yet in EXPERIENCE.md (deferred-work, UX owner).
+
+## Auto Run Result (follow-up review, 2026-10-06)
+
+**Scope:** the save path and shortcut dispatch as they stand now (take-session.ts, app-reload.ts, shortcuts.ts against the 8.1 baseline, including later stories' additions). Thorough, 4 lenses, 31 findings (29 low, 1 false, 1 maybe-false).
+
+**Patched (all low):**
+- digit shortcuts no longer fire from the toolbar (undo and redo still do);
+- modifier shortcuts match the physical key on non-Latin layouts;
+- the digit window ignores a clock stepping backward;
+- `holdSaves` keeps a save that fails during its await;
+- cancelling a queued re-analysis no longer cancels an edit's engine request and no longer leaves edits blocked;
+- a queued re-analysis that can no longer run is announced;
+- tests for an in-flight save counting as unsaved and for clearing a held edit on re-analysis, trim and restore;
+- the macOS e2e corrected (Ctrl+Y redoes).
+
+**Deferred:** whether an edit made within 300 ms of closing the browser is saved (medium, unverified; frontmatter).
+
+**Follow-up review: not recommended.** No high was patched; the work has converged.
+
+**Verification:**
+- lint, typecheck, format:check and test pass (1510).
+- Full Playwright run: 188 passed. The count-in timing test failed once under load, then passed 3/3 alone; the perf project passed (p95 ≤ 36 ms).

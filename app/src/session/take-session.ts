@@ -484,6 +484,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   let reanalysisQueued = false;
   /** Set while a queued re-analysis runs: commands and undo or redo do not apply. */
   let reanalysisRunning = false;
+  /** The seq of the re-analysis that set `reanalysisQueued`. */
+  let queuedSeq = 0;
   /** Counts re-analysis calls; a cancel bumps it, so the cancelled run is skipped or ignored. */
   let reanalysisSeq = 0;
   /** Set while a re-analysis commits its result: too late to cancel. */
@@ -1008,12 +1010,18 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
    * back by `resumeSave` if the commit fails).
    */
   async function holdSaves(): Promise<boolean> {
-    const wasDirty = dirty;
+    let wasDirty = dirty;
     dirty = false;
     if (saveTimer !== null) clearTimeout(saveTimer);
     saveTimer = null;
     trackUnsaved();
     await saving;
+    // A save in flight that failed meanwhile marked the Tab unsaved again: held too.
+    if (dirty) {
+      wasDirty = true;
+      dirty = false;
+      trackUnsaved();
+    }
     return wasDirty;
   }
 
@@ -1165,6 +1173,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     reanalysisQueued = true;
     const at = epoch;
     const seq = ++reanalysisSeq;
+    queuedSeq = seq;
     // Shown at once, even queued behind other work: edits, undo and redo look disabled now.
     publish({ reanalysis: kind.trim ? { progress: 0, trim: true } : { progress: 0 } });
     let failure: AppError | null = null;
@@ -1172,7 +1181,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       try {
         failure = await runReanalysis(at, seq, kind);
       } finally {
-        reanalysisQueued = false;
+        // A run cancelled while queued already cleared the flag; a newer run may own it now.
+        if (queuedSeq === seq) reanalysisQueued = false;
         reanalysisRunning = false;
       }
     }).then(() => {
@@ -1187,6 +1197,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     if (!current()) return null; // cancelled while queued, or the take deleted
     if (!travelable()) {
       publish({ reanalysis: null });
+      emitEdit({ kind: 'reanalyseFailed', code: 'analysis-failed', ...trimFlag(kind) });
       return null;
     }
     reanalysisRunning = true;
@@ -1299,8 +1310,13 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   function cancelReanalysis() {
     if (snapshot.reanalysis === null || reanalysisCommitting) return;
     reanalysisSeq++; // the cancelled run's results are ignored
-    deps.analysis.cancel(takeId);
-    deps.cancel(takeId); // its fret mapping, if it got that far
+    if (reanalysisRunning) {
+      deps.analysis.cancel(takeId);
+      deps.cancel(takeId); // its fret mapping, if it got that far
+    } else {
+      // Still queued (behind an edit, whose engine request is left alone): dropped when dequeued.
+      reanalysisQueued = false;
+    }
     const trimming = snapshot.reanalysis.trim === true;
     publish({ reanalysis: null });
     emitEdit(
@@ -1319,7 +1335,9 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     };
     const t = now();
     const first = pendingDigit;
-    if (first && first.noteId === noteId && t - first.at <= DIGIT_WINDOW_MS) {
+    const since = first ? t - first.at : -1;
+    // A clock stepping backward never merges.
+    if (first && first.noteId === noteId && since >= 0 && since <= DIGIT_WINDOW_MS) {
       pendingDigit = null;
       const fret = first.digit * 10 + digit;
       void applyLazy(

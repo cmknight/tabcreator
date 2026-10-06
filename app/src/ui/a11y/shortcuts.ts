@@ -354,8 +354,8 @@ type EditSession = Pick<
  * they apply only while there is something to undo or redo). ↑ / ↓ move the selected note to
  * the next thinner / thicker string (inside the tab area, held down they repeat), Delete and
  * Backspace delete it, `I` inserts a note after it (or before the first note with none
- * selected), Enter confirms it (on a note button or elsewhere in the tab area). None of them
- * applies in the toolbar.
+ * selected), Enter confirms it (on a note button or elsewhere in the tab area). None of those
+ * applies in the toolbar; undo and redo do (focus on the Undo button, say).
  */
 export function tabEditShortcuts(
   session: () => EditSession | null = activeTakeSession,
@@ -386,6 +386,7 @@ export function tabEditShortcuts(
     shiftOk: true,
     description: strings['tab.shortcutSetFret'],
     when: (target) =>
+      !inToolbar(target) &&
       !inTrimStrip(target) &&
       tabShown() &&
       (session()?.getSnapshot().selectedNoteId ?? null) !== null,
@@ -496,6 +497,19 @@ function modMatches(entry: Shortcut, event: KeyboardEvent, mac: boolean): boolea
 }
 
 /**
+ * Whether `entry` matches `event`'s key. A modifier entry also matches by physical key
+ * (`event.code` `Key<letter>`), so Ctrl+Z works on non-Latin layouts, where `key` is, say, 'я'.
+ */
+function entryKeyMatches(entry: Shortcut, event: KeyboardEvent): boolean {
+  if (keyMatches(entry.key, event.key)) return true;
+  return (
+    entry.mod !== undefined &&
+    /^[a-z]$/i.test(entry.key) &&
+    event.code === `Key${entry.key.toUpperCase()}`
+  );
+}
+
+/**
  * Runs the shortcut `event` matches on `route` (null: no known route, so only global ones), if
  * any and unless the guard skips it. Returns whether a shortcut matched; its default is then
  * prevented. A key held with modifiers matches only an entry declaring exactly those (`mod`;
@@ -511,7 +525,7 @@ export function dispatchShortcut(
   const entry = shortcuts.find(
     (s) =>
       modMatches(s, event, mac) &&
-      keyMatches(s.key, event.key) &&
+      entryKeyMatches(s, event) &&
       (s.route === 'global' || (route !== null && s.route === route)) &&
       (s.when?.(event.target) ?? true),
   );

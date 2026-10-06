@@ -680,7 +680,7 @@ test('Undo and Redo buttons: a popover move, then Undo reverts it, focus on Redo
   expect(unexpected(errors)).toEqual([]);
 });
 
-test('macOS: ⌘Z undoes and ⌘⇧Z redoes; Ctrl+Z and Ctrl+Y do nothing', async ({ page }) => {
+test('macOS: ⌘Z undoes, ⌘⇧Z and Ctrl+Y redo; Ctrl+Z does nothing', async ({ page }) => {
   const errors = collectErrors(page);
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'platform', { get: () => 'MacIntel' });
@@ -698,10 +698,9 @@ test('macOS: ⌘Z undoes and ⌘⇧Z redoes; Ctrl+Z and Ctrl+Y do nothing', asyn
   await expect.poll(() => storedNote(page, takeId, 'note-12')).toMatchObject({ fret: 7 });
   await expectTool(page, 'Undo', true, 'Undo set fret 7');
 
-  // Ctrl+Z and Ctrl+Y are not the Mac's undo and redo: nothing changes.
+  // Ctrl+Z is not the Mac's undo: nothing changes.
   await page.keyboard.press('Control+z');
-  await page.keyboard.press('Control+y');
-  // Past the 300 ms save debounce, so an undo they had queued would show here.
+  // Past the 300 ms save debounce, so an undo it had queued would show here.
   await page.evaluate(() => new Promise((r) => setTimeout(r, 400)));
   await expectTool(page, 'Undo', true, 'Undo set fret 7');
   await expectTool(page, 'Redo', false, 'Nothing to redo');
@@ -715,6 +714,15 @@ test('macOS: ⌘Z undoes and ⌘⇧Z redoes; Ctrl+Z and Ctrl+Y do nothing', asyn
   await expect.poll(() => storedNote(page, takeId, 'note-12')).toMatchObject({ fret: 9 });
   expect(await storedNote(page, takeId, 'note-11')).toMatchObject({ fret: 5 });
 
+  // Ctrl+Y redoes on every platform, the Mac included.
+  await page.keyboard.press('Control+y');
+  await expectTool(page, 'Redo', false, 'Nothing to redo');
+  await expect.poll(() => storedNote(page, takeId, 'note-12')).toMatchObject({ fret: 7 });
+
+  // ⌘Z again, then ⌘⇧Z redoes.
+  await page.keyboard.press('Meta+z');
+  await expectTool(page, 'Redo', true, 'Redo set fret 7');
+  await expect.poll(() => storedNote(page, takeId, 'note-12')).toMatchObject({ fret: 9 });
   await page.keyboard.press('Meta+Shift+z');
   await expectTool(page, 'Redo', false, 'Nothing to redo');
   await expect.poll(() => storedNote(page, takeId, 'note-12')).toMatchObject({ fret: 7 });
