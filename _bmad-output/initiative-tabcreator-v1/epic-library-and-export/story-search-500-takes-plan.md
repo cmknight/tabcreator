@@ -3,7 +3,7 @@ title: 'Search 500 takes'
 type: 'feature'
 ticket: '3'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: '5bf2b1968ef15d4f71bec0a4f4ef4dc485ffe59f'
 route: 'full'
 route_source: 'auto'
