@@ -111,6 +111,7 @@ import {
 import type { AnalysisSettings, Note, StringNo, Tab, Take } from '../model/types';
 import { audioStore } from '../storage/audio-store';
 import { db, type TakeDb } from '../storage/db';
+import { toStorageError } from '../storage/write-guard';
 import { subscribe as subscribeStorage, type StorageListener } from '../storage/events';
 import { analysis as appAnalysis, type Analysis, type AnalysisOutcome } from './analysis';
 
@@ -1506,7 +1507,7 @@ export function activeTakeSession(): TakeSession | null {
 
 /** A take session wired to the app's storage, engine client and analysis registry. */
 export function createAppTakeSession(takeId: string): TakeSession {
-  const store = import.meta.env.DEV ? devDb(db) : db;
+  const store = import.meta.env.DEV ? devDb(db, toStorageError) : db;
   return createTakeSession(takeId, {
     db: {
       getTake: (id) => db.getTake(id),

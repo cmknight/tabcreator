@@ -70,7 +70,13 @@ import type { TakeLimits } from '../model/take-limits';
 import { DEFAULT_PREFS } from '../storage/prefs';
 import type { OpenedInput } from './input-derivation';
 import type { RecordingSnapshot, RecordingState } from './recording-types';
-import { type ClipCounter, createClipCounter, isTooShort, saveTake } from './take-save';
+import {
+  type ClipCounter,
+  createClipCounter,
+  isTooShort,
+  requestPersist,
+  saveTake,
+} from './take-save';
 
 /**
  * The recording state's transitions: from each state, the states it may move to. The forward
@@ -143,6 +149,11 @@ export interface TakeLifecycleDeps {
   now: () => number;
   /** A new take id. */
   newId: () => string;
+  /**
+   * Asks the browser to keep storage (storage/persistence.ts `requestPersistOnce`), after a take
+   * is saved; fire and forget. Absent, nothing is asked.
+   */
+  requestPersist?: () => void;
 }
 
 /** What the lifecycle needs from the recording store. */
@@ -829,6 +840,7 @@ export function createTakeLifecycle(
       return 'failed';
     }
     active = null;
+    requestPersist(deps);
     const full = stopReason === 'storage-full';
     transition('idle', {
       savedSeq: host.snapshot().savedSeq + 1,

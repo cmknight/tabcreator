@@ -34,7 +34,7 @@ import { quietly } from '../model/quietly';
 import type { Take } from '../model/types';
 import type { CompressedFile } from '../storage/audio-store';
 import type { TakePatch } from '../storage/db';
-import { createClipCounter, isTooShort, saveTake } from './take-save';
+import { createClipCounter, isTooShort, requestPersist, saveTake } from './take-save';
 
 /** An unfinished take offered for recovery. */
 export interface RecoveredTake {
@@ -84,6 +84,8 @@ export interface RecoveryHost {
   patchTake: (id: string, patch: TakePatch, writer: 'recording-session') => Promise<unknown>;
   deleteTake: (id: string, writer: 'recording-session') => Promise<unknown>;
   navigate: (id: string) => void;
+  /** Asks the browser to keep storage after a take is saved; fire and forget. Optional. */
+  requestPersist?: () => void;
 }
 
 export interface RecordingRecovery {
@@ -343,6 +345,7 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
     });
     // A handover during the save: the fence rejected what came after it, and nothing navigates.
     if (host.handedOver()) return;
+    requestPersist(host);
     drop(id);
     if (!host.isRecording()) host.navigate(id);
     return;

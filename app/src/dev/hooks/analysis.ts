@@ -82,8 +82,15 @@ export function devEngine(engine: EngineClient, slowMs: number): DevEngine {
   };
 }
 
+/**
+ * Maps a failure as storage/ does (storage/write-guard.ts `toStorageError`), so a hook's
+ * `storage-full` sets the storage-full status for its take (story 6.7). Passed in by the caller:
+ * dev/hooks/ imports values from model/ only.
+ */
+export type DevStorageError = (err: unknown, what: string, takeId: string) => AppError;
+
 /** The database with `__commitStorageFullHook` and `__putTabStorageFullHook` applied. */
-export function devDb(store: TakeDb): DevDb {
+export function devDb(store: TakeDb, storageError: DevStorageError): DevDb {
   if (!import.meta.env.DEV) return store;
   return {
     getTake: (id) => store.getTake(id),
@@ -91,14 +98,24 @@ export function devDb(store: TakeDb): DevDb {
     commitAnalysis(takeId, tab, takePatch) {
       if (devHooks().__commitStorageFullHook) {
         return Promise.reject(
-          new AppError('storage-full', 'Commit analysis: quota exceeded (dev hook)'),
+          storageError(
+            new AppError('storage-full', 'Commit analysis: quota exceeded (dev hook)'),
+            'Commit analysis',
+            takeId,
+          ),
         );
       }
       return store.commitAnalysis(takeId, tab, takePatch);
     },
     putTab(tab, writer) {
       if (devHooks().__putTabStorageFullHook) {
-        return Promise.reject(new AppError('storage-full', 'Put tab: quota exceeded (dev hook)'));
+        return Promise.reject(
+          storageError(
+            new AppError('storage-full', 'Put tab: quota exceeded (dev hook)'),
+            'Put tab',
+            tab.takeId,
+          ),
+        );
       }
       return store.putTab(tab, writer);
     },

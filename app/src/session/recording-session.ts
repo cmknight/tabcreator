@@ -70,6 +70,7 @@ import { MAX_TAKE_MS, WARN_LEAD_MS, type TakeLimits } from '../model/take-limits
 import type { AnalysisSettings, StopReason, Take } from '../model/types';
 import { audioStore, type RawWriter } from '../storage/audio-store';
 import { db, type TakePatch } from '../storage/db';
+import { persistence } from '../storage/persistence';
 import { loadPrefs, updatePrefs } from '../storage/prefs';
 import type { InputTransition, OpenedInput } from './input-derivation';
 import { createInputQualityWatch } from './input-quality-watch';
@@ -239,6 +240,11 @@ export interface RecordingDeps {
    * no guard is set.
    */
   addUnloadGuard?: (handler: (event: BeforeUnloadEvent) => void) => () => void;
+  /**
+   * Asks the browser to keep storage (storage/persistence.ts `requestPersistOnce`) after a take
+   * is saved, by recording or recovery; fire and forget. Absent, nothing is asked.
+   */
+  requestPersist?: () => void;
 }
 
 /** Recovery deps that find nothing (a store created without `recovery`). */
@@ -777,6 +783,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     patchTake: (id, fields, writer) => deps.patchTake(id, fields, writer),
     deleteTake: (id, writer) => deps.deleteTake(id, writer),
     navigate: (id) => deps.navigate(id),
+    requestPersist: () => deps.requestPersist?.(),
   });
 
   let resuming = false;
@@ -841,6 +848,7 @@ export const recordingSession: RecordingSession = createRecordingSession({
   openRawWriter: (takeId) => audioStore.openRawWriter(takeId),
   writeCompressed: (takeId, blob) => audioStore.writeCompressed(takeId, blob),
   deleteTake: (id, writer) => db.deleteTake(id, writer),
+  requestPersist: () => void persistence.requestPersistOnce(),
   recovery: {
     listTakes: () => db.listTakes(),
     getTake: (id) => db.getTake(id),

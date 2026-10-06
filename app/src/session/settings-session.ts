@@ -6,10 +6,14 @@
 //
 // Story "Analysis settings and re-analysis" (US-4.6): the Settings screen's "Defaults for new
 // takes", `prefs.analysisDefaults`, which `recording-session` copies into each new take.
+//
+// Story "Storage protection and Library states" (6.7): `storageProtected`, whether storage is
+// persisted (storage/persistence.ts), read on each `subscribe` for the Storage panel.
 
 import { engineClient, type EngineClient } from '../engine/engine-client';
 import { clampAnalysisSettings, sameSettings } from '../model/analysis-settings';
 import type { AnalysisSettings, Prefs } from '../model/types';
+import { persistence } from '../storage/persistence';
 import { loadPrefs, updatePrefs, type PrefsPatch } from '../storage/prefs';
 
 export type EngineStatus =
@@ -23,6 +27,8 @@ export interface SettingsSnapshot {
    * mirrored.
    */
   prefs: SettingsPrefs;
+  /** Whether storage is persisted (false when unknown); null until read. */
+  storageProtected: boolean | null;
 }
 
 /** The prefs fields settings-session handles. */
@@ -54,10 +60,16 @@ export interface SettingsPrefsDeps {
   updatePrefs(patch: PrefsPatch): Prefs;
 }
 
+export interface SettingsStorageDeps {
+  /** Whether storage is persisted; false when unknown. */
+  persisted(): Promise<boolean>;
+}
+
 /** The engine is asked for its version on the first subscription, not at import. */
 export function createSettingsSession(
   client: Pick<EngineClient, 'version'>,
   prefsDeps: SettingsPrefsDeps = { loadPrefs, updatePrefs },
+  storageDeps: SettingsStorageDeps = { persisted: () => persistence.persisted() },
 ): SettingsSession {
   let snapshot: SettingsSnapshot = {
     engine: { state: 'loading' },
@@ -65,6 +77,7 @@ export function createSettingsSession(
       const { barLines, analysisDefaults } = prefsDeps.loadPrefs();
       return { barLines, analysisDefaults };
     })(),
+    storageProtected: null,
   };
   const listeners = new Set<() => void>();
   let started = false;
@@ -82,6 +95,24 @@ export function createSettingsSession(
     );
   }
 
+  /** The latest protection read's number: an older read landing later is dropped. */
+  let protectionSeq = 0;
+  function readProtection() {
+    const seq = ++protectionSeq;
+    storageDeps.persisted().then(
+      (persisted) => {
+        if (seq === protectionSeq && snapshot.storageProtected !== persisted) {
+          publish({ storageProtected: persisted });
+        }
+      },
+      () => {
+        if (seq === protectionSeq && snapshot.storageProtected !== false) {
+          publish({ storageProtected: false });
+        }
+      },
+    );
+  }
+
   function subscribePrefs(listener: () => void) {
     listeners.add(listener);
     return () => {
@@ -93,6 +124,7 @@ export function createSettingsSession(
     subscribe(listener) {
       const unsubscribe = subscribePrefs(listener);
       if (!started) start();
+      readProtection();
       return unsubscribe;
     },
     subscribePrefs,

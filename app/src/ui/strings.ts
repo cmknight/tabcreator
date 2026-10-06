@@ -545,6 +545,14 @@ export const strings = {
   'library.restoreInvalid': "That file isn't a TabCreator backup — nothing was changed.",
   /** The error banner when a restore's write failed (storage full or failed). */
   'library.restoreFailed': "Restore didn't finish — nothing was changed.",
+  /** Story 6.7: the one-time notice when the browser refused persistent storage. */
+  'library.persistNotice':
+    'Your browser may clear these takes when space runs low. Back them up regularly.',
+  'library.persistNoticeDismiss': 'Dismiss storage notice',
+  /** The error banner after a save failed with storage-full (until a save succeeds). */
+  'library.storageFull': 'Storage is full — delete takes or their audio, or back up and clear',
+  /** The footer: "23 takes · 41.0 MB used" (the MB from `formatMegabytes`). */
+  'library.footer': (n: number, mb: string) => `${n} ${n === 1 ? 'take' : 'takes'} · ${mb} MB used`,
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */
   'tuner.stringLetter': (string: StringNo) =>
@@ -574,6 +582,12 @@ export const strings = {
     'New takes start with these values. Each take keeps its own copy in its Analysis settings.',
   'settings.engineVersion': (version: string) => `Engine v${version}`,
   'settings.engineVersionUnavailable': 'Engine version unavailable',
+  /** Story 6.7: the Storage panel (mockup settings.html). */
+  'settings.storage': 'Storage',
+  'settings.storageProtected': 'Storage: protected',
+  'settings.storageAtRisk': 'Storage: may be cleared by the browser',
+  /** The link to the Library shown when storage is not protected. */
+  'settings.storageBackUp': 'Back up library',
 } as const;
 
 export type StringKey = keyof typeof strings;

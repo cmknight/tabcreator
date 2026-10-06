@@ -39,6 +39,15 @@
 // announcement; the list refreshes through `library-restored`. An invalid file, or a failed
 // write, shows an error banner (announced assertively) until the next restore attempt or leaving
 // the Library; nothing was changed. Cancelling the picker or the dialog changes nothing.
+//
+// Story "Storage protection and Library states" (6.7, CAP-19, CAP-25; mockup library.html (d),
+// (e), .libfoot): above the heading, the one-time storage notice (a warning banner, role status,
+// when the browser has not persisted storage: Back up library starts the backup, Dismiss hides it
+// for this visit; showing it sets `prefs.persistNoticeShown` through the session, so no later
+// visit shows it) and the storage-full banner (an error banner, role alert, no Dismiss and no
+// link, shown until a save succeeds). After the list, the footer: "23 takes · 41.0 MB used", the
+// whole library's count even while searching, with no footer for an empty library or an unknown
+// usage.
 
 import {
   useCallback,
@@ -74,6 +83,7 @@ import {
   PencilIcon,
   RestoreIcon,
   SearchIcon,
+  WarnIcon,
 } from '../components/icons';
 import { RowMenu, type RowMenuItem } from '../components/RowMenu';
 import { formatElapsed, formatTakeDate } from '../format';
@@ -596,14 +606,25 @@ export function Library({
     | 'backUp'
     | 'readBackup'
     | 'restore'
+    | 'markPersistNoticeShown'
   >;
 } = {}) {
-  const { loading, rows, error, backup, restoring } = useSyncExternalStore(
+  const { loading, rows, error, backup, restoring, storage, persistNotice } = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
   );
   const heading = useRef<HTMLHeadingElement>(null);
   const focusHeading = useCallback(() => heading.current?.focus(), []);
+
+  // The one-time storage notice: remembered as shown once it shows; Dismiss hides it this visit.
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
+  const noticeShown = persistNotice && !noticeDismissed;
+  const noticeMarked = useRef(false);
+  useEffect(() => {
+    if (!noticeShown || noticeMarked.current) return;
+    noticeMarked.current = true;
+    session.markPersistNoticeShown();
+  }, [noticeShown, session]);
   const search = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
   const shown = useMemo(() => filterRows(rows, query), [rows, query]);
@@ -774,6 +795,46 @@ export function Library({
 
   return (
     <section className={styles.screen}>
+      {noticeShown && (
+        <div
+          className={`${banner.banner} ${banner.warning} ${libraryStyles.topBanner}`}
+          role="status"
+          data-testid="persist-notice"
+        >
+          <WarnIcon className={banner.icon} />
+          <p className={banner.text}>{strings['library.persistNotice']}</p>
+          <button
+            type="button"
+            className={libraryStyles.noticeAction}
+            aria-disabled={!canBackUp || backup !== null || restoring || undefined}
+            onClick={backUp}
+          >
+            {strings['library.backUp']}
+          </button>
+          <button
+            type="button"
+            className={libraryStyles.dismiss}
+            aria-label={strings['library.persistNoticeDismiss']}
+            onClick={() => {
+              // The button goes with the banner: focus moves to the heading first.
+              focusHeading();
+              setNoticeDismissed(true);
+            }}
+          >
+            {strings['global.dismiss']}
+          </button>
+        </div>
+      )}
+      {storage.full && (
+        <div
+          className={`${banner.banner} ${banner.error} ${libraryStyles.topBanner}`}
+          role="alert"
+          data-testid="library-storage-full"
+        >
+          <ErrorIcon className={banner.icon} />
+          <p className={banner.text}>{strings['library.storageFull']}</p>
+        </div>
+      )}
       <h1 ref={heading} className={styles.title} tabIndex={-1}>
         {strings['library.title']}
       </h1>
@@ -866,6 +927,11 @@ export function Library({
         </p>
       )}
       {body}
+      {rows.length > 0 && storage.usageBytes !== null && (
+        <footer className={libraryStyles.footer} data-testid="library-footer">
+          {strings['library.footer'](rows.length, formatMegabytes(storage.usageBytes))}
+        </footer>
+      )}
     </section>
   );
 }

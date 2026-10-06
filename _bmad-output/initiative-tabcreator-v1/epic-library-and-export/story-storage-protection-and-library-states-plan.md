@@ -3,7 +3,7 @@ title: 'Storage protection and Library states'
 type: 'feature'
 ticket: '7'
 created: '2026-10-06'
-status: blocked
+status: built
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -14,9 +14,16 @@ followup_review_recommended: false
 context: []
 warnings: ['oversized']
 baseline_revision: 'f9071be06059ad7631fb64f1a7d5ba2b480887eb'
-deferred: []
-blocked_at: "2026-10-06"
-blocked_reason: "intent gap: which saves clear the Library storage-full banner (a storage-full recording stop still saves its take, which clears it at once)"
+deferred:
+  - summary: >-
+      persisted() waits on an in-flight persist() that could stay pending behind a permission prompt.
+    evidence: |-
+      Chrome resolves persist() without a prompt; would matter only for a non-Chrome target (maybe-false, medium if true, unverified).
+    location: >-
+      app/src/storage/persistence.ts
+    severity: medium (unverified)
+blocked_at: ""
+blocked_reason: ""
 ---
 
 <intent-contract>
@@ -54,7 +61,7 @@ library-session and settings-session read it (AD-3) and drive four pieces of UI:
   - It uses `role="status"`.
 - **Storage-full status:**
   - It is set whenever a `storage/` write rejects with `storage-full`, which is the `toStorageError` QuotaExceeded mapping and the existing dev hook path.
-  - It is cleared by the next committed save (`take-put`, `tab-put` or `library-restored` emitted).
+  - It remembers the take whose write failed (when there is one). It is cleared by the next committed save of any other take (`take-put` or `tab-put` for another take id, or `library-restored`). Saves of the failing take itself (its storage-full stop, its analysis) don't clear it (user decision, 2026-10-06).
   - It is in-memory for the page's lifetime, so it survives navigation but not reload.
 - **Library storage-full banner:**
   - Text: "Storage is full — delete takes or their audio, or back up and clear".
@@ -89,6 +96,7 @@ library-session and settings-session read it (AD-3) and drive four pieces of UI:
 | Searching | Query filters 3 of 23 rows | Footer still reads "23 takes · …" | — |
 | Storage full | A storage write rejects storage-full | The Library banner shows (also when the Library is opened later in the same page load) | — |
 | Save succeeds later | A committed take-put/tab-put/library-restored | Banner clears | — |
+| Disk fills mid-recording | Raw append fails storage-full; the stop saves the take and analysis commits | Banner shows on the Library; it clears after a save of another take (e.g. a rename) | — |
 | Estimate unavailable | estimate() missing or throws | No footer | caught |
 
 </intent-contract>
@@ -149,7 +157,15 @@ library-session and settings-session read it (AD-3) and drive four pieces of UI:
 - library-session: storage reads are guarded by a per-visit counter (not the full-read generation, which a `library-restored` reload bumps). `persistNotice` is also re-checked when a refresh adds the first row.
 - Existing e2e selectors adjusted where the notice now collides in a headless Chromium that does not persist: backup/restore specs exclude the notice's Back up library button; the library spec reads the announcer's polite region by `aria-live`.
 
+- 2026-10-06 (after the user ruling): the storage-full status keeps a set of failing take ids; `toStorageError(err, what, takeId?)` and `db.ts` `write()` pass the id; `devDb(store, storageError)` routes the analysis hooks through the mapper. This supersedes the earlier notes on the clearing rule and the `devDb` signature.
+
 ## Plan Change Log
+
+### 2026-10-06 — User ruling on the intent gap
+- **Trigger:** the review found that a storage-full recording stop clears the status through its own save.
+- **Amended (with the user's decision):** the clearing rule in Always, plus a new matrix row for the disk filling mid-recording.
+- **Known-bad state avoided:** the banner is set and cleared within one stop.
+- **KEEP:** everything else in attempt 1, which was reapplied from the saved patch.
 
 ## Review Triage Log
 
@@ -179,6 +195,15 @@ library-session and settings-session read it (AD-3) and drive four pieces of UI:
   - `[maybe-false]` `[reject]` (intent) The added Dismiss on the warning — mockup (d) has it.
   - `[low]` `[reject]` (remaining duplicate rows across lenses) — same verdicts as above.
 
+### 2026-10-06 — Patch pass after the user ruling
+- verdicts: carried from the pass above — the intent_gap group (medium) resolved by the user's decision and patched, plus the four low patches.
+- findings:
+  - `[medium]` `[patch]` carried — clearing rule: the status remembers the failing take ids; that take's own take-put/tab-put don't clear it, any other take's save or library-restored does; e2e: a recording stopped by the raw-append hook shows the Library banner, a rename of another take clears it.
+  - `[low]` `[patch]` carried — analysis dev hooks route through the status-setting mapper with their take id.
+  - `[low]` `[patch]` carried — the persist notice needs a non-recording take (the `canBackUp` condition).
+  - `[low]` `[patch]` carried — the recovery Open `requestPersist` wiring is tested at session level (`recording-take.test.ts`).
+  - `[low]` `[patch]` carried — README, write-guard and hook header docs updated.
+
 ## Design Notes
 
 - **The ticket's unknown** (how the Library learns of a failed save, given AD-3): `storage/` itself keeps the status. Every failing write passes through its error mapping, and every committed save already emits an AD-5 event, which clears it. Both stores read `storage/`, never each other.
@@ -197,21 +222,34 @@ library-session and settings-session read it (AD-3) and drive four pieces of UI:
 
 ## Auto Run Result
 
-**Status:** blocked (intent gap), 2026-10-06.
+**Status:** built, 2026-10-06. It was blocked earlier the same day on an intent gap; the user ruled that the banner clears on a save of any other take.
 
-**What was built:** the whole plan, before the code was reverted:
-- `storage/persistence.ts` (persist once per load, persisted, estimate, and the storage-full status);
-- the Library warning, footer and storage-full banner;
-- the Settings Storage panel;
-- the e2e and unit tests.
+**Summary:** `storage/persistence.ts` owns `navigator.storage` (AD-2): persist is asked once per page load after a take is saved (on Stop or on a recovery Open); it also provides `persisted`, `estimateUsage`, and an in-memory storage-full status that remembers the failing take ids. Built on it:
+- **Library warning:** the one-time warning (`persistNoticeShown`), with Back up library and Dismiss.
+- **Library storage-full banner:** shows after a failed save, including a recording cut short by a full disk; a save of another take clears it.
+- **Library footer:** "n takes · X MB used", counting the whole library even while searching.
+- **Settings Storage panel:** protected, or may be cleared with a link to the Library.
 
-It verified clean (1761 unit tests; the full Playwright suite apart from the known load-flaky count-in, which passed 3/3 when rerun alone). It is saved at `_bmad-output/implementation-artifacts/story-6-7-attempt-1.patch`, which applies cleanly to the baseline.
+**Files:**
+- `storage/` (`persistence.ts` new, `write-guard.ts`, `audio-store.ts`, `db.ts`, README);
+- `dev/hooks/storage-full.ts`, `dev/hooks/analysis.ts`;
+- `session/` (`take-save.ts`, `take-lifecycle.ts`, `recording-recovery.ts`, `recording-session.ts`, `library-session.ts`, `settings-session.ts`, `analysis.ts`, `take-session.ts`, README);
+- `ui/screens/Library.tsx`, `Settings.tsx`, their CSS, `strings.ts`;
+- tests: unit, the new e2e `storage-states.dev.spec.ts`, and the adjusted backup, restore and library locators.
 
-**Blocking question:** which saves clear the Library storage-full banner?
-- **The problem:** when the disk fills mid-recording, the stop still saves the partial take. That save, and the analysis commit after it, clear the status at once, so the Library never shows the banner for the most common real case.
-- **The ticket's wording:** the Verify says "the storage-full dev hook", the raw-append one, which hits exactly this path.
-- **Options:**
-  - (a) Writes for the take whose write failed don't clear it; any other committed save does.
-  - (b) Only a successful audio write clears it.
-  - (c) Re-check `navigator.storage.estimate()` against the quota after deletes and saves.
-  - (d) Keep as is: the banner shows only when a save itself fails.
+**Review:** thorough, 33 findings.
+- 3 medium shared one root cause; it went to you as an intent gap, and your ruling was patched in.
+- 4 low were patched.
+- 1 was deferred: `persist()` might never settle behind a prompt, which doesn't happen in Chrome.
+- The rest were rejected with reasons in the triage log.
+
+**Follow-up review: not recommended.** One medium group was patched under your rule, with e2e coverage.
+
+**Verification:**
+- lint, typecheck, format:check, stylelint and unit tests pass (1764).
+- The build contains none of the dev hooks.
+- The full Playwright suite passes (213).
+
+**Residual risks:**
+- The storage-full status is lost on reload.
+- The footer's usage figure is for the whole origin, not just the library.

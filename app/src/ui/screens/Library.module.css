@@ -291,3 +291,55 @@ a.main:focus-visible {
 .restoreBanner {
   margin-block-start: var(--space-4);
 }
+
+/* Story 6.7 (mockup library.html (d), (e)): the storage notice and the storage-full banner above
+   the heading, on the shared banners (components/banner.module.css). */
+.topBanner {
+  flex-wrap: wrap;
+  margin-block-end: var(--space-4);
+}
+
+/* The notice's Back up library: a text action, underlined like a link. */
+.noticeAction {
+  flex: none;
+  padding: var(--space-1) var(--space-2);
+  background: none;
+  color: var(--color-text);
+  font: var(--font-ui);
+  font-weight: 600;
+  text-decoration: underline;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.noticeAction[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Dismiss: a text button; plain text colour, as muted text falls under 4.5:1 on check-bg in dark. */
+.dismiss {
+  flex: none;
+  padding: var(--space-1) var(--space-2);
+  background: none;
+  color: var(--color-text);
+  font: var(--font-ui);
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.dismiss:hover {
+  text-decoration: underline;
+}
+
+/* The footer (mockup .libfoot): the take count and the storage used. */
+.footer {
+  margin-block-start: var(--space-6);
+  padding-block-start: var(--space-3);
+  color: var(--color-text-muted);
+  font: var(--font-ui-small);
+  font-variant-numeric: tabular-nums;
+  border-block-start: 1px solid var(--color-border);
+}

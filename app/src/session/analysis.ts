@@ -34,6 +34,7 @@ import type { AnalysisResult, EngineAnalyzeInput, Note, Tab, Take } from '../mod
 import { devDb, devEngine, devHold, devSlowMs } from '../dev/hooks/analysis';
 import { audioStore, type AudioStore } from '../storage/audio-store';
 import { db, type TakeDb, type TakePatch } from '../storage/db';
+import { toStorageError } from '../storage/write-guard';
 import { subscribe as subscribeStorage, type StorageListener } from '../storage/events';
 
 /** The share of the progress bar the engine's analyze call fills (spine AD-8). */
@@ -501,7 +502,7 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
 /** The app-wide analysis registry. Production builds tree-shake the dev wrappers. */
 export const analysis: Analysis = createAnalysis({
   engine: import.meta.env.DEV ? devEngine(engineClient, devSlowMs()) : engineClient,
-  db: import.meta.env.DEV ? devDb(db) : db,
+  db: import.meta.env.DEV ? devDb(db, toStorageError) : db,
   audio: audioStore,
   decode: decodeTakeAudio,
   subscribeStorage,

@@ -124,6 +124,7 @@ function setup(
       audio.delete(id);
     }),
     navigate: vi.fn((id: string) => log.push(`navigate ${id}`)),
+    requestPersist: vi.fn(),
   };
   const recovery = createRecordingRecovery(deps, host);
   return {
@@ -308,6 +309,8 @@ describe('Open', () => {
       'patchTake a',
       'navigate a',
     ]);
+    // Story 6.7: persistent storage is asked for once the take is saved.
+    expect(t.host.requestPersist).toHaveBeenCalledTimes(1);
     expect(t.host.patchTake).toHaveBeenCalledWith(
       'a',
       {
@@ -479,6 +482,7 @@ describe('Open', () => {
     await t.recovery.open('a');
     expect(t.host.patchTake).not.toHaveBeenCalled();
     expect(t.host.navigate).not.toHaveBeenCalled();
+    expect(t.host.requestPersist).not.toHaveBeenCalled();
     expect(t.takes.get('a')?.status).toBe('recording');
   });
 

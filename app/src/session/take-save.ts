@@ -95,3 +95,15 @@ export async function saveTake(target: SaveTarget, id: string, save: TakeSave): 
     'recording-session',
   );
 }
+
+/**
+ * Asks for persistent storage (storage/persistence.ts `requestPersistOnce`) after a take is
+ * saved, by recording or recovery. Fire and forget: never throws into the save's outcome.
+ */
+export function requestPersist(deps: { requestPersist?: () => void }): void {
+  try {
+    deps.requestPersist?.();
+  } catch {
+    // Fire and forget: the take is saved either way.
+  }
+}

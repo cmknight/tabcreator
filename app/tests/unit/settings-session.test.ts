@@ -8,7 +8,10 @@ import { flush } from './helpers';
 describe('settings session', () => {
   it('asks for the version on first subscribe and reports ready', async () => {
     const version = vi.fn(() => Promise.resolve('0.1.0'));
-    const session = createSettingsSession({ version });
+    // Storage protection is never read here, so only the version notifies.
+    const session = createSettingsSession({ version }, undefined, {
+      persisted: () => new Promise<boolean>(() => {}),
+    });
     expect(version).not.toHaveBeenCalled();
     expect(session.getSnapshot().engine).toEqual({ state: 'loading' });
 
@@ -168,5 +171,44 @@ describe('settings session prefs (a failed defaults write)', () => {
     );
     session.setAnalysisDefaults({ sensitivity: 0.7 });
     expect(session.getSnapshot().prefs.analysisDefaults).toEqual(DEFAULT_PREFS.analysisDefaults);
+  });
+});
+
+// Story "Storage protection and Library states" (6.7): whether storage is persisted.
+describe('settings session storage protection', () => {
+  const version = () => new Promise<string>(() => {});
+  const prefs = { loadPrefs: () => ({ ...DEFAULT_PREFS }), updatePrefs: vi.fn() };
+
+  it('is null until read, then read on each subscribe', async () => {
+    let persisted = false;
+    const read = vi.fn(async () => persisted);
+    const session = createSettingsSession({ version }, prefs, { persisted: read });
+    expect(session.getSnapshot().storageProtected).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+    const off = session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot().storageProtected).toBe(false);
+    off();
+    persisted = true;
+    session.subscribe(() => {});
+    await flush();
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(session.getSnapshot().storageProtected).toBe(true);
+  });
+
+  it('subscribePrefs does not read it', () => {
+    const read = vi.fn(async () => true);
+    const session = createSettingsSession({ version }, prefs, { persisted: read });
+    session.subscribePrefs(() => {});
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('a failed read is not protected, never a throw', async () => {
+    const session = createSettingsSession({ version }, prefs, {
+      persisted: () => Promise.reject(new Error('no api')),
+    });
+    session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot().storageProtected).toBe(false);
   });
 });

@@ -5,8 +5,9 @@
 // writer (AD-14): rename, delete a take, delete a take's audio. Story 6.5 adds the backup (one
 // at a time, its progress in the snapshot). Story 6.6 adds restore (read and check a backup file,
 // then import the takes not already present: audio first, then the records, the audio removed
-// again if the import fails); a backup and a restore never run at the same time. Stories 6.3
-// (search) and 6.7 (storage states) build on this snapshot.
+// again if the import fails); a backup and a restore never run at the same time. Story 6.3
+// (search) builds on this snapshot. Story 6.7 (storage states) adds `storage` (persisted, usage,
+// storage-full, read from storage/persistence.ts) and the one-time `persistNotice`.
 
 import { libraryRow, pickSize, sortRows, withTitle, type LibraryRow } from '../model/library';
 import { isAppError, type AppErrorCode } from '../model/errors';
@@ -16,6 +17,8 @@ import type { Tab, Take, TakeWriter } from '../model/types';
 import { audioStore, type CompressedFile } from '../storage/audio-store';
 import { createBackup, type BackupResult } from '../storage/backup';
 import { db, type ImportRecord } from '../storage/db';
+import { isStorageFull, persistence, subscribeStorageFull } from '../storage/persistence';
+import { loadPrefs, updatePrefs } from '../storage/prefs';
 import { readBackup, type ValidBackup } from '../storage/restore';
 import {
   subscribe as subscribeStorage,
@@ -36,6 +39,22 @@ export interface LibrarySnapshot {
   backup: { progress: number } | null;
   /** A restore is reading a backup file or importing it. */
   restoring: boolean;
+  /** Storage status (story 6.7). */
+  storage: LibraryStorage;
+  /**
+   * The one-time storage notice shows this visit: storage is not persisted, the library has a
+   * take not still recording, and `prefs.persistNoticeShown` was false. Once true it stays so until the screen leaves.
+   */
+  persistNotice: boolean;
+}
+
+export interface LibraryStorage {
+  /** Whether storage is persisted; null until read. */
+  protected: boolean | null;
+  /** The bytes this origin uses (`estimate().usage`); null when unknown. */
+  usageBytes: number | null;
+  /** A storage write failed with `storage-full` since the last committed save. */
+  full: boolean;
 }
 
 export type { BackupResult } from '../storage/backup';
@@ -102,6 +121,11 @@ export interface LibrarySession {
    * (logged) with the write's AppError.
    */
   restore(backup: ValidBackup): Promise<RestoreResult | null>;
+  /**
+   * The screen showed the storage notice: `prefs.persistNoticeShown` is set, so no later visit
+   * shows it. A failed write is logged; the notice may then show again on a later visit.
+   */
+  markPersistNoticeShown(): void;
 }
 
 export interface LibraryDeps {
@@ -131,6 +155,17 @@ export interface LibraryDeps {
   writeCompressed(takeId: string, blob: Blob): Promise<void>;
   /** Writes whole records, skipping ids present; resolves to the number written. */
   importTakes(records: readonly ImportRecord[]): Promise<number>;
+  /** Whether storage is persisted; false when unknown. Never rejects. */
+  persisted(): Promise<boolean>;
+  /** The bytes used; null when unknown. Never rejects. */
+  estimateUsage(): Promise<number | null>;
+  /** The storage-full status, and its change listener (returns the unsubscribe function). */
+  isStorageFull(): boolean;
+  subscribeStorageFull(listener: () => void): () => void;
+  /** Whether the storage notice was shown on an earlier visit. */
+  persistNoticeShown(): boolean;
+  /** Remembers that the storage notice was shown. */
+  markPersistNoticeShown(): void;
 }
 
 const WRITER = 'library-session';
@@ -144,6 +179,8 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     error: null,
     backup: null,
     restoring: false,
+    storage: { protected: null, usageBytes: null, full: false },
+    persistNotice: false,
   };
   const listeners = new Set<() => void>();
   let unsubscribeStorage: (() => void) | null = null;
@@ -207,7 +244,70 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
       ),
     );
     publish({ ...snapshot, loading: false, rows: sortRows(rows), error: null });
+    checkNotice();
     refreshChanged();
+  }
+
+  function setStorage(patch: Partial<LibraryStorage>) {
+    const next = { ...snapshot.storage, ...patch };
+    const cur = snapshot.storage;
+    if (
+      next.protected === cur.protected &&
+      next.usageBytes === cur.usageBytes &&
+      next.full === cur.full
+    ) {
+      return;
+    }
+    publish({ ...snapshot, storage: next });
+  }
+
+  /**
+   * Shows the storage notice this visit when storage is not persisted, the library has a take
+   * not still recording (one Back up library can save) and no earlier visit showed it. Checked once the protection read and a full read landed.
+   */
+  function checkNotice() {
+    if (snapshot.persistNotice || !unsubscribeStorage) return;
+    // A take to back up (not one still recording), as Back up library needs.
+    const backable = snapshot.rows.some((r) => r.status !== 'recording');
+    if (snapshot.storage.protected !== false || snapshot.loading || !backable) return;
+    let shown: boolean;
+    try {
+      shown = deps.persistNoticeShown();
+    } catch {
+      shown = false;
+    }
+    if (!shown) publish({ ...snapshot, persistNotice: true });
+  }
+
+  /** Bumped by every attach and detach: a storage read from an earlier visit is dropped. */
+  let visit = 0;
+
+  /** The latest usage read's number: an older read landing later is dropped. */
+  let usageSeq = 0;
+  async function readUsage() {
+    const gen = visit;
+    const seq = ++usageSeq;
+    let usageBytes: number | null;
+    try {
+      usageBytes = await deps.estimateUsage();
+    } catch {
+      usageBytes = null;
+    }
+    if (gen !== visit || seq !== usageSeq) return;
+    setStorage({ usageBytes });
+  }
+
+  async function readProtected() {
+    const gen = visit;
+    let isProtected: boolean;
+    try {
+      isProtected = await deps.persisted();
+    } catch {
+      isProtected = false;
+    }
+    if (gen !== visit) return;
+    setStorage({ protected: isProtected });
+    checkNotice();
   }
 
   /** Refreshes the takes whose events arrived while the full read ran (it landed or failed). */
@@ -233,6 +333,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     else if (rows.length === snapshot.rows.length && snapshot.error === null) return;
     const recovering = snapshot.error !== null;
     publish({ ...snapshot, rows: row ? sortRows(rows) : rows, error: null });
+    checkNotice();
     if (recovering) void loadAll();
   }
 
@@ -269,6 +370,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
   }
 
   const onStorage = (event: StorageEvent) => {
+    void readUsage();
     if (event.type === 'library-restored') {
       void loadAll();
       return;
@@ -288,14 +390,27 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     void refresh(event.takeId);
   };
 
+  const onStorageFull = () => setStorage({ full: deps.isStorageFull() });
+  let unsubscribeFull: (() => void) | null = null;
+
   function attach() {
     unsubscribeStorage = deps.subscribeStorage(onStorage);
+    unsubscribeFull = deps.subscribeStorageFull(onStorageFull);
+    visit++;
+    onStorageFull();
     void loadAll();
+    void readProtected();
+    void readUsage();
   }
 
   function detach() {
     unsubscribeStorage?.();
     unsubscribeStorage = null;
+    unsubscribeFull?.();
+    unsubscribeFull = null;
+    // A later visit decides again (from prefs) whether the notice shows.
+    if (snapshot.persistNotice) snapshot = { ...snapshot, persistNotice: false };
+    visit++;
     generation++;
     changedDuringLoad.clear();
     refreshSeq.clear();
@@ -449,6 +564,13 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     backUp,
     readBackup: readBackupFile,
     restore,
+    markPersistNoticeShown() {
+      try {
+        deps.markPersistNoticeShown();
+      } catch (err) {
+        devWarn('Library: remembering the storage notice failed', err);
+      }
+    },
     subscribe(listener) {
       listeners.add(listener);
       if (listeners.size === 1 && !unsubscribeStorage) attach();
@@ -478,4 +600,12 @@ export const librarySession: LibrarySession = createLibrarySession({
   readBackup: (file) => readBackup(file),
   writeCompressed: (id, blob) => audioStore.writeCompressed(id, blob),
   importTakes: (records) => db.importTakes(records),
+  persisted: () => persistence.persisted(),
+  estimateUsage: () => persistence.estimateUsage(),
+  isStorageFull,
+  subscribeStorageFull,
+  persistNoticeShown: () => loadPrefs().persistNoticeShown,
+  markPersistNoticeShown: () => {
+    updatePrefs({ persistNoticeShown: true });
+  },
 });

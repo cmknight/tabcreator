@@ -3,7 +3,9 @@
 // instance lock, every storage/ write rejects with `instance-taken`; reads keep working.
 // US-8.5 calls `fenceWrites()` (re-exported from db.ts).
 
+import { storageFullSaveHookOn } from '../dev/hooks/storage-full';
 import { AppError } from '../model/errors';
+import { markStorageFull } from './persistence';
 
 let fenced = false;
 
@@ -28,8 +30,30 @@ function errorName(err: unknown): string | undefined {
   return undefined;
 }
 
-/** `AppError`s pass through; `QuotaExceededError` → `storage-full`; anything else → `storage-failed`. */
-export function toStorageError(err: unknown, what: string): AppError {
+/**
+ * `AppError`s pass through; `QuotaExceededError` → `storage-full`; anything else → `storage-failed`.
+ * Any `storage-full` result (a write's, or a read's) sets the storage-full status
+ * (persistence.ts) for `takeId`, the take the operation was for when known; the next committed
+ * save of another take clears it.
+ */
+export function toStorageError(err: unknown, what: string, takeId?: string): AppError {
+  const mapped = mapStorageError(err, what);
+  if (mapped.code === 'storage-full') markStorageFull(takeId);
+  return mapped;
+}
+
+/**
+ * Dev builds only: while `window.__storageFullSaveHook` is on (dev/hooks/storage-full.ts), a save
+ * (compressed audio, a take patch, a tab) rejects with `storage-full` as on a full disk, through
+ * `toStorageError`. Production builds tree-shake the hook.
+ */
+export function assertDevSaveSpace(what: string, takeId: string): void {
+  if (import.meta.env.DEV && storageFullSaveHookOn()) {
+    throw toStorageError({ name: 'QuotaExceededError', message: 'dev hook' }, what, takeId);
+  }
+}
+
+function mapStorageError(err: unknown, what: string): AppError {
   if (err instanceof AppError) return err;
   const name = errorName(err);
   const message =

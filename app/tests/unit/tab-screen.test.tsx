@@ -1308,6 +1308,7 @@ describe('Tab screen tab area, header and selection', () => {
       const snapshot: SettingsSnapshot = {
         engine: { state: 'loading' },
         prefs: { barLines, analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 } },
+        storageProtected: null,
       };
       return { subscribePrefs: () => () => {}, getSnapshot: () => snapshot, setBarLines: vi.fn() };
     };
@@ -2257,6 +2258,7 @@ describe('Tab screen flags, warnings and bar lines', () => {
     let snapshot: SettingsSnapshot = {
       engine: { state: 'loading' },
       prefs: { barLines, analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 } },
+      storageProtected: null,
     };
     const listeners = new Set<() => void>();
     return {

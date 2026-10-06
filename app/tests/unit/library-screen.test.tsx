@@ -31,13 +31,20 @@ vi.mock('../../src/ui/a11y/announcer', async (importOriginal) => ({
 }));
 
 /**
- * A session with a fixed snapshot (`backup` null and `restoring` false unless given) and spies
- * for its writes.
+ * A session with a fixed snapshot (`backup` null, `restoring` false, storage protected with
+ * unknown usage and no notice, unless given) and spies for its writes.
  */
 function fakeSession(
-  given: Omit<LibrarySnapshot, 'backup' | 'restoring'> & Partial<LibrarySnapshot>,
+  given: Omit<LibrarySnapshot, 'backup' | 'restoring' | 'storage' | 'persistNotice'> &
+    Partial<LibrarySnapshot>,
 ) {
-  const snapshot: LibrarySnapshot = { backup: null, restoring: false, ...given };
+  const snapshot: LibrarySnapshot = {
+    backup: null,
+    restoring: false,
+    storage: { protected: true, usageBytes: null, full: false },
+    persistNotice: false,
+    ...given,
+  };
   return {
     subscribe: () => () => {},
     getSnapshot: () => snapshot,
@@ -47,6 +54,7 @@ function fakeSession(
     backUp: vi.fn(async (): Promise<BackupResult | null> => null),
     readBackup: vi.fn<(file: Blob) => Promise<RestorePlan | null>>(async () => null),
     restore: vi.fn<(backup: ValidBackup) => Promise<RestoreResult | null>>(async () => null),
+    markPersistNoticeShown: vi.fn(),
   };
 }
 
@@ -423,6 +431,8 @@ describe('search', () => {
       error: null,
       backup: null,
       restoring: false,
+      storage: { protected: true, usageBytes: null, full: false },
+      persistNotice: false,
     };
     const listeners = new Set<() => void>();
     const session = {
@@ -1005,5 +1015,115 @@ describe('Restore from backup', () => {
     expect(button().getAttribute('aria-disabled')).toBe('true');
     fireEvent.click(button());
     expect(pickFile).not.toHaveBeenCalled();
+  });
+});
+
+// Story "Storage protection and Library states" (6.7; mockup library.html (d), (e), .libfoot).
+describe('storage states', () => {
+  const rows = (n: number): LibraryRow[] =>
+    Array.from({ length: n }, (_, i) => ({
+      ...recorded,
+      id: `r${i}`,
+      title: i < 3 ? `Riff ${i}` : `Take ${i}`,
+      searchKey: searchKey(i < 3 ? `Riff ${i}` : `Take ${i}`),
+      createdAt: new Date(Date.UTC(2026, 8, 1) - i * 60_000).toISOString(),
+    }));
+
+  it('the notice shows above the heading, is remembered once, and Dismiss hides it', () => {
+    const session = fakeSession({
+      loading: false,
+      rows: [recorded],
+      error: null,
+      storage: { protected: false, usageBytes: null, full: false },
+      persistNotice: true,
+    });
+    render(<Library session={session} />);
+    const notice = screen.getByTestId('persist-notice');
+    expect(notice.getAttribute('role')).toBe('status');
+    expect(notice.textContent).toContain(
+      'Your browser may clear these takes when space runs low. Back them up regularly.',
+    );
+    // Above the heading.
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(notice.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(session.markPersistNoticeShown).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss storage notice' }));
+    expect(screen.queryByTestId('persist-notice')).toBeNull();
+    expect(document.activeElement).toBe(heading);
+    expect(session.markPersistNoticeShown).toHaveBeenCalledTimes(1);
+  });
+
+  it("the notice's Back up library starts the backup", async () => {
+    const session = fakeSession({
+      loading: false,
+      rows: [recorded],
+      error: null,
+      persistNotice: true,
+    });
+    render(<Library session={session} />);
+    const notice = screen.getByTestId('persist-notice');
+    await act(async () => {
+      fireEvent.click(within(notice).getByRole('button', { name: 'Back up library' }));
+    });
+    expect(session.backUp).toHaveBeenCalledTimes(1);
+  });
+
+  it('no notice when the session does not ask for one', () => {
+    const session = fakeSession({ loading: false, rows: [recorded], error: null });
+    render(<Library session={session} />);
+    expect(screen.queryByTestId('persist-notice')).toBeNull();
+    expect(session.markPersistNoticeShown).not.toHaveBeenCalled();
+  });
+
+  it('storage full: an error banner (role alert) above the heading, no Dismiss, no link', () => {
+    const session = fakeSession({
+      loading: false,
+      rows: [recorded],
+      error: null,
+      storage: { protected: true, usageBytes: null, full: true },
+    });
+    render(<Library session={session} />);
+    const alert = screen.getByTestId('library-storage-full');
+    expect(alert.getAttribute('role')).toBe('alert');
+    expect(alert.textContent).toBe(
+      'Storage is full — delete takes or their audio, or back up and clear',
+    );
+    expect(within(alert).queryByRole('button')).toBeNull();
+    expect(within(alert).queryByRole('link')).toBeNull();
+    const heading = screen.getByRole('heading', { level: 1 });
+    expect(alert.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('the footer counts every take and the usage in MB, also while searching', () => {
+    const session = fakeSession({
+      loading: false,
+      rows: rows(23),
+      error: null,
+      storage: { protected: true, usageBytes: 41_000_000, full: false },
+    });
+    render(<Library session={session} />);
+    expect(screen.getByTestId('library-footer').textContent).toBe('23 takes · 41.0 MB used');
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search takes' }), {
+      target: { value: 'riff' },
+    });
+    expect(screen.getAllByRole('listitem')).toHaveLength(3);
+    expect(screen.getByTestId('library-footer').textContent).toBe('23 takes · 41.0 MB used');
+  });
+
+  it('no footer for an empty library or an unknown usage', () => {
+    const { unmount } = render(
+      <Library
+        session={fakeSession({
+          loading: false,
+          rows: [],
+          error: null,
+          storage: { protected: true, usageBytes: 5_000_000, full: false },
+        })}
+      />,
+    );
+    expect(screen.queryByTestId('library-footer')).toBeNull();
+    unmount();
+    render(<Library session={fakeSession({ loading: false, rows: [recorded], error: null })} />);
+    expect(screen.queryByTestId('library-footer')).toBeNull();
   });
 });

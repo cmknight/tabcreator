@@ -19,6 +19,8 @@ const list = (page: Page): Locator => page.getByRole('list', { name: 'Takes, new
 const rows = (page: Page): Locator => list(page).getByRole('listitem');
 const row = (page: Page, id: string): Locator => list(page).locator(`li[data-take-id="${id}"]`);
 const heading = (page: Page) => page.getByRole('heading', { level: 1, name: 'Library' });
+/** The announcer's polite region (not the storage notice, also role status; story 6.7). */
+const politeRegion = (page: Page): Locator => page.locator('[role="status"][aria-live="polite"]');
 
 /** Errors other than the dev-only warnings the app logs on purpose. */
 const unexpected = (errors: string[]) => errors.filter((e) => !e.includes('[tabcreator]'));
@@ -402,13 +404,13 @@ test('search: accents and case ignored; no match and Clear search; live updates 
   await searchField(page).fill('cafe');
   await expect(titles(page)).toHaveText(['Café Blues']);
   // The count is announced once typing settles.
-  await expect(page.getByRole('status')).toHaveText('1 take');
+  await expect(politeRegion(page)).toHaveText('1 take');
 
   await searchField(page).fill('zzz');
   await expect(list(page)).toHaveCount(0);
   const noMatch = page.getByRole('heading', { level: 2, name: 'No takes match "zzz"' });
   await expect(noMatch).toBeVisible();
-  await expect(page.getByRole('status')).toHaveText('No takes match "zzz"');
+  await expect(politeRegion(page)).toHaveText('No takes match "zzz"');
   await expectNoSeriousAxe(page);
   await page.getByRole('button', { name: strings['library.clearSearch'] }).click();
   await expect(searchField(page)).toHaveValue('');

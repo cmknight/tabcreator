@@ -419,6 +419,37 @@ describe('recording a take', () => {
     expect(t.session.getSnapshot().errorCode).toBeUndefined();
   });
 
+  // Story 6.7: persistent storage is asked for after a take is saved, never before.
+  it('asks for persistent storage after a successful save, not before', async () => {
+    const requestPersist = vi.fn();
+    const t = await recording({ requestPersist });
+    expect(requestPersist).not.toHaveBeenCalled();
+    await t.session.stop('user');
+    expect(requestPersist).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ask for persistent storage after a failed save', async () => {
+    const requestPersist = vi.fn();
+    const t = await recording({
+      requestPersist,
+      writeCompressed: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
+    });
+    await t.session.stop('user');
+    await flush();
+    expect(requestPersist).not.toHaveBeenCalled();
+  });
+
+  it('a throwing persist request never changes the save', async () => {
+    const t = await recording({
+      requestPersist: () => {
+        throw new Error('no storage API');
+      },
+    });
+    await t.session.stop('user');
+    expect(t.deps.navigate).toHaveBeenCalledWith('take-1');
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'idle', savedSeq: 1 });
+  });
+
   it('closes the writer and shows the error when the capture fails to start', async () => {
     const t = setup({}, new AppError('mic-failed', 'no worklet'));
     await t.session.allowMic();
@@ -1706,6 +1737,21 @@ describe('recovery in the store (story 3.11)', () => {
     await t.session.discardRecovered('old');
     expect(t.deps.deleteTake).toHaveBeenCalledWith('old', 'recording-session');
     expect(t.session.getSnapshot().recovered).toEqual([]);
+  });
+
+  // Story 6.7: the store wires its `requestPersist` dep into recovery's host.
+  it('Open on a recovered take asks for persistent storage once, after its save', async () => {
+    const requestPersist = vi.fn();
+    const t = setup({ recovery: recoveryDeps('old', RATE * 10), requestPersist });
+    await t.session.scanForRecovery();
+    expect(requestPersist).not.toHaveBeenCalled();
+    await t.session.openRecovered('old');
+    expect(t.deps.patchTake).toHaveBeenCalledWith(
+      'old',
+      expect.objectContaining({ status: 'recorded', stopReason: 'recovered' }),
+      'recording-session',
+    );
+    expect(requestPersist).toHaveBeenCalledTimes(1);
   });
 
   it('beforeunload: guarded only while a take runs', async () => {

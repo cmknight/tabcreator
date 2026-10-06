@@ -15,7 +15,13 @@ import {
   type Migration,
   type TabCreatorSchema,
 } from './migrations';
-import { assertWritable, fenceWrites, hasErrorName, toStorageError } from './write-guard';
+import {
+  assertDevSaveSpace,
+  assertWritable,
+  fenceWrites,
+  hasErrorName,
+  toStorageError,
+} from './write-guard';
 
 export { fenceWrites };
 
@@ -117,13 +123,13 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
    * InvalidStateError of a transaction on the closed connection, by an operation that got the
    * connection before the close) is `instance-taken`, not `storage-failed`.
    */
-  function storageError(err: unknown, what: string): AppError {
+  function storageError(err: unknown, what: string, takeId?: string): AppError {
     if (closed && !(err instanceof AppError)) {
       return new AppError('instance-taken', `${what}: database closed: instance lost`, {
         cause: err,
       });
     }
-    return toStorageError(err, what);
+    return toStorageError(err, what, takeId);
   }
 
   function report(state: ConnectionState) {
@@ -192,6 +198,8 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     what: string,
     stores: S,
     fn: (tx: WriteTx<S>) => Promise<T>,
+    /** The take written, if one: a storage-full failure is remembered for it. */
+    takeId?: string,
   ): Promise<T> {
     assertWritable();
     const db = await connect();
@@ -199,7 +207,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     try {
       tx = db.transaction(stores, 'readwrite');
     } catch (err) {
-      throw storageError(err, what);
+      throw storageError(err, what, takeId);
     }
     const done = tx.done;
     done.catch(() => {
@@ -218,7 +226,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
       } catch {
         // Already aborted or finished.
       }
-      throw storageError(cause, what);
+      throw storageError(cause, what, takeId);
     }
   }
 
@@ -239,34 +247,46 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
 
     async createTake(take) {
       const record: Take = { ...take, updatedAt: stamp() };
-      await write('Create take', ['takes'], (tx) => tx.objectStore('takes').add(record));
+      await write('Create take', ['takes'], (tx) => tx.objectStore('takes').add(record), record.id);
       emit({ type: 'take-put', takeId: record.id, writer: 'recording-session' });
       return record;
     },
 
     async patchTake(id, patch, writer) {
       if (checkOwnership) assertOwnedFields(patch, writer);
-      const record = await write('Patch take', ['takes'], async (tx) => {
-        const store = tx.objectStore('takes');
-        const existing = await store.get(id);
-        if (!existing) throw notFound(id);
-        const next: Take = { ...existing, ...patch, id, updatedAt: stamp() };
-        await store.put(next);
-        return next;
-      });
+      if (import.meta.env.DEV) assertDevSaveSpace('Patch take', id);
+      const record = await write(
+        'Patch take',
+        ['takes'],
+        async (tx) => {
+          const store = tx.objectStore('takes');
+          const existing = await store.get(id);
+          if (!existing) throw notFound(id);
+          const next: Take = { ...existing, ...patch, id, updatedAt: stamp() };
+          await store.put(next);
+          return next;
+        },
+        id,
+      );
       emit({ type: 'take-put', takeId: id, writer });
       return record;
     },
 
     async putTab(tab, writer) {
-      const record = await write('Put tab', ['takes', 'tabs'], async (tx) => {
-        if ((await tx.objectStore('takes').getKey(tab.takeId)) === undefined) {
-          throw notFound(tab.takeId);
-        }
-        const next: Tab = { ...withTabDefaults(tab), updatedAt: stamp() };
-        await tx.objectStore('tabs').put(next);
-        return next;
-      });
+      if (import.meta.env.DEV) assertDevSaveSpace('Put tab', tab.takeId);
+      const record = await write(
+        'Put tab',
+        ['takes', 'tabs'],
+        async (tx) => {
+          if ((await tx.objectStore('takes').getKey(tab.takeId)) === undefined) {
+            throw notFound(tab.takeId);
+          }
+          const next: Tab = { ...withTabDefaults(tab), updatedAt: stamp() };
+          await tx.objectStore('tabs').put(next);
+          return next;
+        },
+        tab.takeId,
+      );
       emit({ type: 'tab-put', takeId: tab.takeId, writer });
       return record;
     },
@@ -274,17 +294,22 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     async commitAnalysis(takeId, tab, takePatch) {
       const writer: TakeWriter = 'take-session';
       if (checkOwnership) assertOwnedFields(takePatch, writer);
-      const result = await write('Commit analysis', ['takes', 'tabs'], async (tx) => {
-        const takes = tx.objectStore('takes');
-        const existing = await takes.get(takeId);
-        if (!existing) throw notFound(takeId);
-        const updatedAt = stamp();
-        const nextTab: Tab = { ...withTabDefaults(tab), takeId, updatedAt };
-        const nextTake: Take = { ...existing, ...takePatch, id: takeId, updatedAt };
-        await tx.objectStore('tabs').put(nextTab);
-        await takes.put(nextTake);
-        return { take: nextTake, tab: nextTab };
-      });
+      const result = await write(
+        'Commit analysis',
+        ['takes', 'tabs'],
+        async (tx) => {
+          const takes = tx.objectStore('takes');
+          const existing = await takes.get(takeId);
+          if (!existing) throw notFound(takeId);
+          const updatedAt = stamp();
+          const nextTab: Tab = { ...withTabDefaults(tab), takeId, updatedAt };
+          const nextTake: Take = { ...existing, ...takePatch, id: takeId, updatedAt };
+          await tx.objectStore('tabs').put(nextTab);
+          await takes.put(nextTake);
+          return { take: nextTake, tab: nextTab };
+        },
+        takeId,
+      );
       emit({ type: 'tab-put', takeId, writer });
       emit({ type: 'take-put', takeId, writer });
       return result;

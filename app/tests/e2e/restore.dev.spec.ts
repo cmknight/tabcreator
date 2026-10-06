@@ -15,7 +15,11 @@ import { opfsFileBase64, opfsFiles, readTab, readTakes } from './storage-helpers
 const heading = (page: Page) => page.getByRole('heading', { level: 1, name: 'Library' });
 const list = (page: Page): Locator => page.getByRole('list', { name: 'Takes, newest first' });
 const row = (page: Page, id: string): Locator => list(page).locator(`li[data-take-id="${id}"]`);
-const backupButton = (page: Page) => page.getByRole('button', { name: 'Back up library' });
+/** The header's Back up library (not the one-time storage notice's, story 6.7). */
+const backupButton = (page: Page) =>
+  page
+    .getByRole('button', { name: 'Back up library' })
+    .and(page.locator(':not([data-testid="persist-notice"] *)'));
 const restoreButton = (page: Page) =>
   page.getByRole('button', { name: /^(Restore from backup|Restoring…)$/ });
 const toast = (page: Page) => page.getByTestId('toast');

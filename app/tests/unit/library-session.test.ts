@@ -52,6 +52,18 @@ function fakeLibrary() {
   /** Takes with a raw file. */
   const raw = new Set<string>();
   const listeners = new Set<StorageListener>();
+  /** The storage status the fake reports (persistence.ts and prefs). */
+  const storage = {
+    persisted: true,
+    usage: null as number | null,
+    full: false,
+    noticeShown: false,
+    fullListeners: new Set<() => void>(),
+    setFull(full: boolean) {
+      storage.full = full;
+      for (const l of [...storage.fullListeners]) l();
+    },
+  };
   const deps: LibraryDeps = {
     listTakes: vi.fn(async () =>
       [...takes.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
@@ -122,6 +134,19 @@ function fakeLibrary() {
       emit({ type: 'library-restored', count: n, writer: 'restore' });
       return n;
     }),
+    persisted: vi.fn(async () => storage.persisted),
+    estimateUsage: vi.fn(async () => storage.usage),
+    isStorageFull: () => storage.full,
+    subscribeStorageFull: (l: () => void) => {
+      storage.fullListeners.add(l);
+      return () => {
+        storage.fullListeners.delete(l);
+      };
+    },
+    persistNoticeShown: () => storage.noticeShown,
+    markPersistNoticeShown: vi.fn(() => {
+      storage.noticeShown = true;
+    }),
   };
   const add = (take: Take, noteCount: number | null, size: number | null) => {
     takes.set(take.id, take);
@@ -138,7 +163,7 @@ function fakeLibrary() {
   function emit(event: StorageEvent) {
     for (const l of [...listeners]) l(event);
   }
-  return { takes, tabs, sizes, audio, raw, deps, add, emit, listeners };
+  return { takes, tabs, sizes, audio, raw, deps, add, emit, listeners, storage };
 }
 
 const T1 = '2026-09-27T10:00:00.000Z';
@@ -157,6 +182,8 @@ describe('library session', () => {
       error: null,
       backup: null,
       restoring: false,
+      storage: { protected: null, usageBytes: null, full: false },
+      persistNotice: false,
     });
     expect(lib.deps.listTakes).not.toHaveBeenCalled();
 
@@ -187,6 +214,8 @@ describe('library session', () => {
       error: null,
       backup: null,
       restoring: false,
+      storage: { protected: true, usageBytes: null, full: false },
+      persistNotice: false,
     });
   });
 
@@ -203,6 +232,8 @@ describe('library session', () => {
       error: 'storage-failed',
       backup: null,
       restoring: false,
+      storage: { protected: true, usageBytes: null, full: false },
+      persistNotice: false,
     });
 
     const lib2 = fakeLibrary();
@@ -948,5 +979,123 @@ describe('library session restore', () => {
     write.resolve();
     await expect(restoring).resolves.toEqual({ imported: 3, skipped: 0 });
     expect(session.getSnapshot().restoring).toBe(false);
+  });
+});
+
+describe('library session: storage states (story 6.7)', () => {
+  it('reads protection and usage on attach; no notice when storage is persisted', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1), 3, 100);
+    lib.storage.usage = 41_000_000;
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot().storage).toEqual({
+      protected: true,
+      usageBytes: 41_000_000,
+      full: false,
+    });
+    expect(session.getSnapshot().persistNotice).toBe(false);
+  });
+
+  it('refused storage with a take shows the notice once; a later visit shows none', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1), 3, 100);
+    lib.storage.persisted = false;
+    const session = createLibrarySession(lib.deps);
+    const off = session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot().storage.protected).toBe(false);
+    expect(session.getSnapshot().persistNotice).toBe(true);
+    session.markPersistNoticeShown();
+    expect(lib.deps.markPersistNoticeShown).toHaveBeenCalledTimes(1);
+    // Still shown this visit (the screen's Dismiss hides it).
+    expect(session.getSnapshot().persistNotice).toBe(true);
+    off();
+    expect(session.getSnapshot().persistNotice).toBe(false);
+    session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot().persistNotice).toBe(false);
+  });
+
+  it('an empty library shows no notice, until a take arrives', async () => {
+    const lib = fakeLibrary();
+    lib.storage.persisted = false;
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot().persistNotice).toBe(false);
+    lib.add(makeTake('a', T1), 3, 100);
+    lib.emit({ type: 'take-put', takeId: 'a', writer: 'recording-session' });
+    await flush();
+    expect(session.getSnapshot().rows).toHaveLength(1);
+    expect(session.getSnapshot().persistNotice).toBe(true);
+  });
+
+  it('no notice while the only takes are still recording (nothing to back up)', async () => {
+    const lib = fakeLibrary();
+    lib.storage.persisted = false;
+    lib.add(makeTake('a', T1, { status: 'recording', analysisVersion: null }), null, null);
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot().rows).toHaveLength(1);
+    expect(session.getSnapshot().persistNotice).toBe(false);
+    lib.add(makeTake('a', T1, { status: 'recorded', analysisVersion: null }), null, 100);
+    lib.emit({ type: 'take-put', takeId: 'a', writer: 'recording-session' });
+    await flush();
+    expect(session.getSnapshot().persistNotice).toBe(true);
+  });
+
+  it('a failing notice write is logged, never thrown', async () => {
+    const lib = fakeLibrary();
+    vi.mocked(lib.deps.markPersistNoticeShown).mockImplementationOnce(() => {
+      throw new AppError('storage-full', 'full');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const session = createLibrarySession(lib.deps);
+    expect(() => session.markPersistNoticeShown()).not.toThrow();
+    warn.mockRestore();
+  });
+
+  it('a protection read that rejects counts as not protected', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1), 3, 100);
+    vi.mocked(lib.deps.persisted).mockRejectedValueOnce(new Error('no api'));
+    vi.mocked(lib.deps.estimateUsage).mockRejectedValueOnce(new Error('no api'));
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot().storage).toMatchObject({ protected: false, usageBytes: null });
+  });
+
+  it('refreshes usage after storage events', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1), 3, 100);
+    lib.storage.usage = 1_000_000;
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot().storage.usageBytes).toBe(1_000_000);
+    lib.storage.usage = 2_000_000;
+    await session.rename('a', 'New');
+    await flush();
+    expect(session.getSnapshot().storage.usageBytes).toBe(2_000_000);
+  });
+
+  it('follows the storage-full status, read on attach', async () => {
+    const lib = fakeLibrary();
+    lib.storage.full = true;
+    const session = createLibrarySession(lib.deps);
+    const listener = vi.fn();
+    const off = session.subscribe(listener);
+    expect(session.getSnapshot().storage.full).toBe(true);
+    await flush();
+    lib.storage.setFull(false);
+    expect(session.getSnapshot().storage.full).toBe(false);
+    lib.storage.setFull(true);
+    expect(session.getSnapshot().storage.full).toBe(true);
+    off();
+    expect(lib.storage.fullListeners.size).toBe(0);
   });
 });

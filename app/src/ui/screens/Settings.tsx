@@ -1,7 +1,9 @@
 // The Settings screen (mockup settings.html): the engine-failed banner, "Defaults for new takes"
 // (story "Analysis settings and re-analysis", US-4.6: the Tab screen's analysis settings fields
 // without Re-analyse, saved on each change to `prefs.analysisDefaults` through settings-session;
-// new takes copy them at creation), and About (the engine version).
+// new takes copy them at creation), Storage (story 6.7: "Storage: protected", or "Storage: may be
+// cleared by the browser" with a Back up library link to the Library) and About (the engine
+// version).
 
 import { useSyncExternalStore } from 'react';
 import {
@@ -12,7 +14,8 @@ import {
 import { AnalysisSettingsFields } from '../components/AnalysisSettingsFields';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
-import { ErrorIcon } from '../components/icons';
+import { CheckIcon, ErrorIcon, WarnIcon } from '../components/icons';
+import { routeToHash } from '../router';
 import { reloadOrExplain } from '../reload-or-explain';
 import { strings } from '../strings';
 import styles from './Screen.module.css';
@@ -35,7 +38,10 @@ export interface SettingsProps {
 }
 
 export function Settings({ session = settingsSession }: SettingsProps = {}) {
-  const { engine, prefs } = useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const { engine, prefs, storageProtected } = useSyncExternalStore(
+    session.subscribe,
+    session.getSnapshot,
+  );
   return (
     <section className={styles.screen}>
       {engine.state === 'unavailable' && (
@@ -57,6 +63,30 @@ export function Settings({ session = settingsSession }: SettingsProps = {}) {
           settings={prefs.analysisDefaults}
           onChange={(patch) => session.setAnalysisDefaults(patch)}
         />
+      </section>
+      <section className={settingsStyles.panel} aria-labelledby="settings-storage">
+        <h2 id="settings-storage" className={settingsStyles.panelTitle}>
+          {strings['settings.storage']}
+        </h2>
+        <div className={settingsStyles.row} data-testid="storage-status">
+          {storageProtected === true && (
+            <span className={`${settingsStyles.stat} ${settingsStyles.ok}`}>
+              <CheckIcon className={settingsStyles.statIcon} />
+              {strings['settings.storageProtected']}
+            </span>
+          )}
+          {storageProtected === false && (
+            <>
+              <span className={`${settingsStyles.stat} ${settingsStyles.warn}`}>
+                <WarnIcon className={settingsStyles.statIcon} />
+                {strings['settings.storageAtRisk']}
+              </span>
+              <a className={buttons.secondary} href={routeToHash({ name: 'library' })}>
+                {strings['settings.storageBackUp']}
+              </a>
+            </>
+          )}
+        </div>
       </section>
       <section className={settingsStyles.panel} aria-labelledby="settings-about">
         <h2 id="settings-about" className={settingsStyles.panelTitle}>
