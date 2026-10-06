@@ -3,7 +3,7 @@ title: '500-note edit latency'
 type: 'feature'
 ticket: '5'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: '35a766c380ba1943f7a3bccc6dbc71b6e0a72d64'
 route: 'full'
 route_source: 'auto'
