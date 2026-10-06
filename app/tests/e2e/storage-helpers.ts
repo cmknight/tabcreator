@@ -130,3 +130,26 @@ export function audioSha256(page: Page, id: string): Promise<string | null> {
     return null;
   }, id);
 }
+
+/**
+ * The bytes of the OPFS file at `path` (`dir/name`, e.g. `audio/<id>.webm`), base64-encoded;
+ * null when it (or its directory) is missing (story "Back up the library": byte comparisons).
+ */
+export function opfsFileBase64(page: Page, path: string): Promise<string | null> {
+  return page.evaluate(async (filePath) => {
+    const [dirName, name] = filePath.split('/') as [string, string];
+    let bytes: Uint8Array;
+    try {
+      const root = await navigator.storage.getDirectory();
+      const dir = await root.getDirectoryHandle(dirName);
+      bytes = new Uint8Array(await (await (await dir.getFileHandle(name)).getFile()).arrayBuffer());
+    } catch {
+      return null;
+    }
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+  }, path);
+}

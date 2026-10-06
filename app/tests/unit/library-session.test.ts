@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../src/model/errors';
 import type { Note, Tab, Take } from '../../src/model/types';
+import type { BackupResult } from '../../src/storage/backup';
 import { createLibrarySession, type LibraryDeps } from '../../src/session/library-session';
 import type { StorageEvent, StorageListener } from '../../src/storage/events';
 import { deferred, flush } from './helpers';
@@ -86,6 +87,17 @@ function fakeLibrary() {
     deleteRaw: vi.fn(async (id: string) => {
       raw.delete(id);
     }),
+    createBackup: vi.fn(async (onProgress: (p: number) => void) => {
+      onProgress(0);
+      onProgress(1);
+      return {
+        blob: new Blob(['zip']),
+        fileName: 'b.zip',
+        takes: takes.size,
+        missingAudio: 0,
+        unsupportedAudio: 0,
+      };
+    }),
   };
   const add = (take: Take, noteCount: number | null, size: number | null) => {
     takes.set(take.id, take);
@@ -115,7 +127,7 @@ describe('library session', () => {
     lib.add(makeTake('a', T1), 38, 210_000);
     lib.add(makeTake('b', T2, { status: 'recorded', analysisVersion: null }), null, 2_900_000);
     const session = createLibrarySession(lib.deps);
-    expect(session.getSnapshot()).toEqual({ loading: true, rows: [], error: null });
+    expect(session.getSnapshot()).toEqual({ loading: true, rows: [], error: null, backup: null });
     expect(lib.deps.listTakes).not.toHaveBeenCalled();
 
     const listener = vi.fn();
@@ -139,7 +151,7 @@ describe('library session', () => {
     const session = createLibrarySession(lib.deps);
     session.subscribe(() => {});
     await flush();
-    expect(session.getSnapshot()).toEqual({ loading: false, rows: [], error: null });
+    expect(session.getSnapshot()).toEqual({ loading: false, rows: [], error: null, backup: null });
   });
 
   it('a failed read is an error code, not a throw; a missing size list still shows rows', async () => {
@@ -149,7 +161,12 @@ describe('library session', () => {
     const session = createLibrarySession(lib.deps);
     session.subscribe(() => {});
     await flush();
-    expect(session.getSnapshot()).toEqual({ loading: false, rows: [], error: 'storage-failed' });
+    expect(session.getSnapshot()).toEqual({
+      loading: false,
+      rows: [],
+      error: 'storage-failed',
+      backup: null,
+    });
 
     const lib2 = fakeLibrary();
     lib2.add(makeTake('a', T1), 3, 100);
@@ -575,5 +592,152 @@ describe('library session writes', () => {
     expect(lib.deps.deleteAudio).toHaveBeenCalledTimes(1);
     expect(lib.sizes.has('b')).toBe(true);
     warn.mockRestore();
+  });
+});
+
+// Story "Back up the library" (6.5): one backup at a time, its progress in the snapshot.
+describe('library session backUp', () => {
+  it('publishes its progress, resolves to the result, then clears the backup state', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1), 3, 100);
+    const run = deferred<BackupResult>();
+    let report: (p: number) => void = () => {};
+    vi.mocked(lib.deps.createBackup).mockImplementationOnce((onProgress) => {
+      report = onProgress;
+      return run.promise;
+    });
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    const seen: (number | null)[] = [];
+    session.subscribe(() => seen.push(session.getSnapshot().backup?.progress ?? null));
+
+    const result = session.backUp();
+    expect(session.getSnapshot().backup).toEqual({ progress: 0 });
+    report(0.5);
+    expect(session.getSnapshot().backup).toEqual({ progress: 0.5 });
+    // The rows stay usable meanwhile.
+    expect(session.getSnapshot().rows.map((r) => r.id)).toEqual(['a']);
+    report(1);
+    const done = {
+      blob: new Blob(['z']),
+      fileName: 'x.zip',
+      takes: 1,
+      missingAudio: 0,
+      unsupportedAudio: 0,
+    };
+    run.resolve(done);
+    await expect(result).resolves.toBe(done);
+    expect(session.getSnapshot().backup).toBeNull();
+    expect(seen).toEqual([0, 0.5, 1, null]);
+  });
+
+  it('a second call while one runs does nothing and resolves to null', async () => {
+    const lib = fakeLibrary();
+    const run = deferred<BackupResult>();
+    vi.mocked(lib.deps.createBackup).mockImplementationOnce(() => run.promise);
+    const session = createLibrarySession(lib.deps);
+    const first = session.backUp();
+    await expect(session.backUp()).resolves.toBeNull();
+    expect(lib.deps.createBackup).toHaveBeenCalledTimes(1);
+    run.resolve({
+      blob: new Blob([]),
+      fileName: 'x.zip',
+      takes: 0,
+      missingAudio: 0,
+      unsupportedAudio: 0,
+    });
+    await first;
+    // Once it ended, another may run.
+    await expect(session.backUp()).resolves.toMatchObject({ fileName: 'b.zip' });
+    expect(lib.deps.createBackup).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failure rejects (logged) and clears the backup state', async () => {
+    const lib = fakeLibrary();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(lib.deps.createBackup).mockRejectedValueOnce(new AppError('storage-failed', 'w'));
+    const session = createLibrarySession(lib.deps);
+    await expect(session.backUp()).rejects.toMatchObject({ code: 'storage-failed' });
+    expect(session.getSnapshot().backup).toBeNull();
+    warn.mockRestore();
+  });
+
+  it('a full read landing during a backup keeps its progress', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1), 3, 100);
+    const run = deferred<BackupResult>();
+    vi.mocked(lib.deps.createBackup).mockImplementationOnce(() => run.promise);
+    const session = createLibrarySession(lib.deps);
+    const result = session.backUp();
+    session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot()).toMatchObject({ loading: false, backup: { progress: 0 } });
+    run.resolve({
+      blob: new Blob([]),
+      fileName: 'x.zip',
+      takes: 1,
+      missingAudio: 0,
+      unsupportedAudio: 0,
+    });
+    await result;
+    expect(session.getSnapshot().backup).toBeNull();
+  });
+
+  it('per-take refreshes during a backup (take-put, take-deleted) keep its progress', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1), 3, 100);
+    lib.add(makeTake('b', T2), 3, 100);
+    const run = deferred<BackupResult>();
+    let report: (p: number) => void = () => {};
+    vi.mocked(lib.deps.createBackup).mockImplementationOnce((onProgress) => {
+      report = onProgress;
+      return run.promise;
+    });
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    const result = session.backUp();
+    report(0.3);
+    await session.rename('a', 'Renamed');
+    await flush();
+    expect(session.getSnapshot().rows.find((r) => r.id === 'a')!.title).toBe('Renamed');
+    expect(session.getSnapshot().backup).toEqual({ progress: 0.3 });
+    await session.deleteTake('b');
+    await flush();
+    expect(session.getSnapshot().rows.map((r) => r.id)).toEqual(['a']);
+    expect(session.getSnapshot().backup).toEqual({ progress: 0.3 });
+    run.resolve({
+      blob: new Blob([]),
+      fileName: 'x.zip',
+      takes: 2,
+      missingAudio: 0,
+      unsupportedAudio: 0,
+    });
+    await result;
+    expect(session.getSnapshot().backup).toBeNull();
+  });
+
+  it('a progress report arriving after the run ended is ignored', async () => {
+    const lib = fakeLibrary();
+    let report: (p: number) => void = () => {};
+    vi.mocked(lib.deps.createBackup).mockImplementationOnce(async (onProgress) => {
+      report = onProgress;
+      return {
+        blob: new Blob([]),
+        fileName: 'x.zip',
+        takes: 0,
+        missingAudio: 0,
+        unsupportedAudio: 0,
+      };
+    });
+    const session = createLibrarySession(lib.deps);
+    await session.backUp();
+    const listener = vi.fn();
+    session.subscribe(listener);
+    listener.mockClear();
+    report(0.7);
+    expect(session.getSnapshot().backup).toBeNull();
+    expect(listener).not.toHaveBeenCalled();
   });
 });

@@ -3,12 +3,13 @@ title: 'Back up the library'
 type: 'feature'
 ticket: '5'
 created: '2026-10-06'
-status: 'draft'
+status: built
+baseline_revision: '622294ac543c59118077fc8984667ff031e53603'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -97,12 +98,12 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `app/package.json` (+ lockfile) -- fflate 0.8.3 -- the zip library.
-- [ ] `app/src/storage/backup.ts`, `app/src/storage/backup-worker.ts`, tsconfigs -- the manifest, the file name, the worker -- the backup.
-- [ ] `app/src/session/library-session.ts` (+ README) -- `backUp()` and the `backup` snapshot field -- one at a time, with progress.
-- [ ] `app/src/ui/screens/Library.tsx` (+ CSS), `icons.tsx`, `strings.ts` -- the button, progress bar, download and toasts -- the UI.
-- [ ] A bundle check: after `pnpm build`, the main entry chunk contains no fflate (assert in a Node check or the CI step that a known fflate string appears only in the backup worker's chunk) -- AD-17.
-- [ ] Unit tests for every I/O row; `app/tests/e2e/backup.dev.spec.ts` -- the ACs.
+- [x] `app/package.json` (+ lockfile) -- fflate 0.8.3 -- the zip library.
+- [x] `app/src/storage/backup.ts`, `app/src/storage/backup-worker.ts`, tsconfigs -- the manifest, the file name, the worker -- the backup.
+- [x] `app/src/session/library-session.ts` (+ README) -- `backUp()` and the `backup` snapshot field -- one at a time, with progress.
+- [x] `app/src/ui/screens/Library.tsx` (+ CSS), `icons.tsx`, `strings.ts` -- the button, progress bar, download and toasts -- the UI.
+- [x] A bundle check: after `pnpm build`, the main entry chunk contains no fflate (assert in a Node check or the CI step that a known fflate string appears only in the backup worker's chunk) -- AD-17.
+- [x] Unit tests for every I/O row; `app/tests/e2e/backup.dev.spec.ts` -- the ACs.
 
 **Acceptance Criteria:**
 - Given three recorded takes, one with its audio deleted (6.2), when the player clicks Back up library, then a `tabcreator-backup-YYYYMMDD.zip` downloads, its `manifest.json` lists every take and tab exactly as stored, and each `audio/<id>.<ext>` entry is byte-identical to that take's OPFS file, with no entry for the deleted audio.
@@ -112,9 +113,49 @@ deferred: []
 
 ## Implementation Notes
 
+- Local commands run on Node 24.21.0 through `npx -y -p node@24.21.0 -p pnpm@12.6.0 -- pnpm …` (system Node 25 is refused by `engine-strict`), as in story 1.1.
+- `backUp()` returns `null` when a backup is already running (the second click is a no-op), so the screen never downloads twice. While a backup runs the button is `aria-disabled` (focus stays on it); with no takes it is natively `disabled`, like the search field.
+- `createBackup` also counts a take whose `audioMime` is not in `AUDIO_FORMATS` as missing audio (backed up without audio). The worker replies `audio-missing` only when a file disappears after its zip entry has begun (it can no longer be left out); a file missing up front is skipped and counted.
+- The worker reads audio in 4 MB slices (`blob.slice().arrayBuffer()`), each output chunk kept as its own Blob part. `createBackupHandler` takes the slice size so unit tests can exercise slicing cheaply.
+- Bundle check: a CI step after Build greps `app/dist` for fflate's error strings (`invalid zip data`, `date not in range 1980-2099`) and requires them only in `assets/backup-worker-*.js`. Main chunk grew 420.40 → 424.12 kB (session/UI code; no fflate); fflate is in the 13.3 kB worker chunk.
+- Fixed a pre-existing stylelint error (`comment-empty-line-before` in `Library.module.css` `.titleLine`) so `pnpm stylelint` passes.
+
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-06 — Review pass
+- verdicts: 35 findings — high 0, medium 1, low 28, false 0, maybe-false 6
+- findings:
+  - `[medium]` `[patch]` (edge) fflate writes no ZIP64: an archive or offset past 4 GiB (or more than 65,535 entries) is silently corrupt — the worker tracks the running size and fails with `storage-failed` ("too large for one backup file") before passing the limit; unit test.
+  - `[low]` `[patch]` (edge, blind) No `messageerror` handling: an unreadable reply leaves the backup stuck until reload — `onmessageerror` rejects; no timeout (a large backup is legitimately long).
+  - `[low]` `[patch]` (edge) A file stored under another extension than `audioMime` gives is counted missing — the worker tries `preferredExtensions(audioMime)` like `readCompressed`.
+  - `[low]` `[patch]` (edge, blind) `listTakes`/`listTabs` errors pass through unwrapped despite "rejects only with AppError" — wrapped as `storage-failed`; the test is updated.
+  - `[low]` `[reject]` (edge) A take deleted mid-backup appears in the manifest and is counted missing — row deletes are now paused during a backup (below); other tabs are excluded by the instance lock.
+  - `[low]` `[reject]` (edge) A busy file (NotReadableError) aborts the backup — compressed files are written once at save; only raw files use sync access handles.
+  - `[low]` `[reject]` (edge) Leaving the Library mid-backup still downloads and toasts — the download is what the player asked for; the toast is global.
+  - `[maybe-false]` `[reject]` (edge) Recording takes are left out of the backup — the plan's rule: a recording take is in progress or unrecovered and has no saved audio; recovery offers it on Record.
+  - `[maybe-false]` `[reject]` (edge) The button is only `aria-disabled` while running — deliberate, so focus stays on it; clicks are ignored.
+  - `[low]` `[patch]` (blind) Row edits during a backup can fail it or report missing audio — rename and the deletes are disabled with "Backing up…" while a backup runs.
+  - `[low]` `[patch]` (blind) A hung worker blocks the button for good — the same as the edge messageerror finding.
+  - `[low]` `[patch]` (blind) Rejects-only-AppError — the same as the edge finding.
+  - `[low]` `[patch]` (blind) `MANIFEST_NAME`/`AUDIO_DIR` are defined twice — the worker imports them from `backup.ts` (constants only, no fflate in `backup.ts`).
+  - `[low]` `[patch]` (blind) Progress moves once per file — weighted by bytes, posted per slice.
+  - `[low]` `[patch]` (blind, verification-gap) Unsupported-MIME takes are counted as "missing" with misleading wording, and untested through `createBackup` — reported separately ("n recordings in an unsupported format were left out"); tests added.
+  - `[low]` `[patch]` (blind) No announcement on start or success — "Backing up…" and "Backed up n takes" are announced politely.
+  - `[low]` `[reject]` (blind) The failure toast ignores the error code — retrying is the remedy either way.
+  - `[low]` `[patch]` (blind) The button is enabled when only recording takes exist, giving an empty backup — disabled unless a non-recording take exists.
+  - `[low]` `[reject]` (blind) Navigating away mid-backup isn't designed — the same as the edge finding.
+  - `[low]` `[patch]` (blind) Session tests miss backup survival across per-take refreshes and late progress — added.
+  - `[low]` `[reject]` (blind) Worker tests miss the start-throw, non-NotFound directory and unfinished-archive branches — defensive paths; the main paths are covered.
+  - `[low]` `[patch]` (blind) The e2e observer is never disconnected and finds the button by text — disconnected; found by role and name.
+  - `[maybe-false]` `[reject]` (intent) A1 vs A2: every OPFS file vs one file per take — A2 is the plan's reading (records and their audio; orphans and raw files aren't library content).
+  - `[maybe-false]` `[reject]` (intent) The three-take fixture is split over two backups — WAV only arises through recovery, which its own test covers; both cases are byte-checked.
+  - `[maybe-false]` `[reject]` (intent) The bundle check is structural, not a size measurement — the intent says initial JS "does not grow by fflate"; the check proves fflate is confined to the worker; the AD-17 size gate is epic 7's.
+  - `[low]` `[reject]` (intent) The unknowns are settled in code comments and the README — and in this plan's Design Notes.
+  - `[low]` `[reject]` (intent) Real-scale memory isn't tested — accepted in the Design Notes for v1.
+  - `[maybe-false]` `[reject]` (intent) Progress may be observed once — now byte-weighted; the e2e checks monotonicity.
+  - `[low]` `[reject]` (remaining duplicate rows across lenses) — the same verdicts as above.
 
 ## Design Notes
 
@@ -127,3 +168,25 @@ deferred: []
 - `cd app && npx -y pnpm@12.6.0 install --frozen-lockfile=false && npx -y pnpm@12.6.0 lint && npx -y pnpm@12.6.0 typecheck && npx -y pnpm@12.6.0 format:check && npx -y pnpm@12.6.0 test` -- expected: pass.
 - `cd app && export PATH="$HOME/.cargo/bin:$PATH" && npx -y pnpm@12.6.0 exec playwright test --project=dev tests/e2e/backup.dev.spec.ts tests/e2e/library.dev.spec.ts` -- expected: pass.
 - `cd app && npx -y pnpm@12.6.0 build` and the fflate bundle check -- expected: pass.
+
+## Auto Run Result
+
+**Status:** built, 2026-10-06.
+
+**Summary:**
+- **Back up library:** writes `tabcreator-backup-<date>.zip` with a format-1 `manifest.json` (takes other than those still recording, and their tabs) and `audio/<takeId>.<ext>` per take.
+- **Where it's built:** a backup worker, the only importer of fflate, streams it into a Blob from OPFS in 4 MB slices.
+- **Size limit:** a library too large for a zip without ZIP64 (4 GiB or 65,535 entries) fails cleanly.
+- **Progress and announcements:** byte-weighted progress; "Backing up…" and "Backed up n takes" are announced politely.
+- **During a backup:** row edits are paused.
+- **Missing or unsupported audio:** missing audio and unsupported formats get their own toasts.
+
+**Review:** thorough, 35 findings: 1 medium and 18 low patched, the rest rejected with reasons in the triage log.
+
+**Follow-up review: not recommended.**
+
+**Verification:**
+- lint, typecheck, format:check, stylelint (Node 24) and unit tests pass (1682).
+- In the build, fflate appears only in `backup-worker-*.js`.
+- The full Playwright suite passes (206, perf included).
+

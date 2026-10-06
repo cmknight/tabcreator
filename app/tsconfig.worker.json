@@ -7,7 +7,8 @@
   "include": [
     "src/engine/engine-worker.ts",
     "src/storage/opfs-worker.ts",
-    "src/audio/waveform-worker.ts"
+    "src/audio/waveform-worker.ts",
+    "src/storage/backup-worker.ts"
   ],
   "exclude": []
 }

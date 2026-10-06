@@ -6,10 +6,13 @@
 // to `ui/a11y/overlays.ts`; focus returns to the button on close.
 // Choosing an item closes the menu and hands its id to the owner. Placed once, it closes on a
 // window scroll or resize rather than drift away from its button. A click on the button itself
-// closes it (the owner toggles; the button is the overlay's `toggle`).
+// closes it (the owner toggles; the button is the overlay's `toggle`). An item with a
+// `disabledReason` stays focusable but is `aria-disabled`, described by its reason, and does
+// nothing when chosen.
 
 import { Fragment, useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import { openOverlay } from '../a11y/overlays';
+import hidden from '../a11y/visually-hidden.module.css';
 import styles from './RowMenu.module.css';
 
 /** The space kept between the menu and its button, and the viewport's edges (px). */
@@ -24,6 +27,8 @@ export interface RowMenuItem {
   danger?: boolean;
   /** A separator goes before it. */
   separated?: boolean;
+  /** Set when the item cannot be chosen now: why (its description and tooltip). */
+  disabledReason?: string;
 }
 
 export interface RowMenuProps {
@@ -140,7 +145,13 @@ export function RowMenu({
               type="button"
               role="menuitem"
               className={item.danger ? `${styles.item} ${styles.danger}` : styles.item}
+              aria-disabled={item.disabledReason !== undefined || undefined}
+              aria-describedby={
+                item.disabledReason !== undefined ? `${id}-${item.id}-why` : undefined
+              }
+              title={item.disabledReason}
               onClick={() => {
+                if (item.disabledReason !== undefined) return;
                 onClose();
                 onSelect(item.id);
               }}
@@ -148,6 +159,12 @@ export function RowMenu({
               {item.icon}
               {item.label}
             </button>
+            {/* Outside the button, so the reason describes it without joining its name. */}
+            {item.disabledReason !== undefined && (
+              <span id={`${id}-${item.id}-why`} className={hidden.visuallyHidden}>
+                {item.disabledReason}
+              </span>
+            )}
           </li>
         </Fragment>
       ))}

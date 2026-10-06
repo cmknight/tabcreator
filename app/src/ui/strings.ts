@@ -508,6 +508,22 @@ export const strings = {
   'library.clearSearch': 'Clear search',
   /** The search result count, announced once typing settles: "3 takes", "1 take". */
   'library.matchCount': (n: number) => `${n} ${n === 1 ? 'take' : 'takes'}`,
+  /** Back up library (story 6.5; EXPERIENCE.md :85, mockup library.html (f·1)). */
+  'library.backUp': 'Back up library',
+  /** Shown over the progress bar while a backup runs. */
+  'library.backingUp': 'Backing up…',
+  /** The progress bar's value: "46%". */
+  'library.backupPercent': (percent: number) => `${percent}%`,
+  /** A toast and an assertive announcement when the backup failed. */
+  'library.backupFailed': "Couldn't back up the library",
+  /** Announced once the backup has downloaded. */
+  'library.backedUp': (n: number) => `Backed up ${n} ${n === 1 ? 'take' : 'takes'}`,
+  /** A toast when some takes' audio is in a format this build cannot back up. */
+  'library.backupUnsupported': (n: number) =>
+    `${n} ${n === 1 ? 'recording' : 'recordings'} in an unsupported format ${n === 1 ? 'was' : 'were'} left out`,
+  /** A toast when the backup downloaded but some takes' audio files were missing. */
+  'library.backupMissing': (n: number) =>
+    `Backed up — ${n} ${n === 1 ? 'recording was' : 'recordings were'} missing`,
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */
   'tuner.stringLetter': (string: StringNo) =>

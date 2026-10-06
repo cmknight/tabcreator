@@ -24,6 +24,7 @@
     "src/storage/opfs-worker.ts",
     "src/audio/recorder-worklet.ts",
     "src/engine/pkg",
-    "src/audio/waveform-worker.ts"
+    "src/audio/waveform-worker.ts",
+    "src/storage/backup-worker.ts"
   ]
 }

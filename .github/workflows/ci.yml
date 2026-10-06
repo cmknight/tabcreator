@@ -202,6 +202,17 @@ jobs:
             exit 1
           fi
 
+      # Story 6.5 (AD-17): fflate (the backup zip) is imported only by the backup worker, so its
+      # code, found by its error strings, must be in that worker's chunk and nowhere else.
+      - name: fflate only in the backup worker chunk
+        run: |
+          found="$(grep -rlE 'invalid zip data|date not in range 1980-2099' app/dist | sort)"
+          echo "fflate found in: ${found:-nothing}"
+          if [ -z "$found" ] || echo "$found" | grep -vqE '^app/dist/assets/backup-worker-[^/]+\.js$'; then
+            echo "::error::fflate code found outside the backup worker chunk (or not in it)"
+            exit 1
+          fi
+
       # The test-only `test-panic` engine (sentinel panic) must never reach the production bundle;
       # its panic string would sit in the wasm data section.
       - name: No test-panic engine in the production bundle

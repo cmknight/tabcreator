@@ -2,7 +2,8 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { searchKey, type LibraryRow } from '../../src/model/library';
 import { announce } from '../../src/ui/a11y/announcer';
-import type { LibrarySnapshot } from '../../src/session/library-session';
+import type { BackupResult, LibrarySnapshot } from '../../src/session/library-session';
+import { downloadBlob } from '../../src/ui/platform';
 import { Library } from '../../src/ui/screens/Library';
 import { dismissToast, getToast } from '../../src/ui/toast';
 
@@ -11,18 +12,26 @@ import { dismissToast, getToast } from '../../src/ui/toast';
 
 afterEach(cleanup);
 
+vi.mock('../../src/ui/platform', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/ui/platform')>()),
+  downloadBlob: vi.fn(),
+}));
+
 vi.mock('../../src/ui/a11y/announcer', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/ui/a11y/announcer')>()),
   announce: vi.fn(),
 }));
 
-function fakeSession(snapshot: LibrarySnapshot) {
+/** A session with a fixed snapshot (`backup` null unless given) and spies for its writes. */
+function fakeSession(given: Omit<LibrarySnapshot, 'backup'> & Partial<LibrarySnapshot>) {
+  const snapshot: LibrarySnapshot = { backup: null, ...given };
   return {
     subscribe: () => () => {},
     getSnapshot: () => snapshot,
     rename: vi.fn(async () => {}),
     deleteTake: vi.fn(async () => {}),
     deleteAudio: vi.fn(async () => {}),
+    backUp: vi.fn(async (): Promise<BackupResult | null> => null),
   };
 }
 
@@ -393,7 +402,7 @@ describe('search', () => {
 
   /** A session whose snapshot can change, notifying the screen like library-session. */
   function liveSession(rows: LibraryRow[]) {
-    let snapshot: LibrarySnapshot = { loading: false, rows, error: null };
+    let snapshot: LibrarySnapshot = { loading: false, rows, error: null, backup: null };
     const listeners = new Set<() => void>();
     const session = {
       ...fakeSession(snapshot),
@@ -664,5 +673,146 @@ describe('search', () => {
       fireEvent.keyDown(input, { key: 'Enter' });
       expect(session.rename).toHaveBeenCalledWith('s3', 'Renamed');
     });
+  });
+});
+
+// Story "Back up the library" (6.5): the button, the progress bar, the download and the toasts.
+describe('Back up library', () => {
+  afterEach(() => {
+    dismissToast();
+    vi.mocked(downloadBlob).mockClear();
+    vi.mocked(announce).mockClear();
+  });
+
+  const button = () => screen.getByRole('button', { name: 'Back up library' });
+
+  it('is disabled with no takes (loading or empty) or only recording ones, enabled with takes', () => {
+    const view = render(
+      <Library session={fakeSession({ loading: true, rows: [], error: null })} />,
+    );
+    expect((button() as HTMLButtonElement).disabled).toBe(true);
+    view.rerender(<Library session={fakeSession({ loading: false, rows: [], error: null })} />);
+    expect((button() as HTMLButtonElement).disabled).toBe(true);
+    const recording: LibraryRow = { ...recorded, id: 'r', status: 'recording', opens: false };
+    view.rerender(
+      <Library session={fakeSession({ loading: false, rows: [recording], error: null })} />,
+    );
+    expect((button() as HTMLButtonElement).disabled).toBe(true);
+    view.rerender(
+      <Library
+        session={fakeSession({ loading: false, rows: [recording, recorded], error: null })}
+      />,
+    );
+    expect((button() as HTMLButtonElement).disabled).toBe(false);
+    expect(button().getAttribute('aria-disabled')).toBeNull();
+    expect(screen.queryByTestId('backup-progress')).toBeNull();
+  });
+
+  it('downloads the result through platform; no toast when nothing was missing', async () => {
+    const session = fakeSession({ loading: false, rows: [recorded], error: null });
+    const blob = new Blob(['zip']);
+    session.backUp.mockResolvedValueOnce({
+      blob,
+      fileName: 'tabcreator-backup-20261006.zip',
+      takes: 1,
+      missingAudio: 0,
+      unsupportedAudio: 0,
+    });
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    expect(session.backUp).toHaveBeenCalledTimes(1);
+    expect(downloadBlob).toHaveBeenCalledWith('tabcreator-backup-20261006.zip', blob);
+    expect(getToast()).toBeNull();
+    // Announced politely: the start, then how many takes were backed up.
+    expect(vi.mocked(announce).mock.calls).toEqual([['Backing up…'], ['Backed up 1 take']]);
+  });
+
+  it('unsupported audio formats: a toast with the count, with missing files too', async () => {
+    const session = fakeSession({ loading: false, rows: [recorded], error: null });
+    const result = {
+      blob: new Blob([]),
+      fileName: 'b.zip',
+      takes: 3,
+      missingAudio: 0,
+      unsupportedAudio: 2,
+    };
+    session.backUp.mockResolvedValueOnce(result);
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    expect(getToast()?.message).toBe('2 recordings in an unsupported format were left out');
+    session.backUp.mockResolvedValueOnce({ ...result, missingAudio: 1, unsupportedAudio: 1 });
+    await act(async () => fireEvent.click(button()));
+    expect(getToast()?.message).toBe(
+      'Backed up — 1 recording was missing · 1 recording in an unsupported format was left out',
+    );
+  });
+
+  it('missing audio files: a toast with the count', async () => {
+    const session = fakeSession({ loading: false, rows: [recorded], error: null });
+    session.backUp.mockResolvedValueOnce({
+      blob: new Blob([]),
+      fileName: 'b.zip',
+      takes: 3,
+      missingAudio: 2,
+      unsupportedAudio: 0,
+    });
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    expect(downloadBlob).toHaveBeenCalledTimes(1);
+    expect(getToast()?.message).toBe('Backed up — 2 recordings were missing');
+  });
+
+  it('a failure: a toast and an assertive announcement; nothing downloads', async () => {
+    const session = fakeSession({ loading: false, rows: [recorded], error: null });
+    session.backUp.mockRejectedValueOnce(new Error('worker'));
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    expect(downloadBlob).not.toHaveBeenCalled();
+    expect(getToast()?.message).toBe("Couldn't back up the library");
+    expect(announce).toHaveBeenCalledWith("Couldn't back up the library", 'assertive');
+  });
+
+  it('while a backup runs: "Backing up…" and the bar, the button disabled and a click ignored', () => {
+    const session = fakeSession({
+      loading: false,
+      rows: [recorded],
+      error: null,
+      backup: { progress: 0.46 },
+    });
+    render(<Library session={session} />);
+    const bar = screen.getByRole('progressbar', { name: 'Backing up…' });
+    expect(bar.getAttribute('aria-valuetext')).toBe('46%');
+    expect((bar as HTMLProgressElement).value).toBeCloseTo(0.46);
+    expect(screen.getByTestId('backup-progress').textContent).toContain('46%');
+    expect(button().getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(button());
+    expect(session.backUp).not.toHaveBeenCalled();
+    // No Cancel.
+    expect(screen.queryByRole('button', { name: /cancel/i })).toBeNull();
+  });
+
+  it('while a backup runs, the row menu items are disabled with the reason "Backing up…"', () => {
+    const analysed: LibraryRow = { ...recorded, id: 'a', status: 'analyzed', noteCount: 3 };
+    const session = fakeSession({
+      loading: false,
+      rows: [analysed],
+      error: null,
+      backup: { progress: 0.1 },
+    });
+    render(<Library session={session} />);
+    fireEvent.click(screen.getByRole('button', { name: `More actions for ${analysed.title}` }));
+    const items = screen.getAllByRole('menuitem');
+    expect(items.map((i) => i.textContent)).toEqual(['Rename', 'Delete audio only', 'Delete take']);
+    for (const item of items) {
+      expect(item.getAttribute('aria-disabled')).toBe('true');
+      const why = document.getElementById(item.getAttribute('aria-describedby')!);
+      expect(why?.textContent).toBe('Backing up…');
+      fireEvent.click(item);
+    }
+    // Nothing happened: no rename field, no dialog, the menu still open.
+    expect(screen.queryByRole('textbox', { name: 'Take title' })).toBeNull();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByRole('menu')).toBeTruthy();
+    expect(session.rename).not.toHaveBeenCalled();
   });
 });

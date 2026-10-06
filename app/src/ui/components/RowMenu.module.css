@@ -33,6 +33,11 @@
   cursor: pointer;
 }
 
+.item[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .item:hover {
   background: color-mix(in srgb, var(--color-primary) 6%, var(--color-surface));
 }

@@ -2,8 +2,9 @@
 // Library screen shows. Read it with useSyncExternalStore. Built from one read of every take,
 // every tab and every compressed file size, then kept live by storage events while it has
 // listeners. It reads only storage (AD-3). Story 6.2 adds its writes, as the `library-session`
-// writer (AD-14): rename, delete a take, delete a take's audio. Stories 6.3 (search), 6.5/6.6
-// (backup, restore) and 6.7 (storage states) build on this snapshot.
+// writer (AD-14): rename, delete a take, delete a take's audio. Story 6.5 adds the backup (one
+// at a time, its progress in the snapshot). Stories 6.3 (search), 6.6 (restore) and 6.7 (storage
+// states) build on this snapshot.
 
 import { libraryRow, pickSize, sortRows, withTitle, type LibraryRow } from '../model/library';
 import { isAppError, type AppErrorCode } from '../model/errors';
@@ -11,6 +12,7 @@ import { devWarn } from '../model/log';
 import { renamedTitle } from '../model/title';
 import type { Tab, Take, TakeWriter } from '../model/types';
 import { audioStore, type CompressedFile } from '../storage/audio-store';
+import { createBackup, type BackupResult } from '../storage/backup';
 import { db } from '../storage/db';
 import {
   subscribe as subscribeStorage,
@@ -27,7 +29,11 @@ export interface LibrarySnapshot {
   rows: LibraryRow[];
   /** The last full read failed (its AppError code); cleared by the next successful one. */
   error: AppErrorCode | null;
+  /** A backup is running, with its progress (0..1); null when none is. */
+  backup: { progress: number } | null;
 }
+
+export type { BackupResult } from '../storage/backup';
 
 export interface LibrarySession {
   /**
@@ -55,6 +61,13 @@ export interface LibrarySession {
    * `audioMime`. A failed read or patch rejects (logged) and no file is removed.
    */
   deleteAudio(id: string): Promise<void>;
+  /**
+   * Backs up the library (storage/backup.ts): the zip Blob and its file name, for the screen to
+   * download. One at a time: while one runs, another call does nothing and resolves to null.
+   * `backup` in the snapshot shows its progress, and is null again once it ends. A failure
+   * rejects (logged).
+   */
+  backUp(): Promise<BackupResult | null>;
 }
 
 export interface LibraryDeps {
@@ -76,6 +89,8 @@ export interface LibraryDeps {
   deleteAudio(takeId: string): Promise<void>;
   /** Removes the take's raw file. */
   deleteRaw(takeId: string): Promise<void>;
+  /** Builds the backup zip, reporting progress (0..1). */
+  createBackup(onProgress: (progress: number) => void): Promise<BackupResult>;
 }
 
 const WRITER = 'library-session';
@@ -83,7 +98,7 @@ const WRITER = 'library-session';
 const errorCode = (err: unknown): AppErrorCode => (isAppError(err) ? err.code : 'storage-failed');
 
 export function createLibrarySession(deps: LibraryDeps): LibrarySession {
-  let snapshot: LibrarySnapshot = { loading: true, rows: [], error: null };
+  let snapshot: LibrarySnapshot = { loading: true, rows: [], error: null, backup: null };
   const listeners = new Set<() => void>();
   let unsubscribeStorage: (() => void) | null = null;
   /** Bumped by every full read and every detach; a read whose generation is stale is dropped. */
@@ -145,7 +160,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
         ),
       ),
     );
-    publish({ loading: false, rows: sortRows(rows), error: null });
+    publish({ ...snapshot, loading: false, rows: sortRows(rows), error: null });
     refreshChanged();
   }
 
@@ -299,10 +314,34 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     });
   }
 
+  /** The running backup's number (0: none); a progress report from an ended run is dropped. */
+  let backupRun = 0;
+  let lastBackupRun = 0;
+
+  async function backUp(): Promise<BackupResult | null> {
+    if (backupRun !== 0) return null;
+    const run = ++lastBackupRun;
+    backupRun = run;
+    publish({ ...snapshot, backup: { progress: 0 } });
+    try {
+      return await deps.createBackup((progress) => {
+        if (backupRun !== run || snapshot.backup?.progress === progress) return;
+        publish({ ...snapshot, backup: { progress } });
+      });
+    } catch (err) {
+      devWarn('Library: backing up failed', err);
+      throw err;
+    } finally {
+      backupRun = 0;
+      publish({ ...snapshot, backup: null });
+    }
+  }
+
   return {
     rename,
     deleteTake,
     deleteAudio,
+    backUp,
     subscribe(listener) {
       listeners.add(listener);
       if (listeners.size === 1 && !unsubscribeStorage) attach();
@@ -327,4 +366,6 @@ export const librarySession: LibrarySession = createLibrarySession({
   deleteTake: (id, writer) => db.deleteTake(id, writer),
   deleteAudio: (id) => audioStore.deleteAudio(id),
   deleteRaw: (id) => audioStore.deleteRaw(id),
+  createBackup: (onProgress) =>
+    createBackup({ listTakes: () => db.listTakes(), listTabs: () => db.listTabs() }, onProgress),
 });

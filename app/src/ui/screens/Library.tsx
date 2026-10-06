@@ -18,6 +18,15 @@
 // the gaps held by margins and padding, so scrolling reaches every row (CAP-17). Unrendered rows
 // are not in the DOM, so find-in-page and a screen reader's virtual cursor do not reach them:
 // the search field is the way to find a take in a long library.
+//
+// Story "Back up the library" (US-7.3; EXPERIENCE.md :85, mockup library.html (f·1)): Back up
+// library, beside the search, builds the backup zip through library-session (in a worker) while
+// "Backing up…" and a progress bar show under the header; then the browser downloads
+// `tabcreator-backup-YYYYMMDD.zip` (ui/platform.ts). The button is disabled unless a take not
+// still recording exists, and while a backup runs; there is no Cancel. Meanwhile the row menus'
+// Rename and deletes are disabled ("Backing up…"). The start and the takes backed up are
+// announced politely; missing or unsupported audio and a failure are toasts, the failure also
+// announced assertively.
 
 import {
   useCallback,
@@ -42,6 +51,7 @@ import { announce } from '../a11y/announcer';
 import buttons from '../components/buttons.module.css';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import {
+  BackupIcon,
   CheckIcon,
   DeleteIcon,
   ErrorIcon,
@@ -52,6 +62,7 @@ import {
 } from '../components/icons';
 import { RowMenu, type RowMenuItem } from '../components/RowMenu';
 import { formatElapsed, formatTakeDate } from '../format';
+import { downloadBlob } from '../platform';
 import { routeToHash } from '../router';
 import { strings } from '../strings';
 import { showToast } from '../toast';
@@ -206,6 +217,7 @@ function Row({
   size,
   gapPx,
   actions,
+  backingUp,
   onRowGone,
   onBusy,
 }: {
@@ -216,6 +228,8 @@ function Row({
   /** The virtual list's space before the row, for the unrendered rows above it (0: none). */
   gapPx: number;
   actions: RowActions;
+  /** A backup is running: the menu's writes are disabled until it ends. */
+  backingUp: boolean;
   /** The row is going while focus is inside it (its take was deleted). */
   onRowGone(): void;
   /** The row's menu, a dialog or its rename opened (true) or closed (false): keep it rendered. */
@@ -288,6 +302,10 @@ function Row({
     danger: true,
     separated: true,
   });
+  // No write while a backup reads the library (the zip would not match what the player sees).
+  if (backingUp) {
+    for (const item of items) item.disabledReason = strings['library.backingUp'];
+  }
 
   function choose(id: string) {
     if (id === 'rename') setEditing(true);
@@ -410,10 +428,12 @@ export const ANNOUNCE_AFTER_MS = 500;
 function RowList({
   rows,
   actions,
+  backingUp,
   onRowGone,
 }: {
   rows: readonly LibraryRow[];
   actions: RowActions;
+  backingUp: boolean;
   onRowGone(): void;
 }) {
   const n = rows.length;
@@ -536,6 +556,7 @@ function RowList({
             size={n}
             gapPx={virtual ? before * rowPx : 0}
             actions={actions}
+            backingUp={backingUp}
             onRowGone={onRowGone}
             onBusy={onBusy}
           />
@@ -550,10 +571,13 @@ export function Library({
 }: {
   session?: Pick<
     LibrarySession,
-    'subscribe' | 'getSnapshot' | 'rename' | 'deleteTake' | 'deleteAudio'
+    'subscribe' | 'getSnapshot' | 'rename' | 'deleteTake' | 'deleteAudio' | 'backUp'
   >;
 } = {}) {
-  const { loading, rows, error } = useSyncExternalStore(session.subscribe, session.getSnapshot);
+  const { loading, rows, error, backup } = useSyncExternalStore(
+    session.subscribe,
+    session.getSnapshot,
+  );
   const heading = useRef<HTMLHeadingElement>(null);
   const focusHeading = useCallback(() => heading.current?.focus(), []);
   const search = useRef<HTMLInputElement>(null);
@@ -602,9 +626,44 @@ export function Library({
     dropAnnouncement();
   }, [empty, focusHeading]);
 
+  // Only takes that are not still recording are backed up.
+  const canBackUp = rows.some((r) => r.status !== 'recording');
+  const backUp = () => {
+    if (!canBackUp || backup) return;
+    announce(strings['library.backingUp']);
+    session.backUp().then(
+      (result) => {
+        if (!result) return;
+        downloadBlob(result.fileName, result.blob);
+        announce(strings['library.backedUp'](result.takes));
+        const notes: string[] = [];
+        if (result.missingAudio > 0)
+          notes.push(strings['library.backupMissing'](result.missingAudio));
+        if (result.unsupportedAudio > 0) {
+          notes.push(strings['library.backupUnsupported'](result.unsupportedAudio));
+        }
+        if (notes.length > 0) showToast({ message: notes.join(' · ') });
+      },
+      () => {
+        // The session logged the error and cleared its backup state.
+        showToast({ message: strings['library.backupFailed'] });
+        announce(strings['library.backupFailed'], 'assertive');
+      },
+    );
+  };
+  const backupPercent =
+    backup && strings['library.backupPercent'](Math.floor(backup.progress * 100 + 1e-9));
+
   let body: ReactNode = null;
   if (shown.length > 0) {
-    body = <RowList rows={shown} actions={session} onRowGone={focusHeading} />;
+    body = (
+      <RowList
+        rows={shown}
+        actions={session}
+        backingUp={backup !== null}
+        onRowGone={focusHeading}
+      />
+    );
   } else if (rows.length > 0) {
     body = (
       <div className={libraryStyles.empty}>
@@ -657,7 +716,37 @@ export function Library({
             onChange={(e) => changeQuery(e.currentTarget.value)}
           />
         </div>
+        <span className={libraryStyles.grow} />
+        {/* Native disabled with nothing to back up (no take but recording ones); aria-disabled
+            while a backup runs, so focus stays. */}
+        <button
+          type="button"
+          className={`${buttons.secondary} ${libraryStyles.backup}`}
+          disabled={!canBackUp}
+          aria-disabled={backup !== null || undefined}
+          onClick={backUp}
+        >
+          <BackupIcon className={buttons.icon} />
+          {strings['library.backUp']}
+        </button>
       </div>
+      {backup && (
+        <div className={libraryStyles.progressPanel} data-testid="backup-progress">
+          <label className={libraryStyles.progressLabel} htmlFor="library-backup-progress">
+            {strings['library.backingUp']}
+          </label>
+          <div className={libraryStyles.progressRow}>
+            <progress
+              id="library-backup-progress"
+              className={libraryStyles.progress}
+              max={1}
+              value={backup.progress}
+              aria-valuetext={backupPercent ?? undefined}
+            />
+            <span className={libraryStyles.percent}>{backupPercent}</span>
+          </div>
+        </div>
+      )}
       {error && (
         <p className={libraryStyles.error} role="alert">
           <ErrorIcon className={libraryStyles.errorIcon} />
