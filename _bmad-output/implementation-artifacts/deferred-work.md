@@ -50,3 +50,6 @@
   summary: EXPERIENCE.md does not yet carry story 8.7's trim copy — handle names and times ("Trim start 0:02.00"), "Loading waveform…", "Couldn't load the waveform", "Trimmed: n notes", "Trim reset: n notes", "Trim cancelled", "Trim failed — try again", "Busy trimming", "Busy re-analysing", "Trim and re-analyse", "Undo trim" — owner: UX owner.
   evidence: Strings in app/src/ui/strings.ts.
 - resolved: DS2 (recovered take metadata from the compressed copy) — fixed in epic Library and export, story 8 (`story-recovered-take-metadata-from-its-compressed-copy-ds2-plan.md`), 2026-10-06.
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-library-and-export/story-rename-delete-take-and-delete-audio-plan.md`
+  summary: EXPERIENCE.md does not yet carry story 6.2's copy — the Delete audio dialog ("Delete the audio of "<title>"?", "Its recording is removed from this computer; the tab stays. This can't be undone.", "Delete audio"), the row menu labels ("More actions for <title>", "Actions for <title>"), and the failure toasts ("Couldn't rename the take", "Couldn't delete the take", "Couldn't delete the audio"); also the Delete take body is literally false for a take with no tab or no audio — owner: UX owner.
+  evidence: Strings in app/src/ui/strings.ts.

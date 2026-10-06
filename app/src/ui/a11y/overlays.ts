@@ -23,6 +23,16 @@ export interface OverlayOptions {
   /** Focused on open (default: the first focusable element inside, else the overlay). */
   initialFocus?: HTMLElement | null;
   /**
+   * The button that opened it and closes it again (a menu's trigger): a pointer-down on it does
+   * not dismiss, so its own click can close the overlay instead of reopening it.
+   */
+  toggle?: HTMLElement | null;
+  /**
+   * Whether Tab and Shift+Tab are trapped inside (default true). A menu passes false and handles
+   * Tab itself (WAI-ARIA: Tab closes the menu and focus moves on).
+   */
+  trapTab?: boolean;
+  /**
    * Called on Esc, on a pointer-down outside, and when another overlay opens: the owner closes
    * the overlay (and releases it).
    */
@@ -82,7 +92,7 @@ export function openOverlay(options: OverlayOptions): () => void {
       options.onDismiss();
       return;
     }
-    if (event.key !== 'Tab') return;
+    if (event.key !== 'Tab' || options.trapTab === false) return;
     const items = focusables(element);
     if (items.length === 0) {
       event.preventDefault();
@@ -103,7 +113,9 @@ export function openOverlay(options: OverlayOptions): () => void {
   };
   const onPointerDown = (event: Event) => {
     const target = event.target;
-    if (target instanceof Node && element.contains(target)) return;
+    if (target instanceof Node && (element.contains(target) || options.toggle?.contains(target))) {
+      return;
+    }
     options.onDismiss();
   };
   doc.addEventListener('keydown', onKeyDown, true);

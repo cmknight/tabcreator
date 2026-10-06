@@ -97,6 +97,7 @@ import {
   type SnapshotLabel,
 } from '../model/edit-history';
 import { devWarn } from '../model/log';
+import { renamedTitle } from '../model/title';
 import { playedOrder, visibleNotes, type TrimRange } from '../model/notes';
 import {
   clampMs,
@@ -377,14 +378,7 @@ export interface TakeSession {
   cancelReanalysis(): void;
 }
 
-/** The longest take title, in characters. */
-export const TITLE_MAX = 100;
-
-/** `title` cut to `TITLE_MAX` code points, so a surrogate pair (an emoji) is never split. */
-export function capTitle(title: string): string {
-  const points = Array.from(title);
-  return points.length <= TITLE_MAX ? title : points.slice(0, TITLE_MAX).join('');
-}
+export { capTitle, TITLE_MAX } from '../model/title';
 
 const WRITER = 'take-session';
 
@@ -405,6 +399,11 @@ const unsavedSessions = new Set<object>();
  * `take-deleted`, and by a new analysis. Not counted as busy, as analysis's held result is not.
  */
 const heldTabs = new Map<string, Tab>();
+// A take deleted while no session for it is open (from the Library, story 6.2) drops its held
+// edit too: one module-level listener, not one per session.
+subscribeStorage((event) => {
+  if (event.type === 'take-deleted') heldTabs.delete(event.takeId);
+});
 /** Whether any take session holds an unsaved edit (app-reload.ts's busy check). */
 export function hasUnsavedEdits(): boolean {
   return unsavedSessions.size > 0;
@@ -762,8 +761,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   async function rename(raw: string) {
     const take = snapshot.take;
     if (!take || snapshot.missing) return;
-    const title = capTitle(raw.trim()).trim();
-    if (title === '' || title === take.title) return;
+    const title = renamedTitle(raw, take.title);
+    if (title === null) return;
     storedTitle ??= take.title;
     const seq = ++renameSeq;
     pendingTitle = title;

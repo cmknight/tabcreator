@@ -44,6 +44,8 @@ function fakeLibrary() {
   const takes = new Map<string, Take>();
   const tabs = new Map<string, Tab>();
   const sizes = new Map<string, number>();
+  /** Takes with a raw file. */
+  const raw = new Set<string>();
   const listeners = new Set<StorageListener>();
   const deps: LibraryDeps = {
     listTakes: vi.fn(async () =>
@@ -62,6 +64,28 @@ function fakeLibrary() {
         listeners.delete(l);
       };
     }),
+    // Writes, as storage/db.ts does them: the record, then its event.
+    patchTake: vi.fn(async (id: string, patch: Partial<Take>, writer) => {
+      const take = takes.get(id);
+      if (!take) throw new AppError('storage-failed', 'no take');
+      const next = { ...take, ...patch };
+      takes.set(id, next);
+      emit({ type: 'take-put', takeId: id, writer });
+      return next;
+    }),
+    deleteTake: vi.fn(async (id: string, writer) => {
+      const existed = takes.delete(id);
+      tabs.delete(id);
+      if (existed) emit({ type: 'take-deleted', takeId: id, writer });
+      sizes.delete(id);
+      raw.delete(id);
+    }),
+    deleteAudio: vi.fn(async (id: string) => {
+      sizes.delete(id);
+    }),
+    deleteRaw: vi.fn(async (id: string) => {
+      raw.delete(id);
+    }),
   };
   const add = (take: Take, noteCount: number | null, size: number | null) => {
     takes.set(take.id, take);
@@ -75,10 +99,10 @@ function fakeLibrary() {
     }
     if (size !== null) sizes.set(take.id, size);
   };
-  const emit = (event: StorageEvent) => {
+  function emit(event: StorageEvent) {
     for (const l of [...listeners]) l(event);
-  };
-  return { takes, tabs, sizes, deps, add, emit, listeners };
+  }
+  return { takes, tabs, sizes, raw, deps, add, emit, listeners };
 }
 
 const T1 = '2026-09-27T10:00:00.000Z';
@@ -339,5 +363,214 @@ describe('library session', () => {
     await flush();
     expect(listener).not.toHaveBeenCalled();
     expect(session.getSnapshot().rows).toEqual([]);
+  });
+});
+
+// Story "Rename, delete take and delete audio" (6.2): the writes, as the library-session writer.
+describe('library session writes', () => {
+  async function loaded() {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1, { title: 'Old' }), 5, 100);
+    lib.add(makeTake('b', T2), 3, 200);
+    lib.raw.add('a');
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    return { lib, session };
+  }
+  const titleOf = (session: ReturnType<typeof createLibrarySession>, id: string) =>
+    session.getSnapshot().rows.find((r) => r.id === id)?.title;
+
+  it('rename: trimmed, shown at once, stored as library-session', async () => {
+    const { lib, session } = await loaded();
+    const done = session.rename('a', '  Blues  ');
+    expect(titleOf(session, 'a')).toBe('Blues');
+    await done;
+    await flush();
+    expect(lib.deps.patchTake).toHaveBeenCalledWith('a', { title: 'Blues' }, 'library-session');
+    expect(lib.takes.get('a')!.title).toBe('Blues');
+    expect(titleOf(session, 'a')).toBe('Blues');
+  });
+
+  it('rename: capped at TITLE_MAX code points', async () => {
+    const { lib, session } = await loaded();
+    await session.rename('a', 'x'.repeat(150));
+    expect(lib.deps.patchTake).toHaveBeenCalledWith(
+      'a',
+      { title: 'x'.repeat(100) },
+      'library-session',
+    );
+  });
+
+  it('rename: empty, blank or unchanged writes nothing', async () => {
+    const { lib, session } = await loaded();
+    await session.rename('a', '');
+    await session.rename('a', '   ');
+    await session.rename('a', ' Old ');
+    expect(lib.deps.patchTake).not.toHaveBeenCalled();
+    expect(titleOf(session, 'a')).toBe('Old');
+  });
+
+  it('rename: a failed write rejects, and the row re-reads the stored title', async () => {
+    const { lib, session } = await loaded();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const write = deferred<Take>();
+    vi.mocked(lib.deps.patchTake).mockReturnValueOnce(write.promise);
+    const done = session.rename('a', 'Blues');
+    expect(titleOf(session, 'a')).toBe('Blues');
+    write.reject(new AppError('storage-full', 'quota'));
+    await expect(done).rejects.toMatchObject({ code: 'storage-full' });
+    await flush();
+    expect(lib.deps.getTake).toHaveBeenCalledWith('a');
+    expect(titleOf(session, 'a')).toBe('Old');
+    warn.mockRestore();
+  });
+
+  it('rename A then B: A failing leaves B shown', async () => {
+    const { lib, session } = await loaded();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const a = deferred<Take>();
+    const b = deferred<Take>();
+    vi.mocked(lib.deps.patchTake).mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise);
+    const first = session.rename('a', 'A');
+    const second = session.rename('a', 'B');
+    expect(titleOf(session, 'a')).toBe('B');
+    a.reject(new AppError('storage-full', 'q'));
+    await expect(first).rejects.toMatchObject({ code: 'storage-full' });
+    await flush();
+    expect(titleOf(session, 'a')).toBe('B');
+    lib.takes.set('a', { ...lib.takes.get('a')!, title: 'B' });
+    b.resolve(lib.takes.get('a')!);
+    await second;
+    expect(titleOf(session, 'a')).toBe('B');
+    warn.mockRestore();
+  });
+
+  it('rename A then B: B failing while A is still pending re-reads the stored title', async () => {
+    const { lib, session } = await loaded();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const a = deferred<Take>();
+    const b = deferred<Take>();
+    vi.mocked(lib.deps.patchTake).mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise);
+    const first = session.rename('a', 'A');
+    const second = session.rename('a', 'B');
+    b.reject(new AppError('storage-full', 'q'));
+    await expect(second).rejects.toMatchObject({ code: 'storage-full' });
+    await flush();
+    expect(titleOf(session, 'a')).toBe('Old'); // what storage holds now
+    a.resolve(lib.takes.get('a')!);
+    await first;
+    warn.mockRestore();
+  });
+
+  it('rename mid-write survives a library-restored full read', async () => {
+    const { lib, session } = await loaded();
+    const write = deferred<Take>();
+    vi.mocked(lib.deps.patchTake).mockReturnValueOnce(write.promise);
+    const done = session.rename('a', 'Blues');
+    lib.emit({ type: 'library-restored', count: 2, writer: 'restore' });
+    await flush();
+    expect(lib.deps.listTakes).toHaveBeenCalledTimes(2);
+    expect(titleOf(session, 'a')).toBe('Blues');
+    lib.takes.set('a', { ...lib.takes.get('a')!, title: 'Blues' });
+    write.resolve(lib.takes.get('a')!);
+    await done;
+    expect(titleOf(session, 'a')).toBe('Blues');
+  });
+
+  it('rename: a refresh landing mid-write keeps the new title shown', async () => {
+    const { lib, session } = await loaded();
+    const write = deferred<Take>();
+    vi.mocked(lib.deps.patchTake).mockReturnValueOnce(write.promise);
+    const done = session.rename('a', 'Blues');
+    lib.emit({ type: 'tab-put', takeId: 'a', writer: 'take-session' }); // re-reads "Old"
+    await flush();
+    expect(titleOf(session, 'a')).toBe('Blues');
+    lib.takes.set('a', { ...lib.takes.get('a')!, title: 'Blues' });
+    write.resolve(lib.takes.get('a')!);
+    await done;
+    expect(titleOf(session, 'a')).toBe('Blues');
+  });
+
+  it('deleteTake: the take, its tab and its files go; the row goes with the event', async () => {
+    const { lib, session } = await loaded();
+    await session.deleteTake('a');
+    expect(lib.deps.deleteTake).toHaveBeenCalledWith('a', 'library-session');
+    expect(lib.takes.has('a')).toBe(false);
+    expect(lib.tabs.has('a')).toBe(false);
+    expect(session.getSnapshot().rows.map((r) => r.id)).toEqual(['b']);
+  });
+
+  it('deleteTake: a failure rejects (logged) and the row stays', async () => {
+    const { lib, session } = await loaded();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(lib.deps.deleteTake).mockRejectedValueOnce(new AppError('storage-failed', 'x'));
+    await expect(session.deleteTake('a')).rejects.toMatchObject({ code: 'storage-failed' });
+    expect(session.getSnapshot().rows.map((r) => r.id)).toEqual(['b', 'a']);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('deleteAudio: audioMime null first, then every file; the tab stays; the row shows Audio deleted', async () => {
+    const { lib, session } = await loaded();
+    const order: string[] = [];
+    vi.mocked(lib.deps.patchTake).mockImplementationOnce(async (id, patch, writer) => {
+      order.push('patchTake');
+      const next = { ...lib.takes.get(id)!, ...patch };
+      lib.takes.set(id, next);
+      lib.emit({ type: 'take-put', takeId: id, writer });
+      return next;
+    });
+    vi.mocked(lib.deps.deleteAudio).mockImplementationOnce(async (id) => {
+      order.push('deleteAudio');
+      lib.sizes.delete(id);
+    });
+    vi.mocked(lib.deps.deleteRaw).mockImplementationOnce(async (id) => {
+      order.push('deleteRaw');
+      lib.raw.delete(id);
+    });
+    await session.deleteAudio('a');
+    await flush();
+    expect(order).toEqual(['patchTake', 'deleteAudio', 'deleteRaw']);
+    expect(lib.deps.patchTake).toHaveBeenCalledWith('a', { audioMime: null }, 'library-session');
+    expect(lib.sizes.has('a')).toBe(false);
+    expect(lib.raw.has('a')).toBe(false);
+    expect(lib.tabs.has('a')).toBe(true);
+    expect(session.getSnapshot().rows.find((r) => r.id === 'a')).toMatchObject({
+      audioDeleted: true,
+      sizeBytes: null,
+      noteCount: 5,
+    });
+  });
+
+  it('deleteAudio: does nothing unless the take is analysed and still has audio', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('r', T1, { status: 'recorded', analysisVersion: null }), null, 100);
+    lib.add(makeTake('g', T2, { audioMime: null }), 3, null);
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    await session.deleteAudio('r');
+    await session.deleteAudio('g');
+    await session.deleteAudio('missing');
+    expect(lib.deps.patchTake).not.toHaveBeenCalled();
+    expect(lib.deps.deleteAudio).not.toHaveBeenCalled();
+    expect(lib.deps.deleteRaw).not.toHaveBeenCalled();
+    expect(lib.sizes.has('r')).toBe(true);
+  });
+
+  it('deleteAudio: file removal is best-effort; a failed patch removes no file', async () => {
+    const { lib, session } = await loaded();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(lib.deps.deleteAudio).mockRejectedValueOnce(new Error('opfs'));
+    await session.deleteAudio('a');
+    expect(lib.deps.deleteRaw).toHaveBeenCalledWith('a');
+    expect(lib.takes.get('a')!.audioMime).toBeNull();
+
+    vi.mocked(lib.deps.patchTake).mockRejectedValueOnce(new AppError('storage-full', 'q'));
+    await expect(session.deleteAudio('b')).rejects.toMatchObject({ code: 'storage-full' });
+    expect(lib.deps.deleteAudio).toHaveBeenCalledTimes(1);
+    expect(lib.sizes.has('b')).toBe(true);
+    warn.mockRestore();
   });
 });

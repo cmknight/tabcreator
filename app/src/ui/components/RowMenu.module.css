@@ -1,0 +1,66 @@
+/* The Library row menu (DESIGN.md components.menu; mockup library.html .menu): a surface panel
+   with a hairline border and the popover's soft shadow, fixed over the page at its button. */
+.menu {
+  position: fixed;
+  z-index: 5;
+  box-sizing: border-box;
+  min-inline-size: 220px;
+  max-inline-size: calc(100vw - 2 * var(--space-gutter));
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px var(--color-scrim);
+}
+
+.item {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  box-sizing: border-box;
+  inline-size: 100%;
+  height: 36px;
+  padding: 0 var(--space-3);
+  background: none;
+  color: var(--color-text);
+  font: var(--font-ui);
+  text-align: start;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.item:hover {
+  background: color-mix(in srgb, var(--color-primary) 6%, var(--color-surface));
+}
+
+.item:focus-visible {
+  outline-offset: -2px;
+}
+
+.item svg {
+  flex: none;
+  inline-size: 16px;
+  block-size: 16px;
+}
+
+.danger {
+  color: var(--color-danger);
+}
+
+.danger:hover {
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
+}
+
+.danger:focus-visible {
+  outline-color: var(--color-danger);
+}
+
+.separator {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--color-border);
+}

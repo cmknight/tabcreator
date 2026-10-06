@@ -479,6 +479,28 @@ export const strings = {
   'library.loading': 'Loading takes…',
   /** A full read of the library failed. */
   'library.loadFailed': "Couldn't load your takes — reload the page to try again",
+  /** The row menu (story 6.2; EXPERIENCE.md Library, mockup library.html). */
+  'library.more': (title: string) => `More actions for ${title}`,
+  'library.menu': (title: string) => `Actions for ${title}`,
+  'library.rename': 'Rename',
+  'library.deleteAudio': 'Delete audio only',
+  'library.deleteTake': 'Delete take',
+  /** The inline rename field. */
+  'library.titleField': 'Take title',
+  /** The Delete take dialog (EXPERIENCE.md :88). */
+  'library.deleteTakeTitle': (title: string) => `Delete "${title}"?`,
+  'library.deleteTakeBody':
+    "Its tab and recording are removed from this computer. This can't be undone.",
+  'library.deleteTakeConfirm': 'Delete take',
+  /** The Delete audio only dialog. */
+  'library.deleteAudioTitle': (title: string) => `Delete the audio of "${title}"?`,
+  'library.deleteAudioBody':
+    "Its recording is removed from this computer; the tab stays. This can't be undone.",
+  'library.deleteAudioConfirm': 'Delete audio',
+  /** A row action's write failed (a toast). */
+  'library.renameFailed': "Couldn't rename the take",
+  'library.deleteTakeFailed': "Couldn't delete the take",
+  'library.deleteAudioFailed': "Couldn't delete the audio",
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */
   'tuner.stringLetter': (string: StringNo) =>

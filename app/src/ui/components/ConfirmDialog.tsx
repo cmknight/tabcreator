@@ -3,13 +3,16 @@
 // with a title, a body and two buttons, Cancel (first, focused on open) and the confirm action
 // (secondary, never the default). Focus, the Tab trap and dismissal belong to
 // `ui/a11y/overlays.ts`: Esc and a pointer-down on the scrim cancel, and focus returns to the
-// opener on close. Reusable (the Library's deletes).
+// opener on close. Reusable (the Library's deletes). `danger` gives the confirm button the danger
+// style with the delete icon (DESIGN.md: danger always with icon and text); it is still never the
+// default, and Cancel stays first and focused.
 
 import { useId, useLayoutEffect, useRef } from 'react';
 import { openOverlay } from '../a11y/overlays';
 import { strings } from '../strings';
 import buttons from './buttons.module.css';
 import styles from './ConfirmDialog.module.css';
+import { DeleteIcon } from './icons';
 
 export interface ConfirmDialogProps {
   title: string;
@@ -23,6 +26,8 @@ export interface ConfirmDialogProps {
    * asked at close, so it can pick the opener's replacement.
    */
   opener?: HTMLElement | null | (() => HTMLElement | null);
+  /** A destructive action: the confirm button in the danger style, with the delete icon. */
+  danger?: boolean;
 }
 
 export function ConfirmDialog({
@@ -32,6 +37,7 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   opener,
+  danger = false,
 }: ConfirmDialogProps) {
   const ref = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -81,7 +87,12 @@ export function ConfirmDialog({
           <button ref={cancelRef} type="button" className={buttons.secondary} onClick={onCancel}>
             {strings['global.cancel']}
           </button>
-          <button type="button" className={buttons.secondary} onClick={onConfirm}>
+          <button
+            type="button"
+            className={danger ? `${buttons.secondary} ${buttons.danger}` : buttons.secondary}
+            onClick={onConfirm}
+          >
+            {danger && <DeleteIcon className={buttons.icon} />}
             {confirmLabel}
           </button>
         </div>

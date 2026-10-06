@@ -15,7 +15,11 @@ import {
   setActiveTakeSession,
   type TakeSessionDeps,
 } from '../../src/session/take-session';
-import type { StorageEvent, StorageListener } from '../../src/storage/events';
+import {
+  emit as emitStorage,
+  type StorageEvent,
+  type StorageListener,
+} from '../../src/storage/events';
 import { deferred } from './helpers';
 
 // Story 5.6 (spine AD-3, AD-5, AD-16): the take session against mocked storage and analysis.
@@ -1366,6 +1370,29 @@ describe('take session edits', () => {
     const second = await open();
     expect(second.session.getSnapshot().saveFailed).toBeNull();
     expect(second.session.getSnapshot().tab).toEqual(TAB5);
+  });
+
+  it('a held edit is dropped when the take is deleted from the Library with no session open', async () => {
+    const first = await open();
+    vi.mocked(first.h.deps.putTab).mockRejectedValue(new AppError('storage-full', 'quota'));
+    await first.session.setFret('b', 5);
+    await tick(300);
+    first.session.dispose(); // held past the session
+    await tick(0);
+    // Through the app's event bus: no session listens for it now.
+    emitStorage({ type: 'take-deleted', takeId: 'other', writer: 'library-session' });
+    const kept = await open();
+    expect(kept.session.getSnapshot().saveFailed).toBe('storage-full');
+    vi.mocked(kept.h.deps.putTab).mockRejectedValue(new AppError('storage-full', 'quota'));
+    kept.session.dispose(); // still held
+    await tick(0);
+    emitStorage({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    const second = await open();
+    expect(second.session.getSnapshot().saveFailed).toBeNull();
+    expect(second.session.getSnapshot().tab).toEqual(TAB5);
+    // The disposed sessions' later flushes (afterEach) succeed, so nothing is held past the test.
+    vi.mocked(first.h.deps.putTab).mockImplementation(async (t) => t);
+    vi.mocked(kept.h.deps.putTab).mockImplementation(async (t) => t);
   });
 
   it('a save that throws does not stop later saves', async () => {

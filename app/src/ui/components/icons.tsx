@@ -228,3 +228,30 @@ export function CheckIcon({ className }: { className?: string | undefined }) {
     </svg>
   );
 }
+
+/** More (three dots): the Library row's "⋯" menu button (the mockup's `i-more`). */
+export function MoreIcon({ className }: { className?: string | undefined }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="5" cy="12" r="2" fill="currentColor" />
+      <circle cx="12" cy="12" r="2" fill="currentColor" />
+      <circle cx="19" cy="12" r="2" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** Mute (a crossed-out speaker): the Library row menu's Delete audio only (the mockup's `i-mute`). */
+export function MuteIcon({ className }: { className?: string | undefined }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M4 9h4l5-4v14l-5-4H4z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path d="M16 9l5 6M21 9l-5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}

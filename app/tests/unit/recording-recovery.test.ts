@@ -195,7 +195,7 @@ describe('recovery scan', () => {
     const t = setup({
       takes: new Map([
         ['r', take('r', { status: 'recorded' })],
-        ['z', take('z', { status: 'analyzed' })],
+        ['z', take('z', { status: 'analyzed', audioMime: 'audio/webm;codecs=opus' })],
       ]),
       raw: new Map([
         ['r', seconds(3)],
@@ -207,6 +207,25 @@ describe('recovery scan', () => {
     expect(t.log).toEqual([]);
     expect(t.published()).toEqual([]);
     expect(t.raw.size).toBe(2);
+  });
+
+  it('an analysed take whose audio was deleted (story 6.2): its leftover files go; its record stays', async () => {
+    const t = setup({
+      takes: new Map([
+        ['gone', take('gone', { status: 'analyzed', audioMime: null })],
+        ['kept', take('kept', { status: 'recorded', audioMime: null })],
+      ]),
+      raw: new Map([
+        ['gone', seconds(3)],
+        ['kept', seconds(3)],
+      ]),
+      audio: new Map([['gone', new Blob(['a'], { type: 'audio/webm;codecs=opus' })]]),
+    });
+    await t.recovery.scan();
+    expect(t.log).toEqual(['deleteRaw gone', 'deleteAudio gone']);
+    expect([...t.raw.keys()]).toEqual(['kept']);
+    expect(t.audio.size).toBe(0);
+    expect(t.published()).toEqual([]);
   });
 
   it("own take: this tab's take is never offered, deleted or stripped of its files", async () => {

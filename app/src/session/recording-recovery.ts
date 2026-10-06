@@ -3,8 +3,10 @@
 //
 // `scan()` runs once the instance lock is held (instance-lock.ts's `onHeld`, after the handover
 // window): it removes, best-effort and silently, raw and compressed files whose take does not
-// exist and unfinished takes (`status === 'recording'`) with under `MIN_TAKE_MS` of raw audio;
-// every other unfinished take is offered, oldest first. This tab's own take is never touched.
+// exist, the files of an analysed take whose audio was deleted (`audioMime` null: a Library
+// "Delete audio only" whose best-effort file removal failed, story 6.2), and unfinished takes
+// (`status === 'recording'`) with under `MIN_TAKE_MS` of raw audio; every other unfinished take
+// is offered, oldest first. This tab's own take is never touched.
 //
 // `open(id)` rebuilds an offered take: compressed audio already saved is kept (never
 // overwritten), else the raw file is re-encoded (falling back to WAV); then the take is patched
@@ -125,6 +127,13 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
     return (await deps.getTake(id)) === null;
   }
 
+  /** An analysed take whose audio was deleted (re-read just before the delete, not this tab's). */
+  async function audioDeleted(id: string): Promise<boolean> {
+    if (id === host.activeTakeId()) return false;
+    const take = await deps.getTake(id);
+    return take?.status === 'analyzed' && take.audioMime === null;
+  }
+
   /**
    * An unfinished take, not this tab's (`own`): offered with its raw length, or deleted (after a
    * re-read) when too short; null when it is not offered.
@@ -187,18 +196,22 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
     noteOwn(own);
     const known = new Set(takes.map((t) => t.id));
 
+    // Analysed takes whose audio was deleted: any file left of theirs goes too.
+    const noAudio = new Set(
+      takes.filter((t) => t.status === 'analyzed' && t.audioMime === null).map((t) => t.id),
+    );
     const raws = await deps.listRaw().catch(() => [] as string[]);
     for (const id of raws) {
-      if (known.has(id)) continue;
+      if (known.has(id) && !noAudio.has(id)) continue;
       await quietly(async () => {
-        if (await orphan(id)) await deps.deleteRaw(id);
+        if (known.has(id) ? await audioDeleted(id) : await orphan(id)) await deps.deleteRaw(id);
       });
     }
     const compressed = await deps.listCompressed().catch(() => [] as CompressedFile[]);
     for (const id of new Set(compressed.map((f) => f.id))) {
-      if (known.has(id)) continue;
+      if (known.has(id) && !noAudio.has(id)) continue;
       await quietly(async () => {
-        if (await orphan(id)) await deps.deleteAudio(id);
+        if (known.has(id) ? await audioDeleted(id) : await orphan(id)) await deps.deleteAudio(id);
       });
     }
 

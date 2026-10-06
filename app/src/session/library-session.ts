@@ -1,13 +1,15 @@
 // Library store (spine AD-3, AD-5; story "Library list (tracer)", US-7.1): the take list the
 // Library screen shows. Read it with useSyncExternalStore. Built from one read of every take,
 // every tab and every compressed file size, then kept live by storage events while it has
-// listeners. It reads only storage (AD-3) and writes nothing yet; stories 6.2 (row actions),
-// 6.3 (search), 6.5/6.6 (backup, restore) and 6.7 (storage states) build on this snapshot.
+// listeners. It reads only storage (AD-3). Story 6.2 adds its writes, as the `library-session`
+// writer (AD-14): rename, delete a take, delete a take's audio. Stories 6.3 (search), 6.5/6.6
+// (backup, restore) and 6.7 (storage states) build on this snapshot.
 
 import { libraryRow, pickSize, sortRows, type LibraryRow } from '../model/library';
 import { isAppError, type AppErrorCode } from '../model/errors';
 import { devWarn } from '../model/log';
-import type { Tab, Take } from '../model/types';
+import { renamedTitle } from '../model/title';
+import type { Tab, Take, TakeWriter } from '../model/types';
 import { audioStore, type CompressedFile } from '../storage/audio-store';
 import { db } from '../storage/db';
 import {
@@ -35,6 +37,24 @@ export interface LibrarySession {
    */
   subscribe(listener: () => void): () => void;
   getSnapshot(): LibrarySnapshot;
+  /**
+   * Renames a take: trimmed, at most `TITLE_MAX` code points; empty or unchanged writes nothing.
+   * The row shows the new title at once; a failed write rejects (logged), and the row re-reads
+   * the stored title unless a later rename is being written.
+   */
+  rename(id: string, title: string): Promise<void>;
+  /**
+   * Deletes the take, its tab and every audio file (`db.deleteTake`; files best-effort, AD-15).
+   * The row goes with the `take-deleted` event. A failure rejects (logged) and the row stays.
+   */
+  deleteTake(id: string): Promise<void>;
+  /**
+   * Deletes the take's audio, keeping its tab: `audioMime` set to null first, then every
+   * compressed file and the raw file removed, best-effort (AD-15). The row shows "Audio deleted"
+   * through the `take-put` event. Does nothing unless the take is analysed and still has
+   * `audioMime`. A failed read or patch rejects (logged) and no file is removed.
+   */
+  deleteAudio(id: string): Promise<void>;
 }
 
 export interface LibraryDeps {
@@ -46,7 +66,19 @@ export interface LibraryDeps {
   /** The take's compressed file size in bytes (the file matching `mime` first); null with none. */
   compressedSize(takeId: string, mime: string | null): Promise<number | null>;
   subscribeStorage(listener: StorageListener): () => void;
+  patchTake(
+    id: string,
+    patch: Partial<Pick<Take, 'title' | 'audioMime'>>,
+    writer: TakeWriter,
+  ): Promise<unknown>;
+  deleteTake(id: string, writer: TakeWriter): Promise<void>;
+  /** Removes every compressed file of the take. */
+  deleteAudio(takeId: string): Promise<void>;
+  /** Removes the take's raw file. */
+  deleteRaw(takeId: string): Promise<void>;
 }
+
+const WRITER = 'library-session';
 
 const errorCode = (err: unknown): AppErrorCode => (isAppError(err) ? err.code : 'storage-failed');
 
@@ -61,6 +93,14 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
   /** Per take, the latest refresh's number: an older refresh landing later is dropped. */
   const refreshSeq = new Map<string, number>();
   let nextSeq = 1;
+  /** Titles being written by `rename`, by take id: shown over what a read returns meanwhile. */
+  const pendingTitles = new Map<string, string>();
+
+  /** `row` with its pending rename's title, if one is being written. */
+  function withPending(row: LibraryRow): LibraryRow {
+    const title = pendingTitles.get(row.id);
+    return title === undefined || title === row.title ? row : { ...row, title };
+  }
 
   function publish(next: LibrarySnapshot) {
     snapshot = next;
@@ -97,10 +137,12 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     const filesById = new Map<string, CompressedFile[]>();
     for (const f of files) filesById.set(f.id, [...(filesById.get(f.id) ?? []), f]);
     const rows = takes.map((take) =>
-      libraryRow(
-        take,
-        tabById.get(take.id) ?? null,
-        pickSize(filesById.get(take.id) ?? [], take.audioMime),
+      withPending(
+        libraryRow(
+          take,
+          tabById.get(take.id) ?? null,
+          pickSize(filesById.get(take.id) ?? [], take.audioMime),
+        ),
       ),
     );
     publish({ loading: false, rows: sortRows(rows), error: null });
@@ -154,7 +196,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
                 return null;
               }),
         ]);
-        row = libraryRow(take, tab, size);
+        row = withPending(libraryRow(take, tab, size));
       }
     } catch (err) {
       // The row keeps what it showed; the next event or full read corrects it.
@@ -198,7 +240,66 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     refreshSeq.clear();
   }
 
+  /** Shows `title` on the take's row, if it is listed. */
+  function showTitle(id: string, title: string) {
+    const row = snapshot.rows.find((r) => r.id === id);
+    if (!row || row.title === title) return;
+    publish({ ...snapshot, rows: snapshot.rows.map((r) => (r.id === id ? { ...r, title } : r)) });
+  }
+
+  async function rename(id: string, raw: string) {
+    const shown = snapshot.rows.find((r) => r.id === id);
+    if (!shown) return;
+    const title = renamedTitle(raw, shown.title);
+    if (title === null) return;
+    pendingTitles.set(id, title);
+    showTitle(id, title);
+    try {
+      await deps.patchTake(id, { title }, WRITER);
+      if (pendingTitles.get(id) === title) pendingTitles.delete(id);
+    } catch (err) {
+      devWarn(`Library: renaming take ${id} failed`, err);
+      if (pendingTitles.get(id) === title) {
+        // The latest rename failed: the row shows the stored title, read again.
+        pendingTitles.delete(id);
+        void refresh(id);
+      } // else a later rename decides what shows
+      throw err;
+    }
+  }
+
+  async function deleteTake(id: string) {
+    try {
+      await deps.deleteTake(id, WRITER);
+    } catch (err) {
+      devWarn(`Library: deleting take ${id} failed`, err);
+      throw err;
+    }
+  }
+
+  async function deleteAudio(id: string) {
+    try {
+      // Only an analysed take (which keeps its tab) with audio may lose it.
+      const take = await deps.getTake(id);
+      if (!take || take.status !== 'analyzed' || take.audioMime === null) return;
+      await deps.patchTake(id, { audioMime: null }, WRITER);
+    } catch (err) {
+      devWarn(`Library: deleting the audio of take ${id} failed`, err);
+      throw err;
+    }
+    // Files go after the record; a failure leaves files for the start-up scan (AD-15).
+    await deps.deleteAudio(id).catch((err: unknown) => {
+      devWarn(`Library: removing the compressed audio of take ${id} failed`, err);
+    });
+    await deps.deleteRaw(id).catch((err: unknown) => {
+      devWarn(`Library: removing the raw audio of take ${id} failed`, err);
+    });
+  }
+
   return {
+    rename,
+    deleteTake,
+    deleteAudio,
     subscribe(listener) {
       listeners.add(listener);
       if (listeners.size === 1 && !unsubscribeStorage) attach();
@@ -219,4 +320,8 @@ export const librarySession: LibrarySession = createLibrarySession({
   getTab: (id) => db.getTab(id),
   compressedSize: (id, mime) => audioStore.compressedSize(id, mime),
   subscribeStorage,
+  patchTake: (id, patch, writer) => db.patchTake(id, patch, writer),
+  deleteTake: (id, writer) => db.deleteTake(id, writer),
+  deleteAudio: (id) => audioStore.deleteAudio(id),
+  deleteRaw: (id) => audioStore.deleteRaw(id),
 });

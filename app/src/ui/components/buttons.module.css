@@ -50,3 +50,28 @@
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* A destructive action (DESIGN.md: danger always with icon and text; mockup library.html
+   .btn.danger): a secondary button in the danger colour, with its icon. */
+.danger {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  color: var(--color-danger);
+  font-weight: 500;
+  border-color: var(--color-danger);
+}
+
+.icon {
+  flex: none;
+  inline-size: 18px;
+  block-size: 18px;
+}
+
+.danger:hover {
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
+}
+
+.danger:focus-visible {
+  outline-color: var(--color-danger);
+}

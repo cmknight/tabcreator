@@ -4,13 +4,15 @@ import type { Tab, Take } from '../../src/model/types';
 import { formatElapsed, formatTakeDate } from '../../src/ui/format';
 import { strings } from '../../src/ui/strings';
 import { collectErrors, recordButton, stopButton, timer } from './helpers';
-import { expectNoSeriousAxe, FIXTURE, goLive, meter } from './mic-helpers';
-import { readTab, readTake } from './storage-helpers';
+import { expectNoSeriousAxe, FIXTURE, goLive, held, meter } from './mic-helpers';
+import { opfsFiles, readTab, readTake } from './storage-helpers';
 import { seedTab, tabArea } from './tab-helpers';
 
 // Story "Library list (tracer)" (US-7.1): the Library lists every take newest first with its
 // badge, date, duration, note count, audio size and first-12-notes preview; rows open their Tab;
 // new takes appear without a reload; a recording take does not open; the empty state.
+// Story "Rename, delete take and delete audio" (6.2): the row menu, inline rename, Delete take
+// and Delete audio only, and their Cancel/Esc.
 
 const list = (page: Page): Locator => page.getByRole('list', { name: 'Takes, newest first' });
 const rows = (page: Page): Locator => list(page).getByRole('listitem');
@@ -190,5 +192,189 @@ test('an empty library shows "No takes yet" and a Record button', async ({ page 
   await expectNoSeriousAxe(page);
   await empty.locator('..').getByRole('link', { name: 'Record', exact: true }).click();
   await expect(page).toHaveURL(/#\/record$/);
+  expect(unexpected(errors)).toEqual([]);
+});
+
+// Story "Rename, delete take and delete audio" (6.2).
+
+const kebab = (page: Page, id: string): Locator =>
+  row(page, id).getByRole('button', { name: /^More actions for / });
+const menu = (page: Page): Locator => page.getByRole('menu');
+const dialog = (page: Page): Locator => page.getByRole('alertdialog');
+
+/** Records about 2 s of the fake mic from Record (analysis held by the URL); returns the id. */
+async function recordHeld(page: Page): Promise<string> {
+  await page
+    .getByRole('navigation', { name: 'Main' })
+    .getByRole('link', { name: 'Record' })
+    .click();
+  await expect(recordButton(page)).toBeEnabled();
+  await recordButton(page).click();
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
+  await expect(timer(page)).toHaveText('0:02', { timeout: 5_000 });
+  await stopButton(page).click();
+  await expect(page).toHaveURL(/#\/tab\/[^/]+$/, { timeout: 15_000 });
+  return decodeURIComponent(new URL(page.url()).hash.slice('#/tab/'.length));
+}
+
+/** The OPFS files (raw or compressed) of the take. */
+const filesOf = async (page: Page, id: string) =>
+  (await opfsFiles(page)).filter((f) => f.split('/')[1]!.startsWith(`${id}.`));
+
+test('rename inline: the row and the stored take show it, and its Tab; Cancel and Esc change nothing; an unanalysed take has no Delete audio only', async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const errors = await goLive(page, held());
+  const ids = [await recordHeld(page), await recordHeld(page), await recordHeld(page)];
+  await openLibrary(page);
+  await expect(rows(page)).toHaveCount(3);
+  const id = ids[1]!;
+  const before = await readTake<Take>(page, id);
+  expect(before!.status).toBe('recorded');
+
+  // The menu: focus on Rename; ↓ moves; no Delete audio only for an unanalysed take.
+  await kebab(page, id).click();
+  await expect(kebab(page, id)).toHaveAttribute('aria-expanded', 'true');
+  await expect(menu(page)).toHaveAccessibleName(`Actions for ${before!.title}`);
+  await expect(menu(page).getByRole('menuitem')).toHaveText(['Rename', 'Delete take']);
+  await expect(menu(page).getByRole('menuitem', { name: 'Rename' })).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await expect(menu(page).getByRole('menuitem', { name: 'Delete take' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu(page)).toHaveCount(0);
+  await expect(kebab(page, id)).toBeFocused();
+
+  // Delete take, then Cancel; then Esc: nothing changes, focus back on "⋯".
+  for (const close of ['cancel', 'escape'] as const) {
+    await kebab(page, id).click();
+    await menu(page).getByRole('menuitem', { name: 'Delete take' }).click();
+    await expect(dialog(page)).toHaveAccessibleName(`Delete "${before!.title}"?`);
+    await expect(dialog(page).getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await expectNoSeriousAxe(page);
+    if (close === 'cancel') await dialog(page).getByRole('button', { name: 'Cancel' }).click();
+    else await page.keyboard.press('Escape');
+    await expect(dialog(page)).toHaveCount(0);
+    await expect(kebab(page, id)).toBeFocused();
+  }
+  await expect(rows(page)).toHaveCount(3);
+  expect(await readTake<Take>(page, id)).toEqual(before);
+
+  // Rename: Esc cancels, then Enter saves.
+  await kebab(page, id).click();
+  await menu(page).getByRole('menuitem', { name: 'Rename' }).click();
+  const field = row(page, id).getByRole('textbox', { name: 'Take title' });
+  await expect(field).toBeFocused();
+  await expect(field).toHaveValue(before!.title);
+  await page.keyboard.type('Nope');
+  await page.keyboard.press('Escape');
+  await expect(field).toHaveCount(0);
+  await expect(row(page, id)).toContainText(before!.title);
+  expect((await readTake<Take>(page, id))!.title).toBe(before!.title);
+
+  await kebab(page, id).click();
+  await menu(page).getByRole('menuitem', { name: 'Rename' }).click();
+  await expect(field).toBeFocused();
+  await page.keyboard.type('Blues'); // replaces the selected title
+  await page.keyboard.press('Enter');
+  await expect(row(page, id).getByRole('link', { name: 'Blues' })).toBeVisible();
+  await expect(kebab(page, id)).toHaveAccessibleName('More actions for Blues');
+  await expect.poll(async () => (await readTake<Take>(page, id))!.title).toBe('Blues');
+
+  // Its Tab shows it.
+  await row(page, id).getByRole('link', { name: 'Blues' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Blues' })).toBeVisible();
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('delete audio of an analysed take keeps its tab; delete take removes it and its files', async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const errors = await goLive(page, FIXTURE);
+  const analysed = await recordAndAnalyse(page);
+  await page
+    .getByRole('navigation', { name: 'Main' })
+    .getByRole('link', { name: 'Record' })
+    .click();
+  await expect(recordButton(page)).toBeEnabled();
+  const other = await recordAndAnalyse(page);
+  await openLibrary(page);
+  await expect(rows(page)).toHaveCount(2);
+  const take = await readTake<Take>(page, analysed);
+  const tab = await readTab<Tab>(page, analysed);
+  expect(take!.status).toBe('analyzed');
+  expect(take!.audioMime).not.toBeNull();
+  expect(await filesOf(page, analysed)).not.toEqual([]);
+
+  // Delete audio only: Cancel first, then confirm.
+  await kebab(page, analysed).click();
+  await expect(menu(page).getByRole('menuitem')).toHaveText([
+    'Rename',
+    'Delete audio only',
+    'Delete take',
+  ]);
+  await menu(page).getByRole('menuitem', { name: 'Delete audio only' }).click();
+  await expect(dialog(page)).toHaveAccessibleName(`Delete the audio of "${take!.title}"?`);
+  await expect(dialog(page)).toContainText(
+    "Its recording is removed from this computer; the tab stays. This can't be undone.",
+  );
+  await expect(dialog(page).getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(kebab(page, analysed)).toBeFocused();
+  expect((await readTake<Take>(page, analysed))!.audioMime).not.toBeNull();
+  // Cancel by its button: nothing changes either.
+  await kebab(page, analysed).click();
+  await menu(page).getByRole('menuitem', { name: 'Delete audio only' }).click();
+  await dialog(page).getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog(page)).toHaveCount(0);
+  await expect(kebab(page, analysed)).toBeFocused();
+  expect((await readTake<Take>(page, analysed))!.audioMime).not.toBeNull();
+  expect(await filesOf(page, analysed)).not.toEqual([]);
+
+  const usage = () => page.evaluate(async () => (await navigator.storage.estimate()).usage ?? 0);
+  const usageBefore = await usage();
+  await kebab(page, analysed).click();
+  await menu(page).getByRole('menuitem', { name: 'Delete audio only' }).click();
+  await dialog(page).getByRole('button', { name: 'Delete audio' }).click();
+  await expect(row(page, analysed)).toContainText(strings['library.audioDeleted']);
+  await expect.poll(() => filesOf(page, analysed)).toEqual([]);
+  expect((await readTake<Take>(page, analysed))!.audioMime).toBeNull();
+  expect(await readTab<Tab>(page, analysed)).toEqual(tab);
+  await expect.poll(usage).toBeLessThan(usageBefore);
+  // No Delete audio only once the audio is gone.
+  await kebab(page, analysed).click();
+  await expect(menu(page).getByRole('menuitem')).toHaveText(['Rename', 'Delete take']);
+  await page.keyboard.press('Escape');
+
+  // Delete take: Cancel changes nothing; confirmed, the take, its tab and files go.
+  expect(await filesOf(page, other)).not.toEqual([]);
+  await kebab(page, other).click();
+  await menu(page).getByRole('menuitem', { name: 'Delete take' }).click();
+  await dialog(page).getByRole('button', { name: 'Cancel' }).click();
+  await expect(kebab(page, other)).toBeFocused();
+  await expect(rows(page)).toHaveCount(2);
+  await kebab(page, other).click();
+  await menu(page).getByRole('menuitem', { name: 'Delete take' }).click();
+  await dialog(page).getByRole('button', { name: 'Delete take' }).click();
+  await expect(row(page, other)).toHaveCount(0);
+  await expect(rows(page)).toHaveCount(1);
+  expect(await readTake(page, other)).toBeNull();
+  expect(await readTab(page, other)).toBeNull();
+  await expect.poll(() => filesOf(page, other)).toEqual([]);
+  await expect(heading(page)).toBeFocused();
+
+  // The audio-deleted take's Tab: Play and Trim disabled, "Audio deleted".
+  await row(page, analysed).getByRole('link').click();
+  const play = page
+    .getByRole('group', { name: 'Playback' })
+    .getByRole('button', { name: /^(Play|Pause)$/ });
+  await expect(play).toBeDisabled();
+  await expect(play).toHaveAccessibleDescription('Audio deleted');
+  const trim = page
+    .getByRole('toolbar', { name: 'Tab tools' })
+    .getByRole('button', { name: 'Trim' });
+  await expect(trim).toBeDisabled();
+  await expect(trim).toHaveAccessibleDescription('Audio deleted');
   expect(unexpected(errors)).toEqual([]);
 });

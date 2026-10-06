@@ -9,7 +9,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type Ref } from 'react';
 import type { Take } from '../../model/types';
-import { capTitle } from '../../session/take-session';
+import { capTitle } from '../../model/title';
 import { formatElapsed, formatTakeDate } from '../format';
 import screenStyles from '../screens/Screen.module.css';
 import { strings } from '../strings';

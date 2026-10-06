@@ -88,6 +88,24 @@ describe('overlays', () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
+  it('a pointer-down on its toggle (the menu button) does not dismiss it', () => {
+    const { opener, overlay } = setup();
+    const onDismiss = vi.fn();
+    releases.push(openOverlay({ element: overlay, opener, toggle: opener, onDismiss }));
+    opener.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(onDismiss).not.toHaveBeenCalled();
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('trapTab false: Tab is left to the owner (not prevented)', () => {
+    const { opener, overlay, last } = setup();
+    releases.push(openOverlay({ element: overlay, opener, trapTab: false, onDismiss() {} }));
+    last.focus();
+    expect(key(last, 'Tab').defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(last);
+  });
+
   it('one level: opening another dismisses the open one', () => {
     const a = setup();
     const b = setup();

@@ -712,7 +712,7 @@ describe('pending commit (storage full)', () => {
     expect(h.deps.engine.analyze).toHaveBeenCalledTimes(1);
   });
 
-  it('dropped when its take is deleted', async () => {
+  it('dropped when its take is deleted, with no session involved (a Library delete)', async () => {
     const h = storageFull();
     const analysis = await failedRun(h);
     h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
