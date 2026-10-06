@@ -41,3 +41,5 @@ The player keeps their work and can take it anywhere.
 
 - Waits on epic 5 because: needs tab layout and toText, the Tab screen.
 - Touch point from epic 3 (Recording): compressed audio can be WAV (audio/wav, .wav) when recovery encoding fails. Backup and restore must accept it (2026-10-02).
+- Decision: at inception (user, 2026-10-06): the split is list tracer (1) → row actions (2) → search (3) → backup (5) → restore (6) → storage protection and states (7), with Copy/Download (4) and the DS2 recovery metadata fix (8) in parallel and the refactor sweep (9) last. "Delete audio only" is offered for analysed takes only and removes every audio file of the take, raw included. Rows in status recording show the Recording badge with no size or preview and do not open. DS2 is included as story 8.
+- Assumption (2026-10-06, for review): backup format 1 carries Note's optional fields (such as `inserted`) as stored, with no shape-version bump; restore asks through the Confirm dialog (EXPERIENCE :44 lists restore); fflate 0.8.3 (spine Stack) is added and loaded only in the backup worker.

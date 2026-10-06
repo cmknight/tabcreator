@@ -1,0 +1,113 @@
+# tickets.toml — a container's agreed children. tickets.py reads it.
+# The order of the tables is the build order: move a table to reorder. `id` names a child for good and is never reused.
+# Status never lives here: an entry's plan beside it carries `status`.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Library list (tracer)"
+description = "Adds session/library-session.ts (AD-3: the take list; it subscribes to take-put, take-deleted, tab-put and library-restored and re-reads by id, so new takes appear without reload, AD-5) and the Library screen's list: newest first, each row the title, date and time, duration, note count, status badge (Recording, Not analysed, Analysed), audio size or \"Audio deleted\", and a preview of the first 12 notes as string|fret pairs (\"—\" and a blank count before analysis), with click or Enter opening #/tab/{id}; rows in status recording show the Recording badge with no size or preview and do not open (user decision); it adds the storage reads the rows need (a per-take compressed audio size via File.size, and a list read that does not cost one getTab per take, e.g. a tab summary of note count and preview), and the empty state \"No takes yet\" with a Record button; library-session's API and row model are the contract stories 2, 3, 5, 6 and 7 build on."
+verify = "Dev e2e: two recorded takes appear newest first with their badge, duration, note count, size and preview without a reload, a third appears while the Library is open, Enter on a row opens its Tab, a seeded recording-status row shows the Recording badge and does not open, and an empty library shows \"No takes yet\" with Record; Vitest covers sorting, the preview string and the row model from store events."
+covers = ["CAP-17", "CAP-25"]
+after = ["5.11", "8.8"]
+hitl = false
+risk = "medium"
+unknown = "The cheapest correct source for each row's note count and preview at 500 takes (reading every Tab vs a summary kept with the Tab); AD-5 events carry ids only."
+references = ["stories — TabCreator-User-Stories.md, US-7.1", "experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Library row (:83), Empty (:115)", "design — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/mockups/library.html; DESIGN.md Library row (:266)", "architecture — ARCHITECTURE-SPINE.md, AD-3, AD-5, AD-14"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Copy and Download on the Tab screen"
+description = "Adds ui/platform.ts (AD-2: clipboard write, a text/plain;charset=utf-8 download through a temporary <a download>, and the file picker stories 5 and 6 reuse) and Copy and Download buttons in the Tab toolbar plus Ctrl/⌘+Shift+C in ui/a11y/shortcuts.ts: both export toText of the shown notes, follow the Bar lines toggle (no bar lines in the export when it is off, as on screen), Copy toasts \"Tab copied\", Download names the file <title-slug>.txt (lowercase a–z0–9 and hyphens, at most 60 characters, fallback tab.txt), the download uses \\r\\n line endings on Windows and \\n elsewhere so copy and download differ only in line endings, and both are disabled with a reason in No notes found."
+verify = "Dev e2e: Copy and Download of a recorded c_major_scale_pos1 take give the same text apart from line endings (the download intercepted, the clipboard read with permission), columns align (every system line the same length), a title with emoji and slashes gives a valid file name, Ctrl+Shift+C copies, and with Bar lines off neither export has bar lines; Vitest covers the slug and the line-ending rule."
+covers = ["CAP-18"]
+after = ["5.11", "8.8"]
+hitl = false
+risk = "low"
+references = ["stories — TabCreator-User-Stories.md, US-7.2", "experience — EXPERIENCE.md, Toolbar (:74), No notes found (:108), Tab shortcuts (:144)", "architecture — ARCHITECTURE-SPINE.md, AD-2"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "Recovered take metadata from its compressed copy (DS2)"
+description = "Fixes deferred item DS2: when a recovered or re-offered take keeps a whole compressed copy, its durationMs and clipped come from that copy decoded through audio/decode.ts rather than from the raw file (which is shorter after raw append failures or an early storage-full), in session/recording-recovery.ts's rebuild; takes with only a raw file keep today's behaviour."
+verify = "Vitest: a recovery whose raw file is shorter than its compressed copy stores the compressed copy's duration and clipping, and a raw-only recovery is unchanged; existing recovery e2e still passes."
+covers = ["CAP-6"]
+after = ["5.11", "8.8"]
+hitl = false
+risk = "low"
+references = ["deferred — _bmad-output/implementation-artifacts/deferred-work.md, DS2 (story-take-save-robustness-plan.md)"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Rename, delete take and delete audio"
+description = "Adds the Library row menu (\"More actions for <title>\": Rename inline, Delete audio only, Delete take) through library-session (story 1) as the library-session writer (AD-14: title, audioMime → null): Delete take and Delete audio use the Confirm dialog from epic Tab editing naming the take (\"Its tab and recording are removed from this computer. This can't be undone.\"), Delete take removes the take, tab and every audio file (db.deleteTake) and also drops any held storage-full edit and held analysis result for it, and Delete audio only is offered only for analysed takes and removes every audio file of the take, raw included, then sets audioMime to null so the Tab keeps its tab with Play and Trim disabled \"Audio deleted\" (user decision); an open Tab session for the take reacts through its existing take-put/take-deleted handling."
+verify = "Dev e2e: create three takes, rename one inline (shown in the Library and its Tab), delete audio of an analysed take (storage estimate drops, the tab stays, Play disabled \"Audio deleted\", no audio files left in OPFS), delete another take (no take, tab or audio file left), Cancel in each dialog changes nothing, and Delete audio is not offered on an unanalysed take."
+covers = ["CAP-17"]
+after = [1]
+hitl = false
+risk = "medium"
+references = ["stories — TabCreator-User-Stories.md, US-7.1", "experience — EXPERIENCE.md, Library row (:83), Confirm dialog (:88), Audio deleted (:112)", "architecture — ARCHITECTURE-SPINE.md, AD-14, AD-15, AD-16"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Search 500 takes"
+description = "Adds the Library search (\"Search takes\", case- and accent-insensitive on the title, filtering as you type, no highlighting) with precomputed normalised titles, the no-match state (No takes match \"<query>\" with Clear search), a virtualised list above 100 takes, and a dev-only page seeding 500 takes (like #/__test/tab500) that a dev e2e uses to assert search narrows in ≤ 50 ms per keystroke (p95), measured in its own Playwright project like the edit-latency gate; the footer keeps reporting the whole library."
+verify = "Dev e2e on 500 seeded takes reports per-keystroke filter-to-paint p95 ≤ 50 ms and fails above it; \"cafe\" finds \"Café Blues\", the no-match state's Clear search restores the list, and scrolling the virtualised list reaches the oldest take; Vitest covers normalisation."
+covers = ["CAP-17", "CAP-25"]
+after = [2]
+hitl = false
+risk = "medium"
+references = ["experience — EXPERIENCE.md, Search (:84), no-match (:116)", "precedent — _bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-500-note-edit-latency-plan.md (dev page, perf project)"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Back up the library"
+description = "Adds storage/backup.ts and a Back up library button on the Library: a zip (fflate 0.8.3, added and loaded only inside a backup worker so the initial bundle stays within AD-17) named tabcreator-backup-YYYYMMDD.zip holding manifest.json ({format: 1, exportedAt, takes, tabs}; format 1 carries Note's optional fields such as inserted as stored, no shape bump) and audio/{takeId}.{ext} for every compressed file (WAV included, extensions from model/audio-format.ts), built off the main thread with a \"Backing up…\" progress bar under the header (no Cancel, button disabled while it runs) and saved through ui/platform.ts's download (story 4); disabled in the empty state."
+verify = "Dev e2e: back up a library of three takes (one with deleted audio, one with WAV audio) and unzip the download: the manifest lists every take and tab exactly as stored and each audio file is byte-identical to OPFS; Vitest covers the manifest builder; the build's initial JS does not grow by fflate."
+covers = ["CAP-19"]
+after = [3, 4]
+hitl = false
+risk = "high"
+unknown = "Streaming vs in-memory zip for large libraries (5-minute takes, hundreds of MB); which worker reads OPFS for the backup (AD-2/AD-15 put OPFS writes in opfs-worker.ts)."
+references = ["stories — TabCreator-User-Stories.md, US-7.3", "experience — EXPERIENCE.md, Backup/Restore (:85)", "architecture — ARCHITECTURE-SPINE.md, AD-2, AD-11, AD-17, Stack (fflate 0.8.3)", "touch point — epic-library-and-export.md Notes (WAV audio must be accepted)"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Restore from a backup"
+description = "Adds Restore from backup on the Library: a file chosen through ui/platform.ts's picker (story 4) is validated in full before anything is written (manifest format 1, every take and tab well-formed, every listed audio file present with an extension model/audio-format.ts knows, WAV included), else \"That file isn't a TabCreator backup — nothing was changed.\" (backup-invalid); a Confirm dialog asks first (EXPERIENCE lists restore); takes whose id already exists are skipped, never overwritten, and counted; new takes' audio is written first, then their records through db.importTakes changed to skip existing ids, with any audio written for a failed import removed; a library-restored event refreshes the list, and a toast reports \"Imported n takes, skipped m already in your library\"."
+verify = "Dev e2e: back up three takes, restore into a fresh browser context, and every take, tab and audio file equals the original byte-for-byte; restoring the same file again imports 0 and skips 3; a truncated zip and a zip with a bad manifest each show the error and leave the library unchanged; Vitest covers validation and the skip-existing merge."
+covers = ["CAP-19", "CAP-25"]
+after = [5]
+hitl = false
+risk = "high"
+references = ["stories — TabCreator-User-Stories.md, US-7.3", "experience — EXPERIENCE.md, Backup/Restore (:85), Restore failed (:117), Flow 4 (:205-212)", "architecture — ARCHITECTURE-SPINE.md, AD-5, AD-6, AD-11, AD-14"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Storage protection and Library states"
+description = "Adds the rest of CAP-19 and CAP-25 for the Library: navigator.storage.persist() requested once after the first take is saved (the call lives in storage/, AD-2), a one-time Library warning when it is refused (\"Your browser may clear these takes when space runs low. Back them up regularly.\" with Back up library, prefs.persistNoticeShown), the Settings Storage panel (\"Storage: protected\" / \"Storage: may be cleared by the browser\", linking to the Library backup when not protected), the Library footer from navigator.storage.estimate() (\"23 takes · 41 MB used\", the whole library even while searching, none when empty), and the Library storage-full banner (\"Storage is full — delete takes or their audio, or back up and clear\", no Dismiss, cleared once a save succeeds)."
+verify = "Dev e2e: with persist() stubbed to refuse, the warning shows once ever and its Back up library starts a backup; with it granted, Settings shows protected; the footer reports the take count and usage; with the storage-full dev hook a failed save shows the Library banner, which clears after a successful save; Vitest covers the persist-once logic."
+covers = ["CAP-19", "CAP-25"]
+after = [6]
+hitl = false
+risk = "medium"
+unknown = "Where the Library learns that a save failed with storage-full, since stores never read each other (AD-3): e.g. a persisted flag on the take or prefs, or a storage event."
+references = ["stories — TabCreator-User-Stories.md, US-7.1 (storage full, footer), US-7.3 (persist)", "experience — EXPERIENCE.md, Settings (:34), Storage full (:113), Storage may be cleared (:114)", "design — mockups/library.html (:632-724), mockups/settings.html (:315-374)"]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what the build records and deferred review findings of stories 1 to 8 name, after grepping every plan's triage log for sweep routings; scope is set when it starts and takes cleanup only."
+verify = "CI stays green and every item in the sweep's agreed scope is closed or explicitly deferred."
+covers = []
+after = [1, 2, 3, 4, 5, 6, 7, 8]
+hitl = false
+risk = "low"
