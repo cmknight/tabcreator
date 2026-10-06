@@ -26,8 +26,8 @@ export interface TabLayout {
   systems: TabSystem[];
 }
 
-/** Line letters, string 1 (high e) first. */
-const LETTERS = ['e', 'B', 'G', 'D', 'A', 'E'] as const;
+/** Line letters, string 1 (high e) first (also the Library preview's string names). */
+export const STRING_LETTERS = ['e', 'B', 'G', 'D', 'A', 'E'] as const;
 /** Milliseconds per spacing dash. */
 const MS_PER_DASH = 125;
 const MAX_DASHES = 8;
@@ -114,7 +114,7 @@ function packUnits(units: readonly Unit[], available: number): Unit[][] {
 }
 
 function renderSystem(units: readonly Unit[]): TabSystem {
-  const lines = LETTERS.map((letter) => `${letter}|-`);
+  const lines = STRING_LETTERS.map((letter) => `${letter}|-`);
   const cells: TabCell[] = [];
   const barCols: number[] = [];
   let col = 3; // after `x|-`
@@ -181,7 +181,7 @@ export function layoutTab(
   if (units.length === 0) {
     return {
       systems: [
-        { lines: LETTERS.map((letter) => `${letter}|-${LINE_END}`), cells: [], barCols: [] },
+        { lines: STRING_LETTERS.map((letter) => `${letter}|-${LINE_END}`), cells: [], barCols: [] },
       ],
     };
   }

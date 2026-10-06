@@ -41,6 +41,8 @@ export interface TakeDb {
   getTake(id: string): Promise<Take | null>;
   /** The take's Tab; `deletedStartMs` defaults to `[]` for older tabs. */
   getTab(takeId: string): Promise<Tab | null>;
+  /** Every Tab in one read (the Library list); `deletedStartMs` defaults as in `getTab`. */
+  listTabs(): Promise<Tab[]>;
   /** Creates a Take (writer `recording-session`); fails with `storage-failed` if the id exists. */
   createTake(take: Take): Promise<Take>;
   /** Merges `patch` into an existing Take; throws in dev builds on a field `writer` does not own. */
@@ -228,6 +230,8 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
         const tab = await db.get('tabs', takeId);
         return tab ? withTabDefaults(tab) : null;
       }),
+
+    listTabs: () => read('List tabs', async (db) => (await db.getAll('tabs')).map(withTabDefaults)),
 
     async createTake(take) {
       const record: Take = { ...take, updatedAt: stamp() };

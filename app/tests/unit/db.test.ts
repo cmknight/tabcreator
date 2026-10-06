@@ -369,6 +369,20 @@ describe('old tabs', () => {
     await raw.put('tabs', oldTab);
     raw.close();
     expect((await db.getTab('take-1'))?.deletedStartMs).toEqual([]);
+    expect((await db.listTabs())[0]?.deletedStartMs).toEqual([]);
+  });
+});
+
+describe('listTabs', () => {
+  it('reads every tab in one call; empty with none', async () => {
+    expect(await db.listTabs()).toEqual([]);
+    await db.importTakes([
+      { take: makeTake('a'), tab: makeTab('a') },
+      { take: makeTake('b'), tab: null },
+      { take: makeTake('c'), tab: makeTab('c') },
+    ]);
+    expect((await db.listTabs()).map((t) => t.takeId).sort()).toEqual(['a', 'c']);
+    expect(await db.listTabs()).toContainEqual(makeTab('a'));
   });
 });
 

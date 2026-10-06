@@ -65,7 +65,7 @@ function setup(
     getTake: vi.fn(async (id: string) => takes.get(id) ?? null),
     listRaw: vi.fn(async () => [...raw.keys()].sort()),
     listCompressed: vi.fn(async () =>
-      [...audio.entries()].map(([id, b]): CompressedFile => ({ id, ext: extOf(b) })),
+      [...audio.entries()].map(([id, b]): CompressedFile => ({ id, ext: extOf(b), size: b.size })),
     ),
     rawSampleCount: vi.fn(async (id: string) => raw.get(id)?.length ?? 0),
     readRaw: vi.fn(async (id: string) => {

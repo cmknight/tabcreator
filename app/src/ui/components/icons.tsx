@@ -172,3 +172,19 @@ export function TrimIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/** The tick: the Tuner's In tune and string chips, the Library's Analysed badge. */
+export function CheckIcon({ className }: { className?: string | undefined }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M5 12.5l4.5 4.5L19 7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}

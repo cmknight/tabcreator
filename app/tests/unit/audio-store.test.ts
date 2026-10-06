@@ -249,19 +249,86 @@ describe('listCompressed', () => {
   it('lists audio/ files with a known extension by id and extension', async () => {
     const store = createAudioStore({
       root: sizedRoot({
-        audio: { 'b.webm': 10, 'a.wav': 10, 'c.m4a': 1, 'd.txt': 1, noext: 1, 'e.ogg': 1 },
+        audio: { 'b.webm': 210_000, 'a.wav': 10, 'c.m4a': 1, 'd.txt': 1, noext: 1, 'e.ogg': 1 },
       }),
     });
     expect(await store.listCompressed()).toEqual([
-      { id: 'a', ext: 'wav' },
-      { id: 'b', ext: 'webm' },
-      { id: 'c', ext: 'm4a' },
-      { id: 'e', ext: 'ogg' },
+      { id: 'a', ext: 'wav', size: 10 },
+      { id: 'b', ext: 'webm', size: 210_000 },
+      { id: 'c', ext: 'm4a', size: 1 },
+      { id: 'e', ext: 'ogg', size: 1 },
     ]);
   });
 
   it('is empty with no audio/ directory', async () => {
     expect(await createAudioStore({ root: sizedRoot({}) }).listCompressed()).toEqual([]);
+  });
+});
+
+describe('listCompressed per-file failures', () => {
+  it('leaves out a listed file that is gone or fails to open, listing the rest', async () => {
+    const notFound = () => new DOMException('gone', 'NotFoundError');
+    const audio = {
+      async *keys() {
+        yield* ['a.webm', 'gone.webm', 'broken.webm', 'held.wav'];
+      },
+      async getFileHandle(name: string) {
+        if (name === 'gone.webm') throw notFound();
+        return {
+          getFile: async () => {
+            if (name === 'broken.webm') throw notFound();
+            if (name === 'held.wav') throw new DOMException('busy', 'NoModificationAllowedError');
+            return { size: 7 };
+          },
+        };
+      },
+    };
+    const root = { getDirectoryHandle: async () => audio };
+    const store = createAudioStore({
+      root: () => Promise.resolve(root as unknown as FileSystemDirectoryHandle),
+    });
+    expect(await store.listCompressed()).toEqual([{ id: 'a', ext: 'webm', size: 7 }]);
+  });
+});
+
+describe('compressedSize', () => {
+  it("is the take's compressed file size, in any format, without reading it", async () => {
+    const store = createAudioStore({
+      root: sizedRoot({ audio: { 'a.webm': 210_000, 'b.wav': 96_044 } }),
+    });
+    expect(await store.compressedSize('a')).toBe(210_000);
+    expect(await store.compressedSize('b')).toBe(96_044);
+  });
+
+  it("picks the file matching the take's MIME type when there are two, else format order", async () => {
+    const store = createAudioStore({
+      root: sizedRoot({ audio: { 'a.webm': 210_000, 'a.wav': 96_044 } }),
+    });
+    expect(await store.compressedSize('a', 'audio/wav')).toBe(96_044);
+    expect(await store.compressedSize('a', 'audio/webm;codecs=opus')).toBe(210_000);
+    expect(await store.compressedSize('a')).toBe(210_000);
+  });
+
+  it('is null when the file disappears before its size is read', async () => {
+    const audio = {
+      getFileHandle: async () => ({
+        getFile: async () => {
+          throw new DOMException('gone', 'NotFoundError');
+        },
+      }),
+    };
+    const root = { getDirectoryHandle: async () => audio };
+    const store = createAudioStore({
+      root: () => Promise.resolve(root as unknown as FileSystemDirectoryHandle),
+    });
+    expect(await store.compressedSize('a', 'audio/wav')).toBeNull();
+  });
+
+  it('is null with no file or no audio/ directory', async () => {
+    expect(await createAudioStore({ root: sizedRoot({ audio: {} }) }).compressedSize('a')).toBe(
+      null,
+    );
+    expect(await createAudioStore({ root: sizedRoot({}) }).compressedSize('a')).toBeNull();
   });
 });
 

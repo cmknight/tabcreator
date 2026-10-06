@@ -5,7 +5,12 @@
 // loses at most the chunk being written. Rejects only with AppError.
 
 import { storageFullHookOn } from '../dev/hooks/storage-full';
-import { AUDIO_FORMATS, extensionFor, type AudioExtension } from '../model/audio-format';
+import {
+  AUDIO_FORMATS,
+  extensionFor,
+  preferredExtensions,
+  type AudioExtension,
+} from '../model/audio-format';
 import { AppError } from '../model/errors';
 import { assertWritable, hasErrorName, toStorageError } from './write-guard';
 
@@ -53,16 +58,24 @@ export interface AudioStore {
    */
   rawSampleCount(takeId: string): Promise<number>;
   /**
-   * The compressed files in `audio/`, by take id and extension; a file whose extension is not
-   * in `AUDIO_FORMATS` is not listed.
+   * The compressed files in `audio/`, by take id and extension, with their byte sizes (read from
+   * the file handles, not the contents, per file in parallel); a file whose extension is not in
+   * `AUDIO_FORMATS`, or that is gone or fails to open when its size is read, is not listed.
    */
   listCompressed(): Promise<CompressedFile[]>;
+  /**
+   * The byte size of the take's compressed file, without reading it; null when there is none.
+   * With two files for the take, the one matching `mime` (the take's `audioMime`) wins, else the
+   * first in `AUDIO_FORMATS` order.
+   */
+  compressedSize(takeId: string, mime?: string | null): Promise<number | null>;
 }
 
-/** One compressed audio file: `audio/{id}.{ext}`. */
+/** One compressed audio file: `audio/{id}.{ext}`, `size` bytes. */
 export interface CompressedFile {
   id: string;
   ext: AudioExtension;
+  size: number;
 }
 
 export interface AudioStoreOptions {
@@ -310,20 +323,59 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
     },
 
     async listCompressed() {
+      let names: { id: string; ext: AudioExtension; name: string }[];
+      let audio: KeyedDirectory | null;
       try {
-        const audio = (await dir(AUDIO_DIR, false)) as KeyedDirectory | null;
+        audio = (await dir(AUDIO_DIR, false)) as KeyedDirectory | null;
         if (!audio) return [];
-        const files: CompressedFile[] = [];
+        names = [];
         for await (const name of audio.keys()) {
           const dot = name.lastIndexOf('.');
           if (dot <= 0) continue;
           const ext = name.slice(dot + 1);
           const format = AUDIO_FORMATS.find((f) => f.ext === ext);
-          if (format) files.push({ id: name.slice(0, dot), ext: format.ext });
+          if (format) names.push({ id: name.slice(0, dot), ext: format.ext, name });
         }
-        return files.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       } catch (err) {
         throw toStorageError(err, 'List compressed audio');
+      }
+      const dirHandle = audio;
+      // Sizes are read per file in parallel; a file that is gone (removed since it was listed)
+      // or cannot be opened is left out, never failing the listing.
+      const sized = await Promise.all(
+        names.map(async ({ id, ext, name }): Promise<CompressedFile | null> => {
+          try {
+            const handle = await fileIfPresent(dirHandle, name);
+            if (!handle) return null;
+            return { id, ext, size: (await handle.getFile()).size };
+          } catch {
+            return null;
+          }
+        }),
+      );
+      return sized
+        .filter((f): f is CompressedFile => f !== null)
+        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    },
+
+    async compressedSize(takeId, mime) {
+      try {
+        const audio = await dir(AUDIO_DIR, false);
+        if (!audio) return null;
+        for (const ext of preferredExtensions(mime)) {
+          const handle = await fileIfPresent(audio, `${takeId}.${ext}`);
+          if (!handle) continue;
+          try {
+            return (await handle.getFile()).size;
+          } catch (err) {
+            // Removed between the lookup and the read: try the next format.
+            if (hasErrorName(err, 'NotFoundError')) continue;
+            throw err;
+          }
+        }
+        return null;
+      } catch (err) {
+        throw toStorageError(err, 'Size compressed audio');
       }
     },
   };

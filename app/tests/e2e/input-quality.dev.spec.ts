@@ -85,7 +85,7 @@ test('returning to Record while the banner shows announces it again', async ({ p
   await page.getByRole('link', { name: 'Library' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Library' })).toBeVisible();
   await expect(polite).toHaveText('');
-  await page.getByRole('link', { name: 'Record' }).click();
+  await page.getByRole('navigation').getByRole('link', { name: 'Record' }).click();
   await expect(banner(page)).toBeVisible();
   await expect(polite).toHaveText(WARNING);
   expect(errors).toEqual([]);
@@ -159,7 +159,7 @@ test('reload after Dismiss: the banner shows again while the condition holds', a
   await page.reload();
   await expect(page.getByRole('heading', { level: 1, name: 'Library' })).toBeVisible();
   await configure(page, { [OPEN]: { sampleRate: 16000 } });
-  await page.getByRole('link', { name: 'Record' }).click();
+  await page.getByRole('navigation').getByRole('link', { name: 'Record' }).click();
   await expect(meter(page)).toBeVisible();
   await expect(banner(page)).toBeVisible();
   expect(errors).toEqual([]);

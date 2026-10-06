@@ -444,6 +444,28 @@ export const strings = {
   'tab.popoverPositions': 'Other strings',
   'tab.popoverConfirm': 'Confirm',
   'library.title': 'Library',
+  /** The take list's accessible name. */
+  'library.listLabel': 'Takes, newest first',
+  /** Status badges (EXPERIENCE.md Library row). */
+  'library.statusRecording': 'Recording',
+  'library.statusNotAnalysed': 'Not analysed',
+  'library.statusAnalysed': 'Analysed',
+  /** A row's note count: "38 notes", "1 note". */
+  'library.notes': (n: number) => `${n} ${n === 1 ? 'note' : 'notes'}`,
+  /** A row's audio size: "0.2 MB" (`mb` already formatted to one place). */
+  'library.size': (mb: string) => `${mb} MB`,
+  'library.audioDeleted': 'Audio deleted',
+  /** The metadata separator between date, duration, note count and size. */
+  'library.metaSeparator': ' · ',
+  /** The preview of a row with no notes or no analysis. */
+  'library.noPreview': '—',
+  /** Empty library (EXPERIENCE.md Library states). */
+  'library.empty': 'No takes yet',
+  'library.emptyRecord': 'Record',
+  /** The first read of the library is running. */
+  'library.loading': 'Loading takes…',
+  /** A full read of the library failed. */
+  'library.loadFailed': "Couldn't load your takes — reload the page to try again",
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */
   'tuner.stringLetter': (string: StringNo) =>

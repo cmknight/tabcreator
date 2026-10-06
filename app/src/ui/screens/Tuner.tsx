@@ -7,6 +7,7 @@ import {
 } from '../../session/recording-session';
 import { announce } from '../a11y/announcer';
 import buttons from '../components/buttons.module.css';
+import { CheckIcon } from '../components/icons';
 import { InputQualityBanner } from '../components/InputQualityBanner';
 import { LevelMeter } from '../components/LevelMeter';
 import { MicGate } from '../components/MicGate';
@@ -39,21 +40,6 @@ function sameDisplay(a: TunerDisplay, b: TunerDisplay): boolean {
     a.reading.string === b.reading.string &&
     Math.round(a.reading.cents) === Math.round(b.reading.cents) &&
     a.reading.cents.toFixed(1) === b.reading.cents.toFixed(1)
-  );
-}
-
-function CheckIcon({ className }: { className: string | undefined }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M5 12.5l4.5 4.5L19 7"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
   );
 }
 

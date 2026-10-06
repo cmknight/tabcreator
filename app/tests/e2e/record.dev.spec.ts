@@ -179,7 +179,7 @@ test('leaving Record keeps recording; returning shows Stop and the running timer
   await page.getByRole('link', { name: 'Library' }).click();
   await expect(page).toHaveURL(/#\/library$/);
   await page.waitForTimeout(2_000);
-  await page.getByRole('link', { name: 'Record' }).click();
+  await page.getByRole('navigation').getByRole('link', { name: 'Record' }).click();
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
   await expect(timer(page)).not.toHaveText(/^0:0[01]$/);
 
@@ -298,7 +298,7 @@ test('Space off Record does nothing', async ({ page }) => {
   await blur(page);
   await page.keyboard.press('Space');
   await page.waitForTimeout(500);
-  await page.getByRole('link', { name: 'Record' }).click();
+  await page.getByRole('navigation').getByRole('link', { name: 'Record' }).click();
   await expectNoTake(page);
   expect(errors).toEqual([]);
 });
@@ -331,7 +331,7 @@ test('Space after clicking the Record nav link starts a take (links ignore Space
   page,
 }) => {
   const errors = await goLive(page);
-  await page.getByRole('link', { name: 'Record' }).click();
+  await page.getByRole('navigation').getByRole('link', { name: 'Record' }).click();
   await expect(page.getByRole('link', { name: 'Record' })).toBeFocused();
   await page.keyboard.press('Space');
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
@@ -615,7 +615,7 @@ test('the Microphone select is disabled with its reason during the count-in and 
   await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
   await stopButton(page).click();
   await tabTakeId(page);
-  await page.getByRole('link', { name: 'Record' }).click();
+  await page.getByRole('navigation').getByRole('link', { name: 'Record' }).click();
   await expect(select).toBeEnabled();
   await expect(field).not.toHaveAttribute('title');
   await expect(select).not.toHaveAttribute('aria-describedby');

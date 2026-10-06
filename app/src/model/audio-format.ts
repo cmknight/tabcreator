@@ -30,3 +30,19 @@ export function extensionFor(mime: string): AudioExtension {
 export function mimeForExtension(ext: string): AudioMime | null {
   return AUDIO_FORMATS.find((f) => f.ext === ext)?.mime ?? null;
 }
+
+/**
+ * The extensions to look for, in order: the one for `mime` first (when it is in the table),
+ * then the rest in `AUDIO_FORMATS` order.
+ */
+export function preferredExtensions(mime?: string | null): AudioExtension[] {
+  const all = AUDIO_FORMATS.map((f) => f.ext);
+  if (!mime) return all;
+  let first: AudioExtension;
+  try {
+    first = extensionFor(mime);
+  } catch {
+    return all;
+  }
+  return [first, ...all.filter((e) => e !== first)];
+}
