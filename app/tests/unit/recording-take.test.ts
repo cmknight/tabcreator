@@ -1660,6 +1660,7 @@ describe('recovery in the store (story 3.11)', () => {
       deleteAudio: vi.fn(async () => {}),
       encodePcm: vi.fn(async () => new Blob(['x'], { type: 'audio/webm;codecs=opus' })),
       encodeWav: vi.fn(() => new Blob(['x'], { type: 'audio/wav' })),
+      decode: vi.fn(() => Promise.reject(new Error('no decoder'))),
     };
   }
 
@@ -1803,6 +1804,7 @@ describe('take-save robustness (story 5.2)', () => {
       deleteAudio: vi.fn(async () => {}),
       encodePcm: vi.fn(async () => new Blob(['x'], { type: 'audio/webm;codecs=opus' })),
       encodeWav: vi.fn(() => new Blob(['x'], { type: 'audio/wav' })),
+      decode: vi.fn(() => Promise.reject(new Error('no decoder'))),
     };
   }
 

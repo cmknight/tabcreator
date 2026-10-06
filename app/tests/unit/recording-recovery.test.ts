@@ -42,6 +42,8 @@ interface World {
   takes: Map<string, Take>;
   raw: Map<string, Float32Array>;
   audio: Map<string, Blob>;
+  /** What each take's compressed copy decodes to; a take not listed fails to decode. */
+  decoded: Map<string, Float32Array>;
 }
 
 function setup(
@@ -51,6 +53,7 @@ function setup(
   const takes = world.takes ?? new Map<string, Take>();
   const raw = world.raw ?? new Map<string, Float32Array>();
   const audio = world.audio ?? new Map<string, Blob>();
+  const decoded = world.decoded ?? new Map<string, Float32Array>();
   const log: string[] = [];
   let published: readonly RecoveredTake[] = [];
   let activeTakeId = options.activeTakeId ?? null;
@@ -89,6 +92,12 @@ function setup(
     encodeWav: vi.fn((samples: Float32Array, rate: number) => {
       log.push(`encodeWav ${samples.length} ${rate}`);
       return new Blob(['wav'], { type: 'audio/wav' });
+    }),
+    decode: vi.fn(async (blob: Blob) => {
+      const id = [...audio.entries()].find(([, b]) => b === blob)?.[0];
+      const pcm = id === undefined ? undefined : decoded.get(id);
+      if (!pcm) throw new AppError('analysis-failed', 'undecodable');
+      return { pcm };
     }),
   };
   const host: RecoveryHost = {
@@ -333,6 +342,52 @@ describe('Open', () => {
     );
   });
 
+  it('DS2: a compressed copy longer than the raw file gives the duration and clipping', async () => {
+    const copy = seconds(5);
+    copy[copy.length - 1] = 1; // one clipped sample past the raw file's end
+    const t = await offered({
+      takes: new Map([['a', take('a')]]),
+      raw: new Map([['a', seconds(3)]]),
+      audio: new Map([['a', new Blob(['ogg'], { type: 'audio/ogg;codecs=opus' })]]),
+      decoded: new Map([['a', copy]]),
+    });
+    await t.recovery.open('a');
+    expect(t.host.patchTake).toHaveBeenCalledWith(
+      'a',
+      expect.objectContaining({ durationMs: 5000, clipped: true }),
+      'recording-session',
+    );
+  });
+
+  it('DS2: a copy that fails to decode keeps the raw-based duration and clipping', async () => {
+    const t = await offered({
+      takes: new Map([['a', take('a')]]),
+      raw: new Map([['a', seconds(3)]]),
+      audio: new Map([['a', new Blob(['ogg'], { type: 'audio/ogg;codecs=opus' })]]),
+    });
+    await t.recovery.open('a');
+    expect(t.deps.decode).toHaveBeenCalledTimes(1);
+    expect(t.host.patchTake).toHaveBeenCalledWith(
+      'a',
+      expect.objectContaining({ durationMs: 3000, clipped: false }),
+      'recording-session',
+    );
+  });
+
+  it('DS2: a raw-only take (recovery encodes it) is measured from the raw file, not decoded', async () => {
+    const t = await offered({
+      takes: new Map([['a', take('a')]]),
+      raw: new Map([['a', seconds(2)]]),
+    });
+    await t.recovery.open('a');
+    expect(t.deps.decode).not.toHaveBeenCalled();
+    expect(t.host.patchTake).toHaveBeenCalledWith(
+      'a',
+      expect.objectContaining({ durationMs: 2000 }),
+      'recording-session',
+    );
+  });
+
   it('encoding fails: WAV is written instead', async () => {
     const t = await offered({
       takes: new Map([['a', take('a')]]),
@@ -367,6 +422,60 @@ describe('Open', () => {
     expect(t.host.patchTake).toHaveBeenCalledWith(
       'a',
       expect.objectContaining({ audioMime: 'audio/mp4' }),
+      'recording-session',
+    );
+  });
+
+  it('DS2: a copy saved during the encode is decoded for the duration', async () => {
+    const t = await offered({
+      takes: new Map([['a', take('a')]]),
+      raw: new Map([['a', seconds(1)]]),
+      decoded: new Map([['a', seconds(4)]]),
+    });
+    vi.mocked(t.deps.encodePcm).mockImplementationOnce(async () => {
+      t.audio.set('a', new Blob(['m4a'], { type: 'audio/mp4' }));
+      return new Blob(['x'], { type: 'audio/webm;codecs=opus' });
+    });
+    await t.recovery.open('a');
+    expect(t.host.patchTake).toHaveBeenCalledWith(
+      'a',
+      expect.objectContaining({ audioMime: 'audio/mp4', durationMs: 4000 }),
+      'recording-session',
+    );
+  });
+
+  it('DS2: a handover during the decode writes nothing', async () => {
+    const t = await offered({
+      takes: new Map([['a', take('a')]]),
+      raw: new Map([['a', seconds(1)]]),
+      audio: new Map([['a', new Blob(['ogg'], { type: 'audio/ogg;codecs=opus' })]]),
+      decoded: new Map([['a', seconds(2)]]),
+    });
+    const real = vi.mocked(t.deps.decode).getMockImplementation()!;
+    vi.mocked(t.deps.decode).mockImplementationOnce(async (blob, rate) => {
+      const value = await real(blob, rate);
+      t.handOver();
+      return value;
+    });
+    await t.recovery.open('a');
+    expect(t.host.patchTake).not.toHaveBeenCalled();
+    expect(t.host.navigate).not.toHaveBeenCalled();
+    expect(t.takes.get('a')?.status).toBe('recording');
+  });
+
+  it('DS2: a lossy overshoot inside the raw length does not mark the take clipped', async () => {
+    const copy = seconds(3);
+    copy[100] = 1; // the decode overshoots where raw audio exists
+    const t = await offered({
+      takes: new Map([['a', take('a')]]),
+      raw: new Map([['a', seconds(2)]]),
+      audio: new Map([['a', new Blob(['ogg'], { type: 'audio/ogg;codecs=opus' })]]),
+      decoded: new Map([['a', copy]]),
+    });
+    await t.recovery.open('a');
+    expect(t.host.patchTake).toHaveBeenCalledWith(
+      'a',
+      expect.objectContaining({ durationMs: 3000, clipped: false }),
       'recording-session',
     );
   });

@@ -49,3 +49,4 @@
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-trim-plan.md`
   summary: EXPERIENCE.md does not yet carry story 8.7's trim copy — handle names and times ("Trim start 0:02.00"), "Loading waveform…", "Couldn't load the waveform", "Trimmed: n notes", "Trim reset: n notes", "Trim cancelled", "Trim failed — try again", "Busy trimming", "Busy re-analysing", "Trim and re-analyse", "Undo trim" — owner: UX owner.
   evidence: Strings in app/src/ui/strings.ts.
+- resolved: DS2 (recovered take metadata from the compressed copy) — fixed in epic Library and export, story 8 (`story-recovered-take-metadata-from-its-compressed-copy-ds2-plan.md`), 2026-10-06.

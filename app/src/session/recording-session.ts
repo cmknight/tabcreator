@@ -61,6 +61,7 @@ import {
   type MicDevice,
   type MicPermission,
 } from '../audio/mic';
+import { decodeTakeAudio } from '../audio/decode';
 import { encodePcm, encodeWavBlob, WAV_MIME } from '../audio/encode';
 import { devEncodePcm } from '../dev/hooks/recovery';
 import { readDevLimits } from '../dev/hooks/recording';
@@ -253,6 +254,7 @@ const NO_RECOVERY: RecoveryDeps = {
   deleteAudio: () => Promise.resolve(),
   encodePcm: () => Promise.reject(new AppError('storage-failed', 'No encoder')),
   encodeWav: () => new Blob([], { type: WAV_MIME }),
+  decode: () => Promise.reject(new AppError('audio-missing', 'No decoder')),
 };
 
 /** The `beforeunload` guard: asks before the page is left. */
@@ -852,6 +854,7 @@ export const recordingSession: RecordingSession = createRecordingSession({
     // Dev builds only: the re-encode failure hook (dev/hooks/recovery.ts) tree-shakes out.
     encodePcm: import.meta.env.DEV ? devEncodePcm(encodePcm) : encodePcm,
     encodeWav: encodeWavBlob,
+    decode: decodeTakeAudio,
   },
   addUnloadGuard: (handler) => {
     window.addEventListener('beforeunload', handler);

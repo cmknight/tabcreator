@@ -21,6 +21,12 @@
 // A handover cancels Open (story 5.3): the rebuild re-checks `handedOver()` after each await and
 // re-reads the take just before its save, so after a handover it writes nothing and never
 // navigates; the take stays `recording` for the new holder's scan.
+//
+// Metadata from the kept copy (DS2, story "Recovered take metadata from its compressed copy"):
+// when the take keeps a compressed copy (saved before Open, or meanwhile), its `durationMs` is the
+// decoded copy's length, which can exceed the raw file after raw append failures or an early
+// storage-full; clipping counts the raw samples plus the decoded copy past them. A copy that does
+// not decode keeps the raw-based values. The banner's `durationMs` stays the raw length.
 
 import { quietly } from '../model/quietly';
 import type { Take } from '../model/types';
@@ -58,6 +64,8 @@ export interface RecoveryDeps {
   encodePcm: (samples: Float32Array, sampleRate: number) => Promise<Blob>;
   /** The WAV fallback, as a Blob of type `audio/wav`. */
   encodeWav: (samples: Float32Array, sampleRate: number) => Blob;
+  /** Decodes a compressed copy to mono PCM (audio/decode.ts `decodeTakeAudio`). */
+  decode: (blob: Blob, sampleRate: number) => Promise<{ pcm: Float32Array }>;
 }
 
 /** What recovery needs from the recording store besides its own deps. */
@@ -253,14 +261,16 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
     }
     const samples = await deps.readRaw(id);
     if (host.handedOver()) return;
-    const durationMs = Math.round((samples.length / take.sampleRate) * 1000);
     let audioMime: string;
     let blob: Blob | null = null;
+    /** The compressed copy the take keeps, when one was already saved (not recovery's encode). */
+    let kept: Blob | null = null;
     const existing = await deps.readCompressed(id);
     if (host.handedOver()) return;
     if (existing) {
       // Never overwritten, and no second format (writeCompressed deletes the others).
       audioMime = existing.type;
+      kept = existing;
     } else {
       let encoded: Blob;
       try {
@@ -274,11 +284,26 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
       if (host.handedOver()) return;
       if (meanwhile) {
         audioMime = meanwhile.type;
+        kept = meanwhile;
       } else {
         blob = encoded;
         audioMime = encoded.type;
       }
     }
+    // The take's audio is the compressed copy it keeps, which can be longer than the raw file after
+    // raw append failures or an early storage-full (DS2): measure that copy when it decodes, else
+    // the raw samples.
+    let measured = samples;
+    if (kept) {
+      try {
+        const decoded = await deps.decode(kept, take.sampleRate);
+        if (decoded.pcm.length > 0) measured = decoded.pcm;
+      } catch {
+        // An undecodable copy keeps the raw-based values.
+      }
+      if (host.handedOver()) return;
+    }
+    const durationMs = Math.round((measured.length / take.sampleRate) * 1000);
     // Re-read just before the save: a take saved meanwhile (by this tab, or by a tab that held
     // the lock until now) is never patched over.
     const now = await deps.getTake(id);
@@ -287,8 +312,11 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
       drop(id);
       return;
     }
+    // Clipping counts the raw samples, plus only the part of the decoded copy past them: a lossy
+    // decode can overshoot the original peaks slightly, so it is not re-counted where raw exists.
     const clips = createClipCounter();
     clips.addSamples(samples);
+    if (measured.length > samples.length) clips.addSamples(measured.subarray(samples.length));
     await saveTake(host, id, {
       blob,
       audioMime,
