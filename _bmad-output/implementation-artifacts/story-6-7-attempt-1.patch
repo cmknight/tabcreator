@@ -1,0 +1,2154 @@
+diff --git a/app/src/dev/hooks/storage-full.ts b/app/src/dev/hooks/storage-full.ts
+index 2e91771..e81053a 100644
+--- a/app/src/dev/hooks/storage-full.ts
++++ b/app/src/dev/hooks/storage-full.ts
+@@ -1,4 +1,4 @@
+-// Dev-only hook (story 3.9): while `window.__storageFullHook` is true, every raw append rejects
++// Dev-only hooks. Story 3.9: while `window.__storageFullHook` is true, every raw append rejects
+ // with `storage-full`, as when the disk fills mid-take. storage/audio-store.ts calls it only
+ // inside `import.meta.env.DEV`, so production builds tree-shake this module. Read through
+ // `globalThis`, as the OPFS worker's build also compiles audio-store.ts.
+@@ -7,6 +7,7 @@
+ 
+ interface StorageFullHook {
+   __storageFullHook?: boolean;
++  __storageFullSaveHook?: boolean;
+ }
+ 
+ /** Whether the dev storage-full hook is on. */
+@@ -14,3 +15,14 @@ export function storageFullHookOn(): boolean {
+   if (!import.meta.env.DEV) return false;
+   return !!(globalThis as StorageFullHook).__storageFullHook;
+ }
++
++/**
++ * Whether the dev storage-full save hook is on (story "Storage protection and Library states"):
++ * while `window.__storageFullSaveHook` is true, compressed audio writes and the take and tab
++ * saves (`patchTake`, `putTab`) reject with `storage-full` (storage/write-guard.ts
++ * `assertDevSaveSpace`), until it is cleared.
++ */
++export function storageFullSaveHookOn(): boolean {
++  if (!import.meta.env.DEV) return false;
++  return !!(globalThis as StorageFullHook).__storageFullSaveHook;
++}
+diff --git a/app/src/session/README.md b/app/src/session/README.md
+index 8f0fef9..6c101b7 100644
+--- a/app/src/session/README.md
++++ b/app/src/session/README.md
+@@ -4,7 +4,7 @@ recording-session.ts composes its input derivations through input-derivation.ts:
+ 
+ recording-recovery.ts is a module of recording-session.ts (story 3.11): the start-up recovery scan, Open and Discard of unfinished takes; the store composes it and publishes its list as `recovered`.
+ 
+-take-lifecycle.ts is a module of recording-session.ts: the take in progress and the recording state machine (start, count-in, chunks, length limits, failure stops, the save). take-save.ts holds what recording and recovery share: `MIN_TAKE_MS` and its one test `isTooShort`, the clip counter and the save step. The store's `isBusy()` is the one busy answer for its `beforeunload` guard; app-reload.ts's `isAppBusy()` (story 5.7) adds `analysis.isAnalysing()` and is the one busy answer for every app reload (Settings' and the Tab screen's Reload, and the update toast later). `beforeunload` does not ask while analysing: an analysis interrupted by a reload starts again when its Tab opens.
++take-lifecycle.ts is a module of recording-session.ts: the take in progress and the recording state machine (start, count-in, chunks, length limits, failure stops, the save). take-save.ts holds what recording and recovery share: `MIN_TAKE_MS` and its one test `isTooShort`, the clip counter, the save step and `requestPersist` (story 6.7: after a take is saved, by a stop or a recovery Open, the store's `requestPersist` dep, storage/persistence.ts `requestPersistOnce`, is called fire and forget; never after a failed save, never on start). The store's `isBusy()` is the one busy answer for its `beforeunload` guard; app-reload.ts's `isAppBusy()` (story 5.7) adds `analysis.isAnalysing()` and is the one busy answer for every app reload (Settings' and the Tab screen's Reload, and the update toast later). `beforeunload` does not ask while analysing: an analysis interrupted by a reload starts again when its Tab opens.
+ 
+ instance-lock.ts gates the app on the Web Lock and hands it over (story 3.10); after a steal the new holder's recovery scan waits for the old holder's `released` message (story 5.3), with a 30 s fallback.
+ 
+@@ -14,10 +14,10 @@ Dev hooks: the readers and state behind every dev-only e2e hook (`__recordingClo
+ 
+ take-session.ts is the Tab screen's store, one per open take (story 5.6): it loads the take and tab, calls `ensureAnalysed` for a `recorded` take and publishes progress, then the committed take and tab; it handles storage events per AD-5. `dispose()` detaches without cancelling the analysis. Story 5.7: `cancel()`, `analyse()` (Analyse and Retry) and `retryCommit()`; a cancelled run stays cancelled for the session, and a new session analyses a `recorded` take again. Story "Tab screen, reflow and selection": `selectedNoteId` with `select`/`selectNext`/`selectPrev` (played order, kept by note id, cleared when the note is gone) and `rename(title)` (`patchTake` as `take-session`, published locally); `setActiveTakeSession`/`activeTakeSession` hold the mounted Tab screen's session for the ←/→/Esc shortcuts. Story "Flags, warnings and bar lines on screen": `selectNextFlagged(from?)` (Next to check, `N`: the next low-confidence note in played order, wrapping). `lastFocusedNoteId` (set by `focusNote`, cleared when the note is gone) is the one record of the focused note: the arrows, `N` and Next to check start from it with nothing selected, and it holds the tab area's tab stop. The UI reads it through `ui/use-take-session.ts`. Story "Change a fret and undo it" (spine AD-4, AD-16): the edit core. `apply(command)` runs the two-phase commands of `model/edit-history.ts` one at a time per take (a promise queue that undo and redo join): it plans against the current Tab revision, maps each planned request to `engineClient.mapFrets`, drops a result whose revision went stale and plans again, and publishes the reduced Tab as one undo step (at most 200, in memory only; reset when a take loads or an analysis replaces the tab). An engine error drops the command and emits a `failed` edit event. `setFret`, `typeDigit` (a second digit on the same note within 400 ms makes one number and merges into the first's step; the clock is injectable), `undo`/`redo` (the selection follows the step's note), `canUndo`/`canRedo`. The edited Tab is saved with a 300 ms debounced `putTab`; `flush()` saves at once, on dispose (not awaited) and on `pagehide` / `visibilitychange` → hidden while active. A `storage-full` save keeps the Tab and sets the snapshot's `saveFailed` (the screen's banner Retry calls `retrySave`); the next successful save clears it; other save errors are logged and retried on the next flush. On `take-deleted` the pending save and queued commands are dropped. `hasUnsavedEdits()` (a save pending or in flight, or a failed one while its screen is open) feeds app-reload.ts's `isAppBusy()`. Edit outcomes go to `onEditEvent` listeners; the Tab screen words and announces them (this layer may not import `ui/`). Dev builds force `storage-full` on every `putTab` with `window.__putTabStorageFullHook`. Story "String moves, delete, insert and confirm": `moveString(noteId, string)` and `moveStringBy(±1)` (↑/↓: the next thinner or thicker string that plays the pitch, via `model/edit-history.ts` `playablePositions`), `deleteSelected()`, `insert()` (after the selection, or before the first note with none; the new note's id comes from the injectable `newId` dep, default `crypto.randomUUID`, and a digit typed before the insert lands sets its fret) and `confirm(noteId)` run through `apply`. A command's `selectAfter` sets the selection once it applies (a delete: the next note in played order, else the previous; an insert: the new note). Commands apply only while the tab is shown; undo and redo also work with no notes left (No notes found) while there is history. A delete's edit event carries the deleted note's string and fret; a command that changes nothing (confirming a confirmed note) emits no event, except a set fret. Story "Analysis settings and re-analysis" (US-4.6, AD-4): `setSettings(patch)` clamps (`model/analysis-settings.ts`) and saves `settings` with `patchTake` at once (published locally; no undo step; a failed write reverts to the stored settings). `reanalyse()` queues like a command (refused with `audio-missing` when the take has neither compressed audio nor a raw file, `hasAudio`; `hasRaw` is read at load through the `hasRaw` dep): `analysis.reanalyse`, then `model/edit-history.ts` `freshNotes` (new ids, low confidence below c + 0.15), `mergeReanalysis` (fresh notes within 50 ms of a locked note or a `deletedStartMs` entry dropped; locked notes kept unchanged), one `mapFrets` with a lock per locked note (`reanalysisRequest`, `placeReanalysed`: an unlocked note with no position is dropped), one `commitAnalysis` (Tab + `warnings`, `analysisVersion`), then `deleteRaw` when the raw file was read. The snapshot's `reanalysis` carries its progress; meanwhile edits, undo and redo do nothing and the undo and redo labels read null. `cancelReanalysis()` cancels it with nothing changed. A finished re-analysis pushes one snapshot step (`{kind: 'reanalyse'}`, no target) of `{notes, deletedStartMs, settings, trimStartMs, trimEndMs, warnings, analysisVersion}`; undo and redo of it restore all seven through `commitAnalysis`. Its `before` settings are `analysedSettings` (the take's at load or first analysis, then each re-analysis's or restore's). Pending edit saves are held while a `commitAnalysis` writes the Tab. Outcomes go to `onEditEvent` as `reanalysed`, `reanalyseCancelled` and `reanalyseFailed`. Story "Trim": `trim(startMs, endMs)` and `resetTrim()` queue the same re-analysis run with a trim range in place of the take's (the end stored as null at the duration; the full take is `{0, null}`), committing `trimStartMs`/`trimEndMs` with `analysisVersion` and `warnings` in the one `commitAnalysis` and pushing a snapshot step labelled `{kind: 'trim'}` / `{kind: 'resetTrim'}`; the snapshot's `reanalysis` carries `trim: true` meanwhile, and the outcome is a `trimmed` edit event. The audio file is never written. Notes whose `startMs` lies outside `[trimStartMs, trimEndMs ?? ∞)` are hidden (`model/notes.ts` `visibleNotes`; `shownNotes(snapshot)` here): kept stored with their ids, but not selectable, steppable, flagged for Next to check or counted by `isTabShown`, and left out of the edit commands' phrase re-fit. Every re-analysis (a trim, a reset, or a plain one on a trimmed take) merges only the visible locked notes, keeps the hidden locked ones aside unchanged and out of `mapFrets` (`hiddenLocked`), and drops hidden unlocked ones. A trim or a reset (not a settings re-analysis) first anchors its fresh notes to the existing unlocked notes in the new range (`anchorToExisting`: within 50 ms, nearest first, one-to-one; the existing `startMs`, `endMs` and id are kept, the fresh pitch and confidence taken), so existing notes keep their times; fresh notes outside the range are dropped before anchoring, and an unlocked in-range note the engine did not re-detect is kept unchanged (id, times, string, fret), out of `mapFrets`. `trim(start, end)` clamps to the handle rules itself (`model/trim.ts`: the end in 500 ms..duration, the start in 0..end − 500) and ignores non-finite input. A trim's cancel and failure events carry `trim: true` ("Trim cancelled", "Trim failed — try again").
+ 
+-settings-session.ts holds the engine status (About) and a `prefs` snapshot loaded with `loadPrefs()` (story "Flags, warnings and bar lines on screen"); `setBarLines(on)` writes `prefs.barLines` through `updatePrefs` and publishes. `subscribePrefs` subscribes without asking the engine for its version, so the Tab screen never starts the engine. recording-session.ts keeps its own `updatePrefs` calls for the mic and count-in fields. Story "Analysis settings and re-analysis": the snapshot's `prefs` also carries `analysisDefaults`; `setAnalysisDefaults(patch)` clamps and writes them (the Settings screen's "Defaults for new takes"), which recording-session copies into each new take.
++settings-session.ts holds the engine status (About), `storageProtected` (story 6.7: storage/persistence.ts `persisted()`, read on each `subscribe`, not on `subscribePrefs`; null until read) and a `prefs` snapshot loaded with `loadPrefs()` (story "Flags, warnings and bar lines on screen"); `setBarLines(on)` writes `prefs.barLines` through `updatePrefs` and publishes. `subscribePrefs` subscribes without asking the engine for its version, so the Tab screen never starts the engine. recording-session.ts keeps its own `updatePrefs` calls for the mic and count-in fields. Story "Analysis settings and re-analysis": the snapshot's `prefs` also carries `analysisDefaults`; `setAnalysisDefaults(patch)` clamps and writes them (the Settings screen's "Defaults for new takes"), which recording-session copies into each new take.
+ 
+ waveform.ts (story "Trim") gives the Trim strip its waveform: `loadPeaks(take, columns)` reads the PCM as analysis does (the raw file, else the compressed audio decoded on the main thread by `audio/decode.ts`; `audio-missing` with neither) and sends it once per take (transferred) to `audio/waveform-worker.ts` (a module worker of its own, not the engine worker, AD-8), which keeps it and answers one `peaks` request per column count (`model/waveform.ts` `reducePeaks`), routed by request id. Peaks are cached per take and column count (8 sets, least recently used dropped); a failed load is not cached. `release(takeId)` (the strip unmounting; a `take-deleted` event) drops the take's PCM in the worker and its peaks. A worker `error` or `messageerror` rejects every pending request and the next request starts a new worker (sending the PCM again). Without `Worker` (jsdom) the same handler runs on the main thread. `ui/` reaches `audio/` only through it.
+ 
+ playback.ts (story "Playback with a following cursor") gives the Tab screen's playback the take's compressed audio (`readTakeAudio`, `audioStore.readCompressed`) and holds the mounted screen's playback controller (`setActivePlayback`/`activePlayback`) for the Space and `P` shortcuts, a sibling of take-session's active-session slot. The playback state itself (the `<audio>` element, speed, the cursor) is UI state in `ui/use-playback.ts` and is never stored.
+ 
+-library-session.ts (story "Library list (tracer)", US-7.1) is the Library screen's store: `{loading, rows, error}`, read with useSyncExternalStore. Its first listener starts it: one `db.listTakes()`, one `db.listTabs()` and one `audioStore.listCompressed()` (with byte sizes), built into rows by `model/library.ts` (`libraryRow`, `sortRows`: newest first by `createdAt`). While it has listeners it follows storage events (AD-5): `take-put` and `tab-put` re-read that take, its tab and its size (`compressedSize`) and replace, insert or remove its row; `take-deleted` removes it; `library-restored` reads everything again. Events that arrive during a full read are applied once it lands; a refresh overtaken by a later one or by a delete is dropped. When the last listener leaves it stops following events, and the next first listener reads the library again (the old rows stay shown meanwhile). A failed full read sets `error` to its AppError code (logged), and the events that arrived during it are still refreshed; the next successful refresh clears `error` and reads the library again. A failed size listing leaves sizes blank until a per-take refresh fills them; the listing itself skips a file that is gone or fails to open rather than failing. With two compressed files for one take, the one matching its `audioMime` gives the size (`model/library.ts` `pickSize`, `compressedSize(id, mime)`). It reads only storage (AD-3). Story "Rename, delete take and delete audio" (6.2) adds its writes, as the `library-session` writer (AD-14): `rename(id, title)` (`model/title.ts` `renamedTitle`: trimmed, at most `TITLE_MAX` code points, empty or unchanged writes nothing; `patchTake` of `title`, shown on the row at once and kept over refreshes until written; when the latest rename fails the row re-reads the stored title), `deleteTake(id)` (`db.deleteTake`: the take, its tab and every audio file, files best-effort; the row goes with `take-deleted`) and `deleteAudio(id)` (only for an analysed take that still has `audioMime`, else nothing: `patchTake` of `audioMime: null` first, then `audioStore.deleteAudio` and `deleteRaw`, best-effort (AD-15); a failed patch removes no file; the row shows "Audio deleted" through `take-put`; files left by a failed removal go in recording-recovery's start-up scan). A failed write is logged and rejects; the Library screen shows a toast. An open Tab session picks up a rename or deleted audio through its `take-put` re-read. A take deleted while no Tab session is open still drops take-session's held storage-full edit (`heldTabs`, cleared by one module-level `take-deleted` listener) and analysis's pending commit (its listener stays subscribed while a commit is pending). Story "Back up the library" (6.5, US-7.3) adds `backUp()`: one backup at a time (a call while one runs does nothing and resolves to null), its progress published as `backup: { progress: 0..1 }` in the snapshot (null when none runs, and again once it ends, success or failure). It calls `storage/backup.ts` `createBackup` (the manifest from `db.listTakes`/`db.listTabs`, the zip built in `storage/backup-worker.ts` from OPFS) and resolves to `{ blob, fileName, takes, missingAudio, unsupportedAudio }`; a progress report after the run ended is dropped; the Library screen downloads the Blob through `ui/platform.ts` (AD-2). A failure is logged and rejects. Story "Restore from a backup" (6.6, US-7.3, Flow 4) adds `readBackup(file)` (storage/restore.ts: the backup worker's `read` unzips it and `validateBackup` checks it in full; nothing is written; resolves to the checked backup with `toImport`/`toSkip` counted against `listTakes`) and `restore(backup)` (after the screen's Confirm: re-reads the existing ids, writes the audio of the new takes with `audioStore.writeCompressed`, then their records with `db.importTakes`, which skips ids present by then; a failed write removes the audio written so far, `deleteAudio`, and writes no record; resolves to `{ imported, skipped }`). `restoring` in the snapshot is true while either runs. A backup and a restore step never overlap: a call while the other (or another of the same) runs does nothing and resolves to null. The list refreshes on `importTakes`' `library-restored`. Failures are logged and reject. Stories 6.3 (search) and 6.7 (storage states) build on its rows.
++library-session.ts (story "Library list (tracer)", US-7.1) is the Library screen's store: `{loading, rows, error}`, read with useSyncExternalStore. Its first listener starts it: one `db.listTakes()`, one `db.listTabs()` and one `audioStore.listCompressed()` (with byte sizes), built into rows by `model/library.ts` (`libraryRow`, `sortRows`: newest first by `createdAt`). While it has listeners it follows storage events (AD-5): `take-put` and `tab-put` re-read that take, its tab and its size (`compressedSize`) and replace, insert or remove its row; `take-deleted` removes it; `library-restored` reads everything again. Events that arrive during a full read are applied once it lands; a refresh overtaken by a later one or by a delete is dropped. When the last listener leaves it stops following events, and the next first listener reads the library again (the old rows stay shown meanwhile). A failed full read sets `error` to its AppError code (logged), and the events that arrived during it are still refreshed; the next successful refresh clears `error` and reads the library again. A failed size listing leaves sizes blank until a per-take refresh fills them; the listing itself skips a file that is gone or fails to open rather than failing. With two compressed files for one take, the one matching its `audioMime` gives the size (`model/library.ts` `pickSize`, `compressedSize(id, mime)`). It reads only storage (AD-3). Story "Rename, delete take and delete audio" (6.2) adds its writes, as the `library-session` writer (AD-14): `rename(id, title)` (`model/title.ts` `renamedTitle`: trimmed, at most `TITLE_MAX` code points, empty or unchanged writes nothing; `patchTake` of `title`, shown on the row at once and kept over refreshes until written; when the latest rename fails the row re-reads the stored title), `deleteTake(id)` (`db.deleteTake`: the take, its tab and every audio file, files best-effort; the row goes with `take-deleted`) and `deleteAudio(id)` (only for an analysed take that still has `audioMime`, else nothing: `patchTake` of `audioMime: null` first, then `audioStore.deleteAudio` and `deleteRaw`, best-effort (AD-15); a failed patch removes no file; the row shows "Audio deleted" through `take-put`; files left by a failed removal go in recording-recovery's start-up scan). A failed write is logged and rejects; the Library screen shows a toast. An open Tab session picks up a rename or deleted audio through its `take-put` re-read. A take deleted while no Tab session is open still drops take-session's held storage-full edit (`heldTabs`, cleared by one module-level `take-deleted` listener) and analysis's pending commit (its listener stays subscribed while a commit is pending). Story "Back up the library" (6.5, US-7.3) adds `backUp()`: one backup at a time (a call while one runs does nothing and resolves to null), its progress published as `backup: { progress: 0..1 }` in the snapshot (null when none runs, and again once it ends, success or failure). It calls `storage/backup.ts` `createBackup` (the manifest from `db.listTakes`/`db.listTabs`, the zip built in `storage/backup-worker.ts` from OPFS) and resolves to `{ blob, fileName, takes, missingAudio, unsupportedAudio }`; a progress report after the run ended is dropped; the Library screen downloads the Blob through `ui/platform.ts` (AD-2). A failure is logged and rejects. Story "Restore from a backup" (6.6, US-7.3, Flow 4) adds `readBackup(file)` (storage/restore.ts: the backup worker's `read` unzips it and `validateBackup` checks it in full; nothing is written; resolves to the checked backup with `toImport`/`toSkip` counted against `listTakes`) and `restore(backup)` (after the screen's Confirm: re-reads the existing ids, writes the audio of the new takes with `audioStore.writeCompressed`, then their records with `db.importTakes`, which skips ids present by then; a failed write removes the audio written so far, `deleteAudio`, and writes no record; resolves to `{ imported, skipped }`). `restoring` in the snapshot is true while either runs. A backup and a restore step never overlap: a call while the other (or another of the same) runs does nothing and resolves to null. The list refreshes on `importTakes`' `library-restored`. Failures are logged and reject. Story 6.3 (search) builds on its rows. Story "Storage protection and Library states" (6.7, CAP-19, CAP-25) adds `storage: { protected, usageBytes, full }` and `persistNotice` to the snapshot, all from storage/persistence.ts through injected deps (AD-3): on attach it reads `persisted()` (null until read; false when unknown) and `estimateUsage()` (null when unknown), re-reads the usage after every storage event, and follows the storage-full status (`isStorageFull`/`subscribeStorageFull`: set by a `storage-full` write, cleared by the next committed save). `persistNotice` turns true once per visit when storage is not persisted, the library has a take and `prefs.persistNoticeShown` is false; it stays true until the last listener leaves. `markPersistNoticeShown()` (the screen calls it when the notice shows) sets `prefs.persistNoticeShown` through `updatePrefs`; a failed write is logged.
+diff --git a/app/src/session/library-session.ts b/app/src/session/library-session.ts
+index 92ead9a..50e7fb9 100644
+--- a/app/src/session/library-session.ts
++++ b/app/src/session/library-session.ts
+@@ -5,8 +5,9 @@
+ // writer (AD-14): rename, delete a take, delete a take's audio. Story 6.5 adds the backup (one
+ // at a time, its progress in the snapshot). Story 6.6 adds restore (read and check a backup file,
+ // then import the takes not already present: audio first, then the records, the audio removed
+-// again if the import fails); a backup and a restore never run at the same time. Stories 6.3
+-// (search) and 6.7 (storage states) build on this snapshot.
++// again if the import fails); a backup and a restore never run at the same time. Story 6.3
++// (search) builds on this snapshot. Story 6.7 (storage states) adds `storage` (persisted, usage,
++// storage-full, read from storage/persistence.ts) and the one-time `persistNotice`.
+ 
+ import { libraryRow, pickSize, sortRows, withTitle, type LibraryRow } from '../model/library';
+ import { isAppError, type AppErrorCode } from '../model/errors';
+@@ -16,6 +17,8 @@ import type { Tab, Take, TakeWriter } from '../model/types';
+ import { audioStore, type CompressedFile } from '../storage/audio-store';
+ import { createBackup, type BackupResult } from '../storage/backup';
+ import { db, type ImportRecord } from '../storage/db';
++import { isStorageFull, persistence, subscribeStorageFull } from '../storage/persistence';
++import { loadPrefs, updatePrefs } from '../storage/prefs';
+ import { readBackup, type ValidBackup } from '../storage/restore';
+ import {
+   subscribe as subscribeStorage,
+@@ -36,6 +39,22 @@ export interface LibrarySnapshot {
+   backup: { progress: number } | null;
+   /** A restore is reading a backup file or importing it. */
+   restoring: boolean;
++  /** Storage status (story 6.7). */
++  storage: LibraryStorage;
++  /**
++   * The one-time storage notice shows this visit: storage is not persisted, the library has a
++   * take, and `prefs.persistNoticeShown` was false. Once true it stays so until the screen leaves.
++   */
++  persistNotice: boolean;
++}
++
++export interface LibraryStorage {
++  /** Whether storage is persisted; null until read. */
++  protected: boolean | null;
++  /** The bytes this origin uses (`estimate().usage`); null when unknown. */
++  usageBytes: number | null;
++  /** A storage write failed with `storage-full` since the last committed save. */
++  full: boolean;
+ }
+ 
+ export type { BackupResult } from '../storage/backup';
+@@ -102,6 +121,11 @@ export interface LibrarySession {
+    * (logged) with the write's AppError.
+    */
+   restore(backup: ValidBackup): Promise<RestoreResult | null>;
++  /**
++   * The screen showed the storage notice: `prefs.persistNoticeShown` is set, so no later visit
++   * shows it. A failed write is logged; the notice may then show again on a later visit.
++   */
++  markPersistNoticeShown(): void;
+ }
+ 
+ export interface LibraryDeps {
+@@ -131,6 +155,17 @@ export interface LibraryDeps {
+   writeCompressed(takeId: string, blob: Blob): Promise<void>;
+   /** Writes whole records, skipping ids present; resolves to the number written. */
+   importTakes(records: readonly ImportRecord[]): Promise<number>;
++  /** Whether storage is persisted; false when unknown. Never rejects. */
++  persisted(): Promise<boolean>;
++  /** The bytes used; null when unknown. Never rejects. */
++  estimateUsage(): Promise<number | null>;
++  /** The storage-full status, and its change listener (returns the unsubscribe function). */
++  isStorageFull(): boolean;
++  subscribeStorageFull(listener: () => void): () => void;
++  /** Whether the storage notice was shown on an earlier visit. */
++  persistNoticeShown(): boolean;
++  /** Remembers that the storage notice was shown. */
++  markPersistNoticeShown(): void;
+ }
+ 
+ const WRITER = 'library-session';
+@@ -144,6 +179,8 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
+     error: null,
+     backup: null,
+     restoring: false,
++    storage: { protected: null, usageBytes: null, full: false },
++    persistNotice: false,
+   };
+   const listeners = new Set<() => void>();
+   let unsubscribeStorage: (() => void) | null = null;
+@@ -207,9 +244,72 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
+       ),
+     );
+     publish({ ...snapshot, loading: false, rows: sortRows(rows), error: null });
++    checkNotice();
+     refreshChanged();
+   }
+ 
++  function setStorage(patch: Partial<LibraryStorage>) {
++    const next = { ...snapshot.storage, ...patch };
++    const cur = snapshot.storage;
++    if (
++      next.protected === cur.protected &&
++      next.usageBytes === cur.usageBytes &&
++      next.full === cur.full
++    ) {
++      return;
++    }
++    publish({ ...snapshot, storage: next });
++  }
++
++  /**
++   * Shows the storage notice this visit when storage is not persisted, the library has a take
++   * and no earlier visit showed it. Checked once the protection read and a full read landed.
++   */
++  function checkNotice() {
++    if (snapshot.persistNotice || !unsubscribeStorage) return;
++    if (snapshot.storage.protected !== false || snapshot.loading || snapshot.rows.length === 0) {
++      return;
++    }
++    let shown: boolean;
++    try {
++      shown = deps.persistNoticeShown();
++    } catch {
++      shown = false;
++    }
++    if (!shown) publish({ ...snapshot, persistNotice: true });
++  }
++
++  /** Bumped by every attach and detach: a storage read from an earlier visit is dropped. */
++  let visit = 0;
++
++  /** The latest usage read's number: an older read landing later is dropped. */
++  let usageSeq = 0;
++  async function readUsage() {
++    const gen = visit;
++    const seq = ++usageSeq;
++    let usageBytes: number | null;
++    try {
++      usageBytes = await deps.estimateUsage();
++    } catch {
++      usageBytes = null;
++    }
++    if (gen !== visit || seq !== usageSeq) return;
++    setStorage({ usageBytes });
++  }
++
++  async function readProtected() {
++    const gen = visit;
++    let isProtected: boolean;
++    try {
++      isProtected = await deps.persisted();
++    } catch {
++      isProtected = false;
++    }
++    if (gen !== visit) return;
++    setStorage({ protected: isProtected });
++    checkNotice();
++  }
++
+   /** Refreshes the takes whose events arrived while the full read ran (it landed or failed). */
+   function refreshChanged() {
+     const changed = [...changedDuringLoad];
+@@ -233,6 +333,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
+     else if (rows.length === snapshot.rows.length && snapshot.error === null) return;
+     const recovering = snapshot.error !== null;
+     publish({ ...snapshot, rows: row ? sortRows(rows) : rows, error: null });
++    checkNotice();
+     if (recovering) void loadAll();
+   }
+ 
+@@ -269,6 +370,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
+   }
+ 
+   const onStorage = (event: StorageEvent) => {
++    void readUsage();
+     if (event.type === 'library-restored') {
+       void loadAll();
+       return;
+@@ -288,14 +390,27 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
+     void refresh(event.takeId);
+   };
+ 
++  const onStorageFull = () => setStorage({ full: deps.isStorageFull() });
++  let unsubscribeFull: (() => void) | null = null;
++
+   function attach() {
+     unsubscribeStorage = deps.subscribeStorage(onStorage);
++    unsubscribeFull = deps.subscribeStorageFull(onStorageFull);
++    visit++;
++    onStorageFull();
+     void loadAll();
++    void readProtected();
++    void readUsage();
+   }
+ 
+   function detach() {
+     unsubscribeStorage?.();
+     unsubscribeStorage = null;
++    unsubscribeFull?.();
++    unsubscribeFull = null;
++    // A later visit decides again (from prefs) whether the notice shows.
++    if (snapshot.persistNotice) snapshot = { ...snapshot, persistNotice: false };
++    visit++;
+     generation++;
+     changedDuringLoad.clear();
+     refreshSeq.clear();
+@@ -449,6 +564,13 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
+     backUp,
+     readBackup: readBackupFile,
+     restore,
++    markPersistNoticeShown() {
++      try {
++        deps.markPersistNoticeShown();
++      } catch (err) {
++        devWarn('Library: remembering the storage notice failed', err);
++      }
++    },
+     subscribe(listener) {
+       listeners.add(listener);
+       if (listeners.size === 1 && !unsubscribeStorage) attach();
+@@ -478,4 +600,12 @@ export const librarySession: LibrarySession = createLibrarySession({
+   readBackup: (file) => readBackup(file),
+   writeCompressed: (id, blob) => audioStore.writeCompressed(id, blob),
+   importTakes: (records) => db.importTakes(records),
++  persisted: () => persistence.persisted(),
++  estimateUsage: () => persistence.estimateUsage(),
++  isStorageFull,
++  subscribeStorageFull,
++  persistNoticeShown: () => loadPrefs().persistNoticeShown,
++  markPersistNoticeShown: () => {
++    updatePrefs({ persistNoticeShown: true });
++  },
+ });
+diff --git a/app/src/session/recording-recovery.ts b/app/src/session/recording-recovery.ts
+index 6bf7557..a3a9071 100644
+--- a/app/src/session/recording-recovery.ts
++++ b/app/src/session/recording-recovery.ts
+@@ -34,7 +34,7 @@ import { quietly } from '../model/quietly';
+ import type { Take } from '../model/types';
+ import type { CompressedFile } from '../storage/audio-store';
+ import type { TakePatch } from '../storage/db';
+-import { createClipCounter, isTooShort, saveTake } from './take-save';
++import { createClipCounter, isTooShort, requestPersist, saveTake } from './take-save';
+ 
+ /** An unfinished take offered for recovery. */
+ export interface RecoveredTake {
+@@ -84,6 +84,8 @@ export interface RecoveryHost {
+   patchTake: (id: string, patch: TakePatch, writer: 'recording-session') => Promise<unknown>;
+   deleteTake: (id: string, writer: 'recording-session') => Promise<unknown>;
+   navigate: (id: string) => void;
++  /** Asks the browser to keep storage after a take is saved; fire and forget. Optional. */
++  requestPersist?: () => void;
+ }
+ 
+ export interface RecordingRecovery {
+@@ -343,6 +345,7 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
+     });
+     // A handover during the save: the fence rejected what came after it, and nothing navigates.
+     if (host.handedOver()) return;
++    requestPersist(host);
+     drop(id);
+     if (!host.isRecording()) host.navigate(id);
+     return;
+diff --git a/app/src/session/recording-session.ts b/app/src/session/recording-session.ts
+index fb1f28b..77c1b6e 100644
+--- a/app/src/session/recording-session.ts
++++ b/app/src/session/recording-session.ts
+@@ -70,6 +70,7 @@ import { MAX_TAKE_MS, WARN_LEAD_MS, type TakeLimits } from '../model/take-limits
+ import type { AnalysisSettings, StopReason, Take } from '../model/types';
+ import { audioStore, type RawWriter } from '../storage/audio-store';
+ import { db, type TakePatch } from '../storage/db';
++import { persistence } from '../storage/persistence';
+ import { loadPrefs, updatePrefs } from '../storage/prefs';
+ import type { InputTransition, OpenedInput } from './input-derivation';
+ import { createInputQualityWatch } from './input-quality-watch';
+@@ -239,6 +240,11 @@ export interface RecordingDeps {
+    * no guard is set.
+    */
+   addUnloadGuard?: (handler: (event: BeforeUnloadEvent) => void) => () => void;
++  /**
++   * Asks the browser to keep storage (storage/persistence.ts `requestPersistOnce`) after a take
++   * is saved, by recording or recovery; fire and forget. Absent, nothing is asked.
++   */
++  requestPersist?: () => void;
+ }
+ 
+ /** Recovery deps that find nothing (a store created without `recovery`). */
+@@ -777,6 +783,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
+     patchTake: (id, fields, writer) => deps.patchTake(id, fields, writer),
+     deleteTake: (id, writer) => deps.deleteTake(id, writer),
+     navigate: (id) => deps.navigate(id),
++    requestPersist: () => deps.requestPersist?.(),
+   });
+ 
+   let resuming = false;
+@@ -841,6 +848,7 @@ export const recordingSession: RecordingSession = createRecordingSession({
+   openRawWriter: (takeId) => audioStore.openRawWriter(takeId),
+   writeCompressed: (takeId, blob) => audioStore.writeCompressed(takeId, blob),
+   deleteTake: (id, writer) => db.deleteTake(id, writer),
++  requestPersist: () => void persistence.requestPersistOnce(),
+   recovery: {
+     listTakes: () => db.listTakes(),
+     getTake: (id) => db.getTake(id),
+diff --git a/app/src/session/settings-session.ts b/app/src/session/settings-session.ts
+index bf5d4d7..9e4419a 100644
+--- a/app/src/session/settings-session.ts
++++ b/app/src/session/settings-session.ts
+@@ -6,10 +6,14 @@
+ //
+ // Story "Analysis settings and re-analysis" (US-4.6): the Settings screen's "Defaults for new
+ // takes", `prefs.analysisDefaults`, which `recording-session` copies into each new take.
++//
++// Story "Storage protection and Library states" (6.7): `storageProtected`, whether storage is
++// persisted (storage/persistence.ts), read on each `subscribe` for the Storage panel.
+ 
+ import { engineClient, type EngineClient } from '../engine/engine-client';
+ import { clampAnalysisSettings, sameSettings } from '../model/analysis-settings';
+ import type { AnalysisSettings, Prefs } from '../model/types';
++import { persistence } from '../storage/persistence';
+ import { loadPrefs, updatePrefs, type PrefsPatch } from '../storage/prefs';
+ 
+ export type EngineStatus =
+@@ -23,6 +27,8 @@ export interface SettingsSnapshot {
+    * mirrored.
+    */
+   prefs: SettingsPrefs;
++  /** Whether storage is persisted (false when unknown); null until read. */
++  storageProtected: boolean | null;
+ }
+ 
+ /** The prefs fields settings-session handles. */
+@@ -54,10 +60,16 @@ export interface SettingsPrefsDeps {
+   updatePrefs(patch: PrefsPatch): Prefs;
+ }
+ 
++export interface SettingsStorageDeps {
++  /** Whether storage is persisted; false when unknown. */
++  persisted(): Promise<boolean>;
++}
++
+ /** The engine is asked for its version on the first subscription, not at import. */
+ export function createSettingsSession(
+   client: Pick<EngineClient, 'version'>,
+   prefsDeps: SettingsPrefsDeps = { loadPrefs, updatePrefs },
++  storageDeps: SettingsStorageDeps = { persisted: () => persistence.persisted() },
+ ): SettingsSession {
+   let snapshot: SettingsSnapshot = {
+     engine: { state: 'loading' },
+@@ -65,6 +77,7 @@ export function createSettingsSession(
+       const { barLines, analysisDefaults } = prefsDeps.loadPrefs();
+       return { barLines, analysisDefaults };
+     })(),
++    storageProtected: null,
+   };
+   const listeners = new Set<() => void>();
+   let started = false;
+@@ -82,6 +95,24 @@ export function createSettingsSession(
+     );
+   }
+ 
++  /** The latest protection read's number: an older read landing later is dropped. */
++  let protectionSeq = 0;
++  function readProtection() {
++    const seq = ++protectionSeq;
++    storageDeps.persisted().then(
++      (persisted) => {
++        if (seq === protectionSeq && snapshot.storageProtected !== persisted) {
++          publish({ storageProtected: persisted });
++        }
++      },
++      () => {
++        if (seq === protectionSeq && snapshot.storageProtected !== false) {
++          publish({ storageProtected: false });
++        }
++      },
++    );
++  }
++
+   function subscribePrefs(listener: () => void) {
+     listeners.add(listener);
+     return () => {
+@@ -93,6 +124,7 @@ export function createSettingsSession(
+     subscribe(listener) {
+       const unsubscribe = subscribePrefs(listener);
+       if (!started) start();
++      readProtection();
+       return unsubscribe;
+     },
+     subscribePrefs,
+diff --git a/app/src/session/take-lifecycle.ts b/app/src/session/take-lifecycle.ts
+index 0fd3c33..6f435b9 100644
+--- a/app/src/session/take-lifecycle.ts
++++ b/app/src/session/take-lifecycle.ts
+@@ -70,7 +70,13 @@ import type { TakeLimits } from '../model/take-limits';
+ import { DEFAULT_PREFS } from '../storage/prefs';
+ import type { OpenedInput } from './input-derivation';
+ import type { RecordingSnapshot, RecordingState } from './recording-types';
+-import { type ClipCounter, createClipCounter, isTooShort, saveTake } from './take-save';
++import {
++  type ClipCounter,
++  createClipCounter,
++  isTooShort,
++  requestPersist,
++  saveTake,
++} from './take-save';
+ 
+ /**
+  * The recording state's transitions: from each state, the states it may move to. The forward
+@@ -143,6 +149,11 @@ export interface TakeLifecycleDeps {
+   now: () => number;
+   /** A new take id. */
+   newId: () => string;
++  /**
++   * Asks the browser to keep storage (storage/persistence.ts `requestPersistOnce`), after a take
++   * is saved; fire and forget. Absent, nothing is asked.
++   */
++  requestPersist?: () => void;
+ }
+ 
+ /** What the lifecycle needs from the recording store. */
+@@ -829,6 +840,7 @@ export function createTakeLifecycle(
+       return 'failed';
+     }
+     active = null;
++    requestPersist(deps);
+     const full = stopReason === 'storage-full';
+     transition('idle', {
+       savedSeq: host.snapshot().savedSeq + 1,
+diff --git a/app/src/session/take-save.ts b/app/src/session/take-save.ts
+index 796af70..2acbe16 100644
+--- a/app/src/session/take-save.ts
++++ b/app/src/session/take-save.ts
+@@ -95,3 +95,15 @@ export async function saveTake(target: SaveTarget, id: string, save: TakeSave):
+     'recording-session',
+   );
+ }
++
++/**
++ * Asks for persistent storage (storage/persistence.ts `requestPersistOnce`) after a take is
++ * saved, by recording or recovery. Fire and forget: never throws into the save's outcome.
++ */
++export function requestPersist(deps: { requestPersist?: () => void }): void {
++  try {
++    deps.requestPersist?.();
++  } catch {
++    // Fire and forget: the take is saved either way.
++  }
++}
+diff --git a/app/src/storage/README.md b/app/src/storage/README.md
+index f1161b0..4a1c9bf 100644
+--- a/app/src/storage/README.md
++++ b/app/src/storage/README.md
+@@ -1,3 +1,5 @@
+ # storage/ — sole owner of IndexedDB, OPFS, navigator.storage and localStorage (prefs.ts) (spine AD-2); imports model/ only (AD-1).
+ 
+ db.ts `importTakes` (story "Restore from a backup", 6.6) writes whole records as given (writer `restore`, no `updatedAt` stamp) in one transaction, skipping any take id already stored (its record and tab are never overwritten), resolves to the number written and always emits one `library-restored` with that count. restore.ts reads a backup zip through the backup worker's `read` request (backup-worker.ts stays the only importer of fflate) and `validateBackup` checks the manifest and every audio entry in full before anything is written; any unreadable or invalid file is `backup-invalid`.
++
++persistence.ts (story "Storage protection and Library states", 6.7) owns `navigator.storage`: `requestPersistOnce()` (persist() at most once per page load, only when `persisted()` is false; recording-session calls it after a take is saved), `persisted()` (false when the API is missing or throws; waits for a request in flight) and `estimateUsage()` (`estimate().usage`, null when unknown); none throws. It also keeps the storage-full status, with its own `subscribeStorageFull` (not a `StorageEvent`): write-guard.ts `toStorageError` sets it on every `storage-full` result (QuotaExceededError, and the dev hooks), and the next committed save clears it (persistence.ts listens to events.ts for `take-put`, `tab-put` and `library-restored`). It is in memory only: it survives navigation, not a reload. Dev builds: `window.__storageFullSaveHook` (dev/hooks/storage-full.ts) makes `writeCompressed`, `patchTake` and `putTab` reject `storage-full` through `assertDevSaveSpace` until cleared.
+diff --git a/app/src/storage/audio-store.ts b/app/src/storage/audio-store.ts
+index 273c379..ca7662f 100644
+--- a/app/src/storage/audio-store.ts
++++ b/app/src/storage/audio-store.ts
+@@ -12,7 +12,7 @@ import {
+   type AudioExtension,
+ } from '../model/audio-format';
+ import { AppError } from '../model/errors';
+-import { assertWritable, hasErrorName, toStorageError } from './write-guard';
++import { assertDevSaveSpace, assertWritable, hasErrorName, toStorageError } from './write-guard';
+ 
+ const AUDIO_DIR = 'audio';
+ const RAW_DIR = 'raw';
+@@ -176,6 +176,7 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
+   return {
+     async writeCompressed(takeId, blob) {
+       assertWritable();
++      if (import.meta.env.DEV) assertDevSaveSpace('Write compressed audio');
+       let ext: string;
+       try {
+         ext = extensionFor(blob.type);
+@@ -250,7 +251,10 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
+           // The dev storage-full hook (dev/hooks/storage-full.ts): production builds replace the
+           // condition with `false`, so the hook tree-shakes out.
+           if (import.meta.env.DEV && storageFullHookOn()) {
+-            throw new AppError('storage-full', 'Raw audio write: quota exceeded (dev hook)');
++            throw toStorageError(
++              new AppError('storage-full', 'Raw audio write: quota exceeded (dev hook)'),
++              'Raw audio write',
++            );
+           }
+           await request({ type: 'append', takeId, samples });
+         },
+diff --git a/app/src/storage/db.ts b/app/src/storage/db.ts
+index d614e67..9b07a48 100644
+--- a/app/src/storage/db.ts
++++ b/app/src/storage/db.ts
+@@ -15,7 +15,13 @@ import {
+   type Migration,
+   type TabCreatorSchema,
+ } from './migrations';
+-import { assertWritable, fenceWrites, hasErrorName, toStorageError } from './write-guard';
++import {
++  assertDevSaveSpace,
++  assertWritable,
++  fenceWrites,
++  hasErrorName,
++  toStorageError,
++} from './write-guard';
+ 
+ export { fenceWrites };
+ 
+@@ -246,6 +252,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
+ 
+     async patchTake(id, patch, writer) {
+       if (checkOwnership) assertOwnedFields(patch, writer);
++      if (import.meta.env.DEV) assertDevSaveSpace('Patch take');
+       const record = await write('Patch take', ['takes'], async (tx) => {
+         const store = tx.objectStore('takes');
+         const existing = await store.get(id);
+@@ -259,6 +266,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
+     },
+ 
+     async putTab(tab, writer) {
++      if (import.meta.env.DEV) assertDevSaveSpace('Put tab');
+       const record = await write('Put tab', ['takes', 'tabs'], async (tx) => {
+         if ((await tx.objectStore('takes').getKey(tab.takeId)) === undefined) {
+           throw notFound(tab.takeId);
+diff --git a/app/src/storage/persistence.ts b/app/src/storage/persistence.ts
+new file mode 100644
+index 0000000..32b304f
+--- /dev/null
++++ b/app/src/storage/persistence.ts
+@@ -0,0 +1,136 @@
++// Storage protection and usage (story "Storage protection and Library states", CAP-19, CAP-25;
++// spine AD-2: only storage/ touches `navigator.storage`). Three reads and one request:
++//   requestPersistOnce()  asks the browser not to evict the library, at most once per page load,
++//                         and only when it is not already persisted (called after a take is saved)
++//   persisted()           whether storage is persisted; false when the API is missing or throws
++//   estimateUsage()       the bytes used (`estimate().usage`); null when unknown
++// plus the storage-full status: set when a storage/ write fails with `storage-full`
++// (write-guard.ts `toStorageError`, and the dev hooks), cleared by the next committed save (a
++// `take-put`, `tab-put` or `library-restored` event). It lives in memory for the page's
++// lifetime: it survives navigation, not a reload. None of these ever throws.
++
++import { devWarn } from '../model/log';
++import { subscribe as subscribeStorage } from './events';
++
++/** The part of `StorageManager` used here; every method may be missing. */
++export interface StorageManagerLike {
++  persist?: () => Promise<boolean>;
++  persisted?: () => Promise<boolean>;
++  estimate?: () => Promise<{ usage?: number; quota?: number }>;
++}
++
++export interface Persistence {
++  /**
++   * Requests persistent storage, at most once per page load and only when not persisted yet.
++   * Resolves to whether storage is persisted after it; never rejects.
++   */
++  requestPersistOnce(): Promise<boolean>;
++  /** Whether storage is persisted (after any request in flight); false when unknown. */
++  persisted(): Promise<boolean>;
++  /** The bytes used by this origin; null when the estimate is missing or fails. */
++  estimateUsage(): Promise<number | null>;
++}
++
++/** `getStorage` is read at each call (tests swap it; a page without the API returns undefined). */
++export function createPersistence(getStorage: () => StorageManagerLike | undefined): Persistence {
++  let request: Promise<boolean> | null = null;
++
++  function storage(): StorageManagerLike | undefined {
++    try {
++      return getStorage();
++    } catch {
++      return undefined;
++    }
++  }
++
++  async function readPersisted(): Promise<boolean> {
++    const s = storage();
++    if (typeof s?.persisted !== 'function') return false;
++    try {
++      return (await s.persisted()) === true;
++    } catch (err) {
++      devWarn('Storage: reading persisted() failed', err);
++      return false;
++    }
++  }
++
++  async function ask(): Promise<boolean> {
++    if (await readPersisted()) return true;
++    const s = storage();
++    if (typeof s?.persist !== 'function') return false;
++    try {
++      return (await s.persist()) === true;
++    } catch (err) {
++      devWarn('Storage: persist() failed', err);
++      return false;
++    }
++  }
++
++  return {
++    requestPersistOnce() {
++      request ??= ask();
++      return request;
++    },
++    async persisted() {
++      if (request) await request;
++      return readPersisted();
++    },
++    async estimateUsage() {
++      const s = storage();
++      if (typeof s?.estimate !== 'function') return null;
++      try {
++        const { usage } = await s.estimate();
++        return typeof usage === 'number' && Number.isFinite(usage) && usage >= 0 ? usage : null;
++      } catch (err) {
++        devWarn('Storage: estimate() failed', err);
++        return null;
++      }
++    },
++  };
++}
++
++/** The app's persistence, over `navigator.storage`. */
++export const persistence: Persistence = createPersistence(() =>
++  typeof navigator === 'undefined' ? undefined : (navigator.storage as StorageManagerLike),
++);
++
++// --- The storage-full status ---
++
++let storageFull = false;
++const fullListeners = new Set<() => void>();
++
++function setStorageFull(full: boolean) {
++  if (storageFull === full) return;
++  storageFull = full;
++  for (const l of [...fullListeners]) l();
++}
++
++/** Storage-internal: a storage/ write failed with `storage-full`. */
++export function markStorageFull(): void {
++  setStorageFull(true);
++}
++
++/** Whether a storage write failed with `storage-full` since the last committed save. */
++export function isStorageFull(): boolean {
++  return storageFull;
++}
++
++/** Called each time the storage-full status changes. Returns the unsubscribe function. */
++export function subscribeStorageFull(listener: () => void): () => void {
++  fullListeners.add(listener);
++  return () => {
++    fullListeners.delete(listener);
++  };
++}
++
++/** Tests only: clears the status. */
++export function resetStorageFullForTests(): void {
++  storageFull = false;
++}
++
++// A committed save clears the status (spine AD-5: each committed write emits its event).
++subscribeStorage((event) => {
++  if (event.type === 'take-put' || event.type === 'tab-put' || event.type === 'library-restored') {
++    setStorageFull(false);
++  }
++});
+diff --git a/app/src/storage/write-guard.ts b/app/src/storage/write-guard.ts
+index 1f94fd6..1415bbd 100644
+--- a/app/src/storage/write-guard.ts
++++ b/app/src/storage/write-guard.ts
+@@ -3,7 +3,9 @@
+ // instance lock, every storage/ write rejects with `instance-taken`; reads keep working.
+ // US-8.5 calls `fenceWrites()` (re-exported from db.ts).
+ 
++import { storageFullSaveHookOn } from '../dev/hooks/storage-full';
+ import { AppError } from '../model/errors';
++import { markStorageFull } from './persistence';
+ 
+ let fenced = false;
+ 
+@@ -28,8 +30,29 @@ function errorName(err: unknown): string | undefined {
+   return undefined;
+ }
+ 
+-/** `AppError`s pass through; `QuotaExceededError` → `storage-full`; anything else → `storage-failed`. */
++/**
++ * `AppError`s pass through; `QuotaExceededError` → `storage-full`; anything else → `storage-failed`.
++ * A `storage-full` result sets the storage-full status (persistence.ts), which the next committed
++ * save clears.
++ */
+ export function toStorageError(err: unknown, what: string): AppError {
++  const mapped = mapStorageError(err, what);
++  if (mapped.code === 'storage-full') markStorageFull();
++  return mapped;
++}
++
++/**
++ * Dev builds only: while `window.__storageFullSaveHook` is on (dev/hooks/storage-full.ts), a save
++ * (compressed audio, a take patch, a tab) rejects with `storage-full` as on a full disk, through
++ * `toStorageError`. Production builds tree-shake the hook.
++ */
++export function assertDevSaveSpace(what: string): void {
++  if (import.meta.env.DEV && storageFullSaveHookOn()) {
++    throw toStorageError({ name: 'QuotaExceededError', message: 'dev hook' }, what);
++  }
++}
++
++function mapStorageError(err: unknown, what: string): AppError {
+   if (err instanceof AppError) return err;
+   const name = errorName(err);
+   const message =
+diff --git a/app/src/ui/screens/Library.module.css b/app/src/ui/screens/Library.module.css
+index 42a444e..59ef809 100644
+--- a/app/src/ui/screens/Library.module.css
++++ b/app/src/ui/screens/Library.module.css
+@@ -291,3 +291,55 @@ a.main:focus-visible {
+ .restoreBanner {
+   margin-block-start: var(--space-4);
+ }
++
++/* Story 6.7 (mockup library.html (d), (e)): the storage notice and the storage-full banner above
++   the heading, on the shared banners (components/banner.module.css). */
++.topBanner {
++  flex-wrap: wrap;
++  margin-block-end: var(--space-4);
++}
++
++/* The notice's Back up library: a text action, underlined like a link. */
++.noticeAction {
++  flex: none;
++  padding: var(--space-1) var(--space-2);
++  background: none;
++  color: var(--color-text);
++  font: var(--font-ui);
++  font-weight: 600;
++  text-decoration: underline;
++  border: 0;
++  border-radius: var(--radius-sm);
++  cursor: pointer;
++}
++
++.noticeAction[aria-disabled='true'] {
++  opacity: 0.4;
++  cursor: not-allowed;
++}
++
++/* Dismiss: a text button; plain text colour, as muted text falls under 4.5:1 on check-bg in dark. */
++.dismiss {
++  flex: none;
++  padding: var(--space-1) var(--space-2);
++  background: none;
++  color: var(--color-text);
++  font: var(--font-ui);
++  border: 0;
++  border-radius: var(--radius-sm);
++  cursor: pointer;
++}
++
++.dismiss:hover {
++  text-decoration: underline;
++}
++
++/* The footer (mockup .libfoot): the take count and the storage used. */
++.footer {
++  margin-block-start: var(--space-6);
++  padding-block-start: var(--space-3);
++  color: var(--color-text-muted);
++  font: var(--font-ui-small);
++  font-variant-numeric: tabular-nums;
++  border-block-start: 1px solid var(--color-border);
++}
+diff --git a/app/src/ui/screens/Library.tsx b/app/src/ui/screens/Library.tsx
+index 42facb1..d354688 100644
+--- a/app/src/ui/screens/Library.tsx
++++ b/app/src/ui/screens/Library.tsx
+@@ -39,6 +39,15 @@
+ // announcement; the list refreshes through `library-restored`. An invalid file, or a failed
+ // write, shows an error banner (announced assertively) until the next restore attempt or leaving
+ // the Library; nothing was changed. Cancelling the picker or the dialog changes nothing.
++//
++// Story "Storage protection and Library states" (6.7, CAP-19, CAP-25; mockup library.html (d),
++// (e), .libfoot): above the heading, the one-time storage notice (a warning banner, role status,
++// when the browser has not persisted storage: Back up library starts the backup, Dismiss hides it
++// for this visit; showing it sets `prefs.persistNoticeShown` through the session, so no later
++// visit shows it) and the storage-full banner (an error banner, role alert, no Dismiss and no
++// link, shown until a save succeeds). After the list, the footer: "23 takes · 41.0 MB used", the
++// whole library's count even while searching, with no footer for an empty library or an unknown
++// usage.
+ 
+ import {
+   useCallback,
+@@ -74,6 +83,7 @@ import {
+   PencilIcon,
+   RestoreIcon,
+   SearchIcon,
++  WarnIcon,
+ } from '../components/icons';
+ import { RowMenu, type RowMenuItem } from '../components/RowMenu';
+ import { formatElapsed, formatTakeDate } from '../format';
+@@ -596,14 +606,25 @@ export function Library({
+     | 'backUp'
+     | 'readBackup'
+     | 'restore'
++    | 'markPersistNoticeShown'
+   >;
+ } = {}) {
+-  const { loading, rows, error, backup, restoring } = useSyncExternalStore(
++  const { loading, rows, error, backup, restoring, storage, persistNotice } = useSyncExternalStore(
+     session.subscribe,
+     session.getSnapshot,
+   );
+   const heading = useRef<HTMLHeadingElement>(null);
+   const focusHeading = useCallback(() => heading.current?.focus(), []);
++
++  // The one-time storage notice: remembered as shown once it shows; Dismiss hides it this visit.
++  const [noticeDismissed, setNoticeDismissed] = useState(false);
++  const noticeShown = persistNotice && !noticeDismissed;
++  const noticeMarked = useRef(false);
++  useEffect(() => {
++    if (!noticeShown || noticeMarked.current) return;
++    noticeMarked.current = true;
++    session.markPersistNoticeShown();
++  }, [noticeShown, session]);
+   const search = useRef<HTMLInputElement>(null);
+   const [query, setQuery] = useState('');
+   const shown = useMemo(() => filterRows(rows, query), [rows, query]);
+@@ -774,6 +795,46 @@ export function Library({
+ 
+   return (
+     <section className={styles.screen}>
++      {noticeShown && (
++        <div
++          className={`${banner.banner} ${banner.warning} ${libraryStyles.topBanner}`}
++          role="status"
++          data-testid="persist-notice"
++        >
++          <WarnIcon className={banner.icon} />
++          <p className={banner.text}>{strings['library.persistNotice']}</p>
++          <button
++            type="button"
++            className={libraryStyles.noticeAction}
++            aria-disabled={!canBackUp || backup !== null || restoring || undefined}
++            onClick={backUp}
++          >
++            {strings['library.backUp']}
++          </button>
++          <button
++            type="button"
++            className={libraryStyles.dismiss}
++            aria-label={strings['library.persistNoticeDismiss']}
++            onClick={() => {
++              // The button goes with the banner: focus moves to the heading first.
++              focusHeading();
++              setNoticeDismissed(true);
++            }}
++          >
++            {strings['global.dismiss']}
++          </button>
++        </div>
++      )}
++      {storage.full && (
++        <div
++          className={`${banner.banner} ${banner.error} ${libraryStyles.topBanner}`}
++          role="alert"
++          data-testid="library-storage-full"
++        >
++          <ErrorIcon className={banner.icon} />
++          <p className={banner.text}>{strings['library.storageFull']}</p>
++        </div>
++      )}
+       <h1 ref={heading} className={styles.title} tabIndex={-1}>
+         {strings['library.title']}
+       </h1>
+@@ -866,6 +927,11 @@ export function Library({
+         </p>
+       )}
+       {body}
++      {rows.length > 0 && storage.usageBytes !== null && (
++        <footer className={libraryStyles.footer} data-testid="library-footer">
++          {strings['library.footer'](rows.length, formatMegabytes(storage.usageBytes))}
++        </footer>
++      )}
+     </section>
+   );
+ }
+diff --git a/app/src/ui/screens/Settings.module.css b/app/src/ui/screens/Settings.module.css
+index e53ff64..2276303 100644
+--- a/app/src/ui/screens/Settings.module.css
++++ b/app/src/ui/screens/Settings.module.css
+@@ -23,3 +23,34 @@
+   margin: 0;
+   font: var(--font-numeric);
+ }
++
++/* Story 6.7: the Storage panel's status line (mockup settings.html .stat), a check or warning
++   icon before it, and the Back up library link beside it when storage is not protected. */
++.row {
++  display: flex;
++  flex-wrap: wrap;
++  gap: var(--space-3);
++  align-items: center;
++  min-height: 1.5em;
++}
++
++.stat {
++  display: inline-flex;
++  gap: var(--space-2);
++  align-items: center;
++  font: var(--font-ui);
++}
++
++.statIcon {
++  flex: none;
++  width: 18px;
++  height: 18px;
++}
++
++.ok .statIcon {
++  color: var(--color-success);
++}
++
++.warn .statIcon {
++  color: var(--color-warning);
++}
+diff --git a/app/src/ui/screens/Settings.tsx b/app/src/ui/screens/Settings.tsx
+index 3ccfe86..3c95c43 100644
+--- a/app/src/ui/screens/Settings.tsx
++++ b/app/src/ui/screens/Settings.tsx
+@@ -1,7 +1,9 @@
+ // The Settings screen (mockup settings.html): the engine-failed banner, "Defaults for new takes"
+ // (story "Analysis settings and re-analysis", US-4.6: the Tab screen's analysis settings fields
+ // without Re-analyse, saved on each change to `prefs.analysisDefaults` through settings-session;
+-// new takes copy them at creation), and About (the engine version).
++// new takes copy them at creation), Storage (story 6.7: "Storage: protected", or "Storage: may be
++// cleared by the browser" with a Back up library link to the Library) and About (the engine
++// version).
+ 
+ import { useSyncExternalStore } from 'react';
+ import {
+@@ -12,7 +14,8 @@ import {
+ import { AnalysisSettingsFields } from '../components/AnalysisSettingsFields';
+ import banner from '../components/banner.module.css';
+ import buttons from '../components/buttons.module.css';
+-import { ErrorIcon } from '../components/icons';
++import { CheckIcon, ErrorIcon, WarnIcon } from '../components/icons';
++import { routeToHash } from '../router';
+ import { reloadOrExplain } from '../reload-or-explain';
+ import { strings } from '../strings';
+ import styles from './Screen.module.css';
+@@ -35,7 +38,10 @@ export interface SettingsProps {
+ }
+ 
+ export function Settings({ session = settingsSession }: SettingsProps = {}) {
+-  const { engine, prefs } = useSyncExternalStore(session.subscribe, session.getSnapshot);
++  const { engine, prefs, storageProtected } = useSyncExternalStore(
++    session.subscribe,
++    session.getSnapshot,
++  );
+   return (
+     <section className={styles.screen}>
+       {engine.state === 'unavailable' && (
+@@ -58,6 +64,30 @@ export function Settings({ session = settingsSession }: SettingsProps = {}) {
+           onChange={(patch) => session.setAnalysisDefaults(patch)}
+         />
+       </section>
++      <section className={settingsStyles.panel} aria-labelledby="settings-storage">
++        <h2 id="settings-storage" className={settingsStyles.panelTitle}>
++          {strings['settings.storage']}
++        </h2>
++        <div className={settingsStyles.row} data-testid="storage-status">
++          {storageProtected === true && (
++            <span className={`${settingsStyles.stat} ${settingsStyles.ok}`}>
++              <CheckIcon className={settingsStyles.statIcon} />
++              {strings['settings.storageProtected']}
++            </span>
++          )}
++          {storageProtected === false && (
++            <>
++              <span className={`${settingsStyles.stat} ${settingsStyles.warn}`}>
++                <WarnIcon className={settingsStyles.statIcon} />
++                {strings['settings.storageAtRisk']}
++              </span>
++              <a className={buttons.secondary} href={routeToHash({ name: 'library' })}>
++                {strings['settings.storageBackUp']}
++              </a>
++            </>
++          )}
++        </div>
++      </section>
+       <section className={settingsStyles.panel} aria-labelledby="settings-about">
+         <h2 id="settings-about" className={settingsStyles.panelTitle}>
+           {strings['settings.about']}
+diff --git a/app/src/ui/strings.ts b/app/src/ui/strings.ts
+index 00856a2..7f80e5d 100644
+--- a/app/src/ui/strings.ts
++++ b/app/src/ui/strings.ts
+@@ -545,6 +545,14 @@ export const strings = {
+   'library.restoreInvalid': "That file isn't a TabCreator backup — nothing was changed.",
+   /** The error banner when a restore's write failed (storage full or failed). */
+   'library.restoreFailed': "Restore didn't finish — nothing was changed.",
++  /** Story 6.7: the one-time notice when the browser refused persistent storage. */
++  'library.persistNotice':
++    'Your browser may clear these takes when space runs low. Back them up regularly.',
++  'library.persistNoticeDismiss': 'Dismiss storage notice',
++  /** The error banner after a save failed with storage-full (until a save succeeds). */
++  'library.storageFull': 'Storage is full — delete takes or their audio, or back up and clear',
++  /** The footer: "23 takes · 41.0 MB used" (the MB from `formatMegabytes`). */
++  'library.footer': (n: number, mb: string) => `${n} ${n === 1 ? 'take' : 'takes'} · ${mb} MB used`,
+   'tuner.title': 'Tuner',
+   /** The string name in display type; both E strings show "E". */
+   'tuner.stringLetter': (string: StringNo) =>
+@@ -574,6 +582,12 @@ export const strings = {
+     'New takes start with these values. Each take keeps its own copy in its Analysis settings.',
+   'settings.engineVersion': (version: string) => `Engine v${version}`,
+   'settings.engineVersionUnavailable': 'Engine version unavailable',
++  /** Story 6.7: the Storage panel (mockup settings.html). */
++  'settings.storage': 'Storage',
++  'settings.storageProtected': 'Storage: protected',
++  'settings.storageAtRisk': 'Storage: may be cleared by the browser',
++  /** The link to the Library shown when storage is not protected. */
++  'settings.storageBackUp': 'Back up library',
+ } as const;
+ 
+ export type StringKey = keyof typeof strings;
+diff --git a/app/tests/e2e/backup.dev.spec.ts b/app/tests/e2e/backup.dev.spec.ts
+index 71deb71..2b06918 100644
+--- a/app/tests/e2e/backup.dev.spec.ts
++++ b/app/tests/e2e/backup.dev.spec.ts
+@@ -16,7 +16,11 @@ import { opfsFileBase64, opfsFiles, readTab, readTakes } from './storage-helpers
+ const heading = (page: Page) => page.getByRole('heading', { level: 1, name: 'Library' });
+ const list = (page: Page): Locator => page.getByRole('list', { name: 'Takes, newest first' });
+ const row = (page: Page, id: string): Locator => list(page).locator(`li[data-take-id="${id}"]`);
+-const backupButton = (page: Page) => page.getByRole('button', { name: 'Back up library' });
++/** The header's Back up library (not the one-time storage notice's, story 6.7). */
++const backupButton = (page: Page) =>
++  page
++    .getByRole('button', { name: 'Back up library' })
++    .and(page.locator(':not([data-testid="persist-notice"] *)'));
+ const nav = (page: Page, name: string) =>
+   page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name, exact: true });
+ 
+diff --git a/app/tests/e2e/library.dev.spec.ts b/app/tests/e2e/library.dev.spec.ts
+index e858541..b6ab1c3 100644
+--- a/app/tests/e2e/library.dev.spec.ts
++++ b/app/tests/e2e/library.dev.spec.ts
+@@ -19,6 +19,8 @@ const list = (page: Page): Locator => page.getByRole('list', { name: 'Takes, new
+ const rows = (page: Page): Locator => list(page).getByRole('listitem');
+ const row = (page: Page, id: string): Locator => list(page).locator(`li[data-take-id="${id}"]`);
+ const heading = (page: Page) => page.getByRole('heading', { level: 1, name: 'Library' });
++/** The announcer's polite region (not the storage notice, also role status; story 6.7). */
++const politeRegion = (page: Page): Locator => page.locator('[role="status"][aria-live="polite"]');
+ 
+ /** Errors other than the dev-only warnings the app logs on purpose. */
+ const unexpected = (errors: string[]) => errors.filter((e) => !e.includes('[tabcreator]'));
+@@ -402,13 +404,13 @@ test('search: accents and case ignored; no match and Clear search; live updates
+   await searchField(page).fill('cafe');
+   await expect(titles(page)).toHaveText(['Café Blues']);
+   // The count is announced once typing settles.
+-  await expect(page.getByRole('status')).toHaveText('1 take');
++  await expect(politeRegion(page)).toHaveText('1 take');
+ 
+   await searchField(page).fill('zzz');
+   await expect(list(page)).toHaveCount(0);
+   const noMatch = page.getByRole('heading', { level: 2, name: 'No takes match "zzz"' });
+   await expect(noMatch).toBeVisible();
+-  await expect(page.getByRole('status')).toHaveText('No takes match "zzz"');
++  await expect(politeRegion(page)).toHaveText('No takes match "zzz"');
+   await expectNoSeriousAxe(page);
+   await page.getByRole('button', { name: strings['library.clearSearch'] }).click();
+   await expect(searchField(page)).toHaveValue('');
+diff --git a/app/tests/e2e/restore.dev.spec.ts b/app/tests/e2e/restore.dev.spec.ts
+index 0a255ab..198ef16 100644
+--- a/app/tests/e2e/restore.dev.spec.ts
++++ b/app/tests/e2e/restore.dev.spec.ts
+@@ -15,7 +15,11 @@ import { opfsFileBase64, opfsFiles, readTab, readTakes } from './storage-helpers
+ const heading = (page: Page) => page.getByRole('heading', { level: 1, name: 'Library' });
+ const list = (page: Page): Locator => page.getByRole('list', { name: 'Takes, newest first' });
+ const row = (page: Page, id: string): Locator => list(page).locator(`li[data-take-id="${id}"]`);
+-const backupButton = (page: Page) => page.getByRole('button', { name: 'Back up library' });
++/** The header's Back up library (not the one-time storage notice's, story 6.7). */
++const backupButton = (page: Page) =>
++  page
++    .getByRole('button', { name: 'Back up library' })
++    .and(page.locator(':not([data-testid="persist-notice"] *)'));
+ const restoreButton = (page: Page) =>
+   page.getByRole('button', { name: /^(Restore from backup|Restoring…)$/ });
+ const toast = (page: Page) => page.getByTestId('toast');
+diff --git a/app/tests/e2e/storage-states.dev.spec.ts b/app/tests/e2e/storage-states.dev.spec.ts
+new file mode 100644
+index 0000000..f6194fa
+--- /dev/null
++++ b/app/tests/e2e/storage-states.dev.spec.ts
+@@ -0,0 +1,224 @@
++import { expect, test, type Locator, type Page } from '@playwright/test';
++import { strings } from '../../src/ui/strings';
++import { collectErrors, recordButton, stopButton, timer } from './helpers';
++import { expectNoSeriousAxe, goLive, held } from './mic-helpers';
++import { seedTab } from './tab-helpers';
++
++// Story "Storage protection and Library states" (6.7, CAP-19, CAP-25): persistent storage is
++// asked for after the first take is saved; a refusal shows the one-time Library notice; Settings
++// shows the storage status; the Library footer shows the take count and usage; a save that failed
++// with storage-full shows the Library's storage-full banner until a save succeeds.
++// `navigator.storage.persist`/`persisted`/`estimate` are stubbed before the app loads.
++
++interface StorageStub {
++  grant: boolean;
++  usage: number;
++}
++
++/** Stubs `navigator.storage` on every page load; `window.__persistCalls` counts persist(). */
++async function stubStorage(page: Page, stub: StorageStub): Promise<void> {
++  await page.addInitScript((s: StorageStub) => {
++    const w = window as unknown as { __persistCalls: number; __persisted: boolean };
++    w.__persistCalls = 0;
++    w.__persisted = false;
++    const storage = navigator.storage;
++    Object.defineProperty(storage, 'persisted', {
++      configurable: true,
++      value: async () => w.__persisted,
++    });
++    Object.defineProperty(storage, 'persist', {
++      configurable: true,
++      value: async () => {
++        w.__persistCalls++;
++        if (s.grant) w.__persisted = true;
++        return w.__persisted;
++      },
++    });
++    Object.defineProperty(storage, 'estimate', {
++      configurable: true,
++      value: async () => ({ usage: s.usage, quota: 1e10 }),
++    });
++  }, stub);
++}
++
++const persistCalls = (page: Page) =>
++  page.evaluate(() => (window as unknown as { __persistCalls: number }).__persistCalls);
++
++const nav = (page: Page, name: string) =>
++  page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name }).click();
++
++const heading = (page: Page) => page.getByRole('heading', { level: 1, name: 'Library' });
++const notice = (page: Page): Locator => page.getByTestId('persist-notice');
++const fullBanner = (page: Page): Locator => page.getByTestId('library-storage-full');
++const footer = (page: Page): Locator => page.getByTestId('library-footer');
++const list = (page: Page): Locator => page.getByRole('list', { name: 'Takes, newest first' });
++const row = (page: Page, id: string): Locator => list(page).locator(`li[data-take-id="${id}"]`);
++
++/** Errors other than the dev-only warnings the app logs on purpose. */
++const unexpected = (errors: string[]) => errors.filter((e) => !e.includes('[tabcreator]'));
++
++async function openLibrary(page: Page): Promise<void> {
++  await nav(page, 'Library');
++  await expect(page).toHaveURL(/#\/library$/);
++  await expect(heading(page)).toBeVisible();
++}
++
++/** Records about 2 s of the fake mic from Record (analysis held by the URL); returns the id. */
++async function recordHeld(page: Page): Promise<string> {
++  await nav(page, 'Record');
++  await expect(recordButton(page)).toBeEnabled();
++  await recordButton(page).click();
++  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
++  await expect(timer(page)).toHaveText('0:02', { timeout: 5_000 });
++  await stopButton(page).click();
++  await expect(page).toHaveURL(/#\/tab\/[^/]+$/, { timeout: 15_000 });
++  return decodeURIComponent(new URL(page.url()).hash.slice('#/tab/'.length));
++}
++
++/** Renames the take through its row menu (a committed take write, or a failed one). */
++async function rename(page: Page, id: string, title: string): Promise<void> {
++  await row(page, id)
++    .getByRole('button', { name: /^More actions for / })
++    .click();
++  await page.getByRole('menu').getByRole('menuitem', { name: 'Rename' }).click();
++  const field = row(page, id).getByRole('textbox', { name: 'Take title' });
++  await expect(field).toBeFocused();
++  await page.keyboard.type(title);
++  await page.keyboard.press('Enter');
++}
++
++test('persist refused: asked once after the first save; the Library notice shows once, backs up, and is gone on a later visit', async ({
++  page,
++}) => {
++  test.setTimeout(90_000);
++  await stubStorage(page, { grant: false, usage: 3_000_000 });
++  const errors = await goLive(page, held());
++  // Never on start.
++  expect(await persistCalls(page)).toBe(0);
++  await recordHeld(page);
++  await expect.poll(() => persistCalls(page)).toBe(1);
++  // A second save in the same page load asks nothing more.
++  await recordHeld(page);
++  await page.waitForTimeout(200);
++  expect(await persistCalls(page)).toBe(1);
++
++  await openLibrary(page);
++  await expect(notice(page)).toBeVisible();
++  await expect(notice(page)).toHaveAttribute('role', 'status');
++  await expect(notice(page)).toContainText(strings['library.persistNotice']);
++  await expectNoSeriousAxe(page);
++  // Remembered as shown.
++  await expect
++    .poll(() =>
++      page.evaluate(
++        () => JSON.parse(localStorage.getItem('tabcreator.prefs.v1') ?? '{}').persistNoticeShown,
++      ),
++    )
++    .toBe(true);
++
++  // Its Back up library starts the backup (a download, as the header button).
++  const [download] = await Promise.all([
++    page.waitForEvent('download'),
++    notice(page).getByRole('button', { name: strings['library.backUp'] }).click(),
++  ]);
++  expect(download.suggestedFilename()).toMatch(/^tabcreator-backup-\d{8}\.zip$/);
++
++  // Dismiss hides it for this visit.
++  await notice(page).getByRole('button', { name: strings['library.persistNoticeDismiss'] }).click();
++  await expect(notice(page)).toHaveCount(0);
++  await expect(heading(page)).toBeFocused();
++
++  // Settings: not protected, with the link to the Library.
++  await nav(page, 'Settings');
++  const storage = page.getByRole('region', { name: 'Storage' });
++  await expect(storage).toContainText(strings['settings.storageAtRisk']);
++  await expect(
++    storage.getByRole('link', { name: strings['settings.storageBackUp'] }),
++  ).toHaveAttribute('href', '#/library');
++
++  // A later visit (after a reload): no notice.
++  await page.reload();
++  await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible();
++  await openLibrary(page);
++  await expect(list(page).getByRole('listitem')).toHaveCount(2);
++  await expect(notice(page)).toHaveCount(0);
++  expect(unexpected(errors)).toEqual([]);
++});
++
++test('persist granted: Settings shows Storage: protected and the Library shows no notice', async ({
++  page,
++}) => {
++  test.setTimeout(60_000);
++  await stubStorage(page, { grant: true, usage: 3_000_000 });
++  const errors = await goLive(page, held());
++  await recordHeld(page);
++  await expect.poll(() => persistCalls(page)).toBe(1);
++  await nav(page, 'Settings');
++  const storage = page.getByRole('region', { name: 'Storage' });
++  await expect(storage).toContainText(strings['settings.storageProtected']);
++  await expect(storage.getByRole('link')).toHaveCount(0);
++  await openLibrary(page);
++  await expect(list(page).getByRole('listitem')).toHaveCount(1);
++  await expect(footer(page)).toBeVisible();
++  await expect(notice(page)).toHaveCount(0);
++  expect(unexpected(errors)).toEqual([]);
++});
++
++test('the footer shows the take count and the usage in MB, keeping the full count while searching', async ({
++  page,
++}) => {
++  await stubStorage(page, { grant: true, usage: 41_000_000 });
++  const errors = collectErrors(page);
++  await page.goto('./#/library');
++  await expect(heading(page)).toBeVisible();
++  // Empty library: no footer.
++  await expect(page.getByRole('heading', { name: strings['library.empty'] })).toBeVisible();
++  await expect(footer(page)).toHaveCount(0);
++
++  for (const title of ['Riff one', 'Riff two', 'Blues', 'Ballad'])
++    await seedTab(page, undefined, title);
++  await expect(list(page).getByRole('listitem')).toHaveCount(4);
++  await expect(footer(page)).toHaveText('4 takes · 41.0 MB used');
++  await page.getByRole('searchbox', { name: 'Search takes' }).fill('riff');
++  await expect(list(page).getByRole('listitem')).toHaveCount(2);
++  await expect(footer(page)).toHaveText('4 takes · 41.0 MB used');
++  expect(unexpected(errors)).toEqual([]);
++});
++
++test('a save failing storage-full shows the Library banner, also after navigating; a later save clears it', async ({
++  page,
++}) => {
++  await stubStorage(page, { grant: true, usage: 1_000_000 });
++  const errors = collectErrors(page);
++  await page.goto('./#/library');
++  await expect(heading(page)).toBeVisible();
++  const id = await seedTab(page, undefined, 'Full disk');
++  await expect(row(page, id)).toBeVisible();
++  await expect(fullBanner(page)).toHaveCount(0);
++
++  // The dev hook makes the rename's save fail with storage-full.
++  await page.evaluate(() => {
++    (window as unknown as { __storageFullSaveHook: boolean }).__storageFullSaveHook = true;
++  });
++  await rename(page, id, 'Never saved');
++  await expect(fullBanner(page)).toBeVisible();
++  await expect(fullBanner(page)).toHaveAttribute('role', 'alert');
++  await expect(fullBanner(page)).toHaveText(strings['library.storageFull']);
++  await expect(fullBanner(page).getByRole('button')).toHaveCount(0);
++  await expect(fullBanner(page).getByRole('link')).toHaveCount(0);
++
++  // Still there when the Library is opened again in the same page load.
++  await nav(page, 'Settings');
++  await openLibrary(page);
++  await expect(fullBanner(page)).toBeVisible();
++  await expectNoSeriousAxe(page);
++
++  // Cleared, a save (a rename) succeeds and the banner goes.
++  await page.evaluate(() => {
++    (window as unknown as { __storageFullSaveHook: boolean }).__storageFullSaveHook = false;
++  });
++  await rename(page, id, 'Saved');
++  await expect(row(page, id).getByRole('link', { name: 'Saved' })).toBeVisible();
++  await expect(fullBanner(page)).toHaveCount(0);
++  expect(unexpected(errors)).toEqual([]);
++});
+diff --git a/app/tests/unit/library-screen.test.tsx b/app/tests/unit/library-screen.test.tsx
+index c720e42..0f9e6d6 100644
+--- a/app/tests/unit/library-screen.test.tsx
++++ b/app/tests/unit/library-screen.test.tsx
+@@ -31,13 +31,20 @@ vi.mock('../../src/ui/a11y/announcer', async (importOriginal) => ({
+ }));
+ 
+ /**
+- * A session with a fixed snapshot (`backup` null and `restoring` false unless given) and spies
+- * for its writes.
++ * A session with a fixed snapshot (`backup` null, `restoring` false, storage protected with
++ * unknown usage and no notice, unless given) and spies for its writes.
+  */
+ function fakeSession(
+-  given: Omit<LibrarySnapshot, 'backup' | 'restoring'> & Partial<LibrarySnapshot>,
++  given: Omit<LibrarySnapshot, 'backup' | 'restoring' | 'storage' | 'persistNotice'> &
++    Partial<LibrarySnapshot>,
+ ) {
+-  const snapshot: LibrarySnapshot = { backup: null, restoring: false, ...given };
++  const snapshot: LibrarySnapshot = {
++    backup: null,
++    restoring: false,
++    storage: { protected: true, usageBytes: null, full: false },
++    persistNotice: false,
++    ...given,
++  };
+   return {
+     subscribe: () => () => {},
+     getSnapshot: () => snapshot,
+@@ -47,6 +54,7 @@ function fakeSession(
+     backUp: vi.fn(async (): Promise<BackupResult | null> => null),
+     readBackup: vi.fn<(file: Blob) => Promise<RestorePlan | null>>(async () => null),
+     restore: vi.fn<(backup: ValidBackup) => Promise<RestoreResult | null>>(async () => null),
++    markPersistNoticeShown: vi.fn(),
+   };
+ }
+ 
+@@ -423,6 +431,8 @@ describe('search', () => {
+       error: null,
+       backup: null,
+       restoring: false,
++      storage: { protected: true, usageBytes: null, full: false },
++      persistNotice: false,
+     };
+     const listeners = new Set<() => void>();
+     const session = {
+@@ -1007,3 +1017,113 @@ describe('Restore from backup', () => {
+     expect(pickFile).not.toHaveBeenCalled();
+   });
+ });
++
++// Story "Storage protection and Library states" (6.7; mockup library.html (d), (e), .libfoot).
++describe('storage states', () => {
++  const rows = (n: number): LibraryRow[] =>
++    Array.from({ length: n }, (_, i) => ({
++      ...recorded,
++      id: `r${i}`,
++      title: i < 3 ? `Riff ${i}` : `Take ${i}`,
++      searchKey: searchKey(i < 3 ? `Riff ${i}` : `Take ${i}`),
++      createdAt: new Date(Date.UTC(2026, 8, 1) - i * 60_000).toISOString(),
++    }));
++
++  it('the notice shows above the heading, is remembered once, and Dismiss hides it', () => {
++    const session = fakeSession({
++      loading: false,
++      rows: [recorded],
++      error: null,
++      storage: { protected: false, usageBytes: null, full: false },
++      persistNotice: true,
++    });
++    render(<Library session={session} />);
++    const notice = screen.getByTestId('persist-notice');
++    expect(notice.getAttribute('role')).toBe('status');
++    expect(notice.textContent).toContain(
++      'Your browser may clear these takes when space runs low. Back them up regularly.',
++    );
++    // Above the heading.
++    const heading = screen.getByRole('heading', { level: 1 });
++    expect(notice.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
++    expect(session.markPersistNoticeShown).toHaveBeenCalledTimes(1);
++    fireEvent.click(within(notice).getByRole('button', { name: 'Dismiss storage notice' }));
++    expect(screen.queryByTestId('persist-notice')).toBeNull();
++    expect(document.activeElement).toBe(heading);
++    expect(session.markPersistNoticeShown).toHaveBeenCalledTimes(1);
++  });
++
++  it("the notice's Back up library starts the backup", async () => {
++    const session = fakeSession({
++      loading: false,
++      rows: [recorded],
++      error: null,
++      persistNotice: true,
++    });
++    render(<Library session={session} />);
++    const notice = screen.getByTestId('persist-notice');
++    await act(async () => {
++      fireEvent.click(within(notice).getByRole('button', { name: 'Back up library' }));
++    });
++    expect(session.backUp).toHaveBeenCalledTimes(1);
++  });
++
++  it('no notice when the session does not ask for one', () => {
++    const session = fakeSession({ loading: false, rows: [recorded], error: null });
++    render(<Library session={session} />);
++    expect(screen.queryByTestId('persist-notice')).toBeNull();
++    expect(session.markPersistNoticeShown).not.toHaveBeenCalled();
++  });
++
++  it('storage full: an error banner (role alert) above the heading, no Dismiss, no link', () => {
++    const session = fakeSession({
++      loading: false,
++      rows: [recorded],
++      error: null,
++      storage: { protected: true, usageBytes: null, full: true },
++    });
++    render(<Library session={session} />);
++    const alert = screen.getByTestId('library-storage-full');
++    expect(alert.getAttribute('role')).toBe('alert');
++    expect(alert.textContent).toBe(
++      'Storage is full — delete takes or their audio, or back up and clear',
++    );
++    expect(within(alert).queryByRole('button')).toBeNull();
++    expect(within(alert).queryByRole('link')).toBeNull();
++    const heading = screen.getByRole('heading', { level: 1 });
++    expect(alert.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
++  });
++
++  it('the footer counts every take and the usage in MB, also while searching', () => {
++    const session = fakeSession({
++      loading: false,
++      rows: rows(23),
++      error: null,
++      storage: { protected: true, usageBytes: 41_000_000, full: false },
++    });
++    render(<Library session={session} />);
++    expect(screen.getByTestId('library-footer').textContent).toBe('23 takes · 41.0 MB used');
++    fireEvent.change(screen.getByRole('searchbox', { name: 'Search takes' }), {
++      target: { value: 'riff' },
++    });
++    expect(screen.getAllByRole('listitem')).toHaveLength(3);
++    expect(screen.getByTestId('library-footer').textContent).toBe('23 takes · 41.0 MB used');
++  });
++
++  it('no footer for an empty library or an unknown usage', () => {
++    const { unmount } = render(
++      <Library
++        session={fakeSession({
++          loading: false,
++          rows: [],
++          error: null,
++          storage: { protected: true, usageBytes: 5_000_000, full: false },
++        })}
++      />,
++    );
++    expect(screen.queryByTestId('library-footer')).toBeNull();
++    unmount();
++    render(<Library session={fakeSession({ loading: false, rows: [recorded], error: null })} />);
++    expect(screen.queryByTestId('library-footer')).toBeNull();
++  });
++});
+diff --git a/app/tests/unit/library-session.test.ts b/app/tests/unit/library-session.test.ts
+index a7f8082..68d2ace 100644
+--- a/app/tests/unit/library-session.test.ts
++++ b/app/tests/unit/library-session.test.ts
+@@ -52,6 +52,18 @@ function fakeLibrary() {
+   /** Takes with a raw file. */
+   const raw = new Set<string>();
+   const listeners = new Set<StorageListener>();
++  /** The storage status the fake reports (persistence.ts and prefs). */
++  const storage = {
++    persisted: true,
++    usage: null as number | null,
++    full: false,
++    noticeShown: false,
++    fullListeners: new Set<() => void>(),
++    setFull(full: boolean) {
++      storage.full = full;
++      for (const l of [...storage.fullListeners]) l();
++    },
++  };
+   const deps: LibraryDeps = {
+     listTakes: vi.fn(async () =>
+       [...takes.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+@@ -122,6 +134,19 @@ function fakeLibrary() {
+       emit({ type: 'library-restored', count: n, writer: 'restore' });
+       return n;
+     }),
++    persisted: vi.fn(async () => storage.persisted),
++    estimateUsage: vi.fn(async () => storage.usage),
++    isStorageFull: () => storage.full,
++    subscribeStorageFull: (l: () => void) => {
++      storage.fullListeners.add(l);
++      return () => {
++        storage.fullListeners.delete(l);
++      };
++    },
++    persistNoticeShown: () => storage.noticeShown,
++    markPersistNoticeShown: vi.fn(() => {
++      storage.noticeShown = true;
++    }),
+   };
+   const add = (take: Take, noteCount: number | null, size: number | null) => {
+     takes.set(take.id, take);
+@@ -138,7 +163,7 @@ function fakeLibrary() {
+   function emit(event: StorageEvent) {
+     for (const l of [...listeners]) l(event);
+   }
+-  return { takes, tabs, sizes, audio, raw, deps, add, emit, listeners };
++  return { takes, tabs, sizes, audio, raw, deps, add, emit, listeners, storage };
+ }
+ 
+ const T1 = '2026-09-27T10:00:00.000Z';
+@@ -157,6 +182,8 @@ describe('library session', () => {
+       error: null,
+       backup: null,
+       restoring: false,
++      storage: { protected: null, usageBytes: null, full: false },
++      persistNotice: false,
+     });
+     expect(lib.deps.listTakes).not.toHaveBeenCalled();
+ 
+@@ -187,6 +214,8 @@ describe('library session', () => {
+       error: null,
+       backup: null,
+       restoring: false,
++      storage: { protected: true, usageBytes: null, full: false },
++      persistNotice: false,
+     });
+   });
+ 
+@@ -203,6 +232,8 @@ describe('library session', () => {
+       error: 'storage-failed',
+       backup: null,
+       restoring: false,
++      storage: { protected: true, usageBytes: null, full: false },
++      persistNotice: false,
+     });
+ 
+     const lib2 = fakeLibrary();
+@@ -950,3 +981,106 @@ describe('library session restore', () => {
+     expect(session.getSnapshot().restoring).toBe(false);
+   });
+ });
++
++describe('library session: storage states (story 6.7)', () => {
++  it('reads protection and usage on attach; no notice when storage is persisted', async () => {
++    const lib = fakeLibrary();
++    lib.add(makeTake('a', T1), 3, 100);
++    lib.storage.usage = 41_000_000;
++    const session = createLibrarySession(lib.deps);
++    session.subscribe(() => {});
++    await flush();
++    expect(session.getSnapshot().storage).toEqual({
++      protected: true,
++      usageBytes: 41_000_000,
++      full: false,
++    });
++    expect(session.getSnapshot().persistNotice).toBe(false);
++  });
++
++  it('refused storage with a take shows the notice once; a later visit shows none', async () => {
++    const lib = fakeLibrary();
++    lib.add(makeTake('a', T1), 3, 100);
++    lib.storage.persisted = false;
++    const session = createLibrarySession(lib.deps);
++    const off = session.subscribe(() => {});
++    await flush();
++    expect(session.getSnapshot().storage.protected).toBe(false);
++    expect(session.getSnapshot().persistNotice).toBe(true);
++    session.markPersistNoticeShown();
++    expect(lib.deps.markPersistNoticeShown).toHaveBeenCalledTimes(1);
++    // Still shown this visit (the screen's Dismiss hides it).
++    expect(session.getSnapshot().persistNotice).toBe(true);
++    off();
++    expect(session.getSnapshot().persistNotice).toBe(false);
++    session.subscribe(() => {});
++    await flush();
++    expect(session.getSnapshot().persistNotice).toBe(false);
++  });
++
++  it('an empty library shows no notice, until a take arrives', async () => {
++    const lib = fakeLibrary();
++    lib.storage.persisted = false;
++    const session = createLibrarySession(lib.deps);
++    session.subscribe(() => {});
++    await flush();
++    expect(session.getSnapshot().persistNotice).toBe(false);
++    lib.add(makeTake('a', T1), 3, 100);
++    lib.emit({ type: 'take-put', takeId: 'a', writer: 'recording-session' });
++    await flush();
++    expect(session.getSnapshot().rows).toHaveLength(1);
++    expect(session.getSnapshot().persistNotice).toBe(true);
++  });
++
++  it('a failing notice write is logged, never thrown', async () => {
++    const lib = fakeLibrary();
++    vi.mocked(lib.deps.markPersistNoticeShown).mockImplementationOnce(() => {
++      throw new AppError('storage-full', 'full');
++    });
++    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
++    const session = createLibrarySession(lib.deps);
++    expect(() => session.markPersistNoticeShown()).not.toThrow();
++    warn.mockRestore();
++  });
++
++  it('a protection read that rejects counts as not protected', async () => {
++    const lib = fakeLibrary();
++    lib.add(makeTake('a', T1), 3, 100);
++    vi.mocked(lib.deps.persisted).mockRejectedValueOnce(new Error('no api'));
++    vi.mocked(lib.deps.estimateUsage).mockRejectedValueOnce(new Error('no api'));
++    const session = createLibrarySession(lib.deps);
++    session.subscribe(() => {});
++    await flush();
++    expect(session.getSnapshot().storage).toMatchObject({ protected: false, usageBytes: null });
++  });
++
++  it('refreshes usage after storage events', async () => {
++    const lib = fakeLibrary();
++    lib.add(makeTake('a', T1), 3, 100);
++    lib.storage.usage = 1_000_000;
++    const session = createLibrarySession(lib.deps);
++    session.subscribe(() => {});
++    await flush();
++    expect(session.getSnapshot().storage.usageBytes).toBe(1_000_000);
++    lib.storage.usage = 2_000_000;
++    await session.rename('a', 'New');
++    await flush();
++    expect(session.getSnapshot().storage.usageBytes).toBe(2_000_000);
++  });
++
++  it('follows the storage-full status, read on attach', async () => {
++    const lib = fakeLibrary();
++    lib.storage.full = true;
++    const session = createLibrarySession(lib.deps);
++    const listener = vi.fn();
++    const off = session.subscribe(listener);
++    expect(session.getSnapshot().storage.full).toBe(true);
++    await flush();
++    lib.storage.setFull(false);
++    expect(session.getSnapshot().storage.full).toBe(false);
++    lib.storage.setFull(true);
++    expect(session.getSnapshot().storage.full).toBe(true);
++    off();
++    expect(lib.storage.fullListeners.size).toBe(0);
++  });
++});
+diff --git a/app/tests/unit/persistence.test.ts b/app/tests/unit/persistence.test.ts
+new file mode 100644
+index 0000000..3ac5f32
+--- /dev/null
++++ b/app/tests/unit/persistence.test.ts
+@@ -0,0 +1,216 @@
++import 'fake-indexeddb/auto';
++import { IDBFactory } from 'fake-indexeddb';
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
++import { AppError } from '../../src/model/errors';
++import type { Take } from '../../src/model/types';
++import { createTakeDb } from '../../src/storage/db';
++import { emit } from '../../src/storage/events';
++import {
++  createPersistence,
++  isStorageFull,
++  markStorageFull,
++  resetStorageFullForTests,
++  subscribeStorageFull,
++  type StorageManagerLike,
++} from '../../src/storage/persistence';
++import { resetFenceForTests, toStorageError } from '../../src/storage/write-guard';
++
++// Story "Storage protection and Library states" (6.7): storage/persistence.ts.
++
++function fakeStorage(opts: { persisted?: boolean; grant?: boolean; usage?: number } = {}) {
++  let persisted = opts.persisted ?? false;
++  const storage = {
++    persist: vi.fn(async () => {
++      if (opts.grant) persisted = true;
++      return persisted;
++    }),
++    persisted: vi.fn(async () => persisted),
++    estimate: vi.fn(async () => ({ usage: opts.usage ?? 0, quota: 1e9 })),
++  };
++  return storage;
++}
++
++describe('persistence', () => {
++  it('a first request asks persist(); granted reads as persisted', async () => {
++    const storage = fakeStorage({ grant: true });
++    const p = createPersistence(() => storage);
++    await expect(p.requestPersistOnce()).resolves.toBe(true);
++    expect(storage.persist).toHaveBeenCalledTimes(1);
++    await expect(p.persisted()).resolves.toBe(true);
++  });
++
++  it('a refused request reads as not persisted', async () => {
++    const storage = fakeStorage({ grant: false });
++    const p = createPersistence(() => storage);
++    await expect(p.requestPersistOnce()).resolves.toBe(false);
++    await expect(p.persisted()).resolves.toBe(false);
++  });
++
++  it('already persisted: persist() is never called', async () => {
++    const storage = fakeStorage({ persisted: true });
++    const p = createPersistence(() => storage);
++    await expect(p.requestPersistOnce()).resolves.toBe(true);
++    expect(storage.persist).not.toHaveBeenCalled();
++  });
++
++  it('a second request in the same page load asks nothing more', async () => {
++    const storage = fakeStorage({ grant: false });
++    const p = createPersistence(() => storage);
++    await p.requestPersistOnce();
++    await p.requestPersistOnce();
++    void p.requestPersistOnce();
++    expect(storage.persist).toHaveBeenCalledTimes(1);
++    expect(storage.persisted).toHaveBeenCalledTimes(1);
++  });
++
++  it('nothing is asked before a request (no persist() on start)', async () => {
++    const storage = fakeStorage();
++    const p = createPersistence(() => storage);
++    await p.persisted();
++    await p.estimateUsage();
++    expect(storage.persist).not.toHaveBeenCalled();
++  });
++
++  it('persisted() waits for a request in flight', async () => {
++    let grant!: (v: boolean) => void;
++    const storage: StorageManagerLike = {
++      persisted: vi.fn(async () => false),
++      persist: () => new Promise<boolean>((r) => (grant = r)),
++    };
++    const p = createPersistence(() => storage);
++    void p.requestPersistOnce();
++    const read = p.persisted();
++    await new Promise((r) => setTimeout(r, 0));
++    storage.persisted = async () => true;
++    grant(true);
++    await expect(read).resolves.toBe(true);
++  });
++
++  it('no storage API: not protected, no usage, no persist call, nothing thrown', async () => {
++    const p = createPersistence(() => undefined);
++    await expect(p.requestPersistOnce()).resolves.toBe(false);
++    await expect(p.persisted()).resolves.toBe(false);
++    await expect(p.estimateUsage()).resolves.toBeNull();
++
++    const partial = { persisted: vi.fn(async () => false) };
++    const q = createPersistence(() => partial);
++    await expect(q.requestPersistOnce()).resolves.toBe(false);
++    await expect(q.estimateUsage()).resolves.toBeNull();
++  });
++
++  it('throwing APIs are not protected and no usage, never a throw', async () => {
++    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
++    const storage: StorageManagerLike = {
++      persisted: () => Promise.reject(new Error('denied')),
++      persist: () => {
++        throw new Error('sync throw');
++      },
++      estimate: () => Promise.reject(new Error('denied')),
++    };
++    const p = createPersistence(() => storage);
++    await expect(p.requestPersistOnce()).resolves.toBe(false);
++    await expect(p.persisted()).resolves.toBe(false);
++    await expect(p.estimateUsage()).resolves.toBeNull();
++    const throwing = createPersistence(() => {
++      throw new Error('no navigator');
++    });
++    await expect(throwing.persisted()).resolves.toBe(false);
++    warn.mockRestore();
++  });
++
++  it('estimateUsage reads estimate().usage; a missing usage is null', async () => {
++    await expect(
++      createPersistence(() => fakeStorage({ usage: 41_000_000 })).estimateUsage(),
++    ).resolves.toBe(41_000_000);
++    await expect(
++      createPersistence(() => ({ estimate: async () => ({}) })).estimateUsage(),
++    ).resolves.toBeNull();
++  });
++});
++
++describe('storage-full status', () => {
++  afterEach(() => resetStorageFullForTests());
++
++  it('is set by a QuotaExceededError mapping, not by other failures', () => {
++    expect(isStorageFull()).toBe(false);
++    toStorageError(new DOMException('nope', 'UnknownError'), 'Write');
++    expect(isStorageFull()).toBe(false);
++    expect(toStorageError(new DOMException('full', 'QuotaExceededError'), 'Write').code).toBe(
++      'storage-full',
++    );
++    expect(isStorageFull()).toBe(true);
++  });
++
++  it('is set by a storage-full AppError passing through', () => {
++    toStorageError(new AppError('storage-full', 'hook'), 'Write');
++    expect(isStorageFull()).toBe(true);
++  });
++
++  it('is cleared by take-put, tab-put and library-restored, not by take-deleted', () => {
++    const listener = vi.fn();
++    const off = subscribeStorageFull(listener);
++    markStorageFull();
++    expect(listener).toHaveBeenCalledTimes(1);
++    emit({ type: 'take-deleted', takeId: 'a', writer: 'library-session' });
++    expect(isStorageFull()).toBe(true);
++    emit({ type: 'take-put', takeId: 'a', writer: 'library-session' });
++    expect(isStorageFull()).toBe(false);
++    expect(listener).toHaveBeenCalledTimes(2);
++    markStorageFull();
++    emit({ type: 'tab-put', takeId: 'a', writer: 'take-session' });
++    expect(isStorageFull()).toBe(false);
++    markStorageFull();
++    emit({ type: 'library-restored', count: 0, writer: 'restore' });
++    expect(isStorageFull()).toBe(false);
++    off();
++    markStorageFull();
++    expect(listener).toHaveBeenCalledTimes(6);
++  });
++});
++
++describe('dev storage-full save hook', () => {
++  const hook = globalThis as { __storageFullSaveHook?: boolean };
++  const take: Take = {
++    id: 't1',
++    title: 'Take',
++    createdAt: '2026-10-01T10:00:00.000Z',
++    status: 'recorded',
++    durationMs: 1000,
++    sampleRate: 48000,
++    tuning: 'EADGBE',
++    micLabel: 'Mic',
++    audioMime: null,
++    trimStartMs: 0,
++    trimEndMs: null,
++    settings: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 },
++    analysisVersion: null,
++    updatedAt: '',
++  };
++
++  beforeEach(() => {
++    globalThis.indexedDB = new IDBFactory();
++    resetFenceForTests();
++  });
++  afterEach(() => {
++    delete hook.__storageFullSaveHook;
++    resetStorageFullForTests();
++  });
++
++  it('makes patchTake and putTab reject storage-full and set the status; a later save clears it', async () => {
++    const db = createTakeDb({ name: 'persistence-test' });
++    await db.createTake(take);
++    hook.__storageFullSaveHook = true;
++    await expect(db.patchTake('t1', { title: 'New' }, 'library-session')).rejects.toMatchObject({
++      code: 'storage-full',
++    });
++    expect(isStorageFull()).toBe(true);
++    await expect(
++      db.putTab({ takeId: 't1', notes: [], updatedAt: '', deletedStartMs: [] }, 'take-session'),
++    ).rejects.toMatchObject({ code: 'storage-full' });
++    expect((await db.getTake('t1'))!.title).toBe('Take');
++    delete hook.__storageFullSaveHook;
++    await db.patchTake('t1', { title: 'New' }, 'library-session');
++    expect(isStorageFull()).toBe(false);
++    db.close();
++  });
++});
+diff --git a/app/tests/unit/recording-recovery.test.ts b/app/tests/unit/recording-recovery.test.ts
+index 589bcea..ca087e0 100644
+--- a/app/tests/unit/recording-recovery.test.ts
++++ b/app/tests/unit/recording-recovery.test.ts
+@@ -124,6 +124,7 @@ function setup(
+       audio.delete(id);
+     }),
+     navigate: vi.fn((id: string) => log.push(`navigate ${id}`)),
++    requestPersist: vi.fn(),
+   };
+   const recovery = createRecordingRecovery(deps, host);
+   return {
+@@ -308,6 +309,8 @@ describe('Open', () => {
+       'patchTake a',
+       'navigate a',
+     ]);
++    // Story 6.7: persistent storage is asked for once the take is saved.
++    expect(t.host.requestPersist).toHaveBeenCalledTimes(1);
+     expect(t.host.patchTake).toHaveBeenCalledWith(
+       'a',
+       {
+@@ -479,6 +482,7 @@ describe('Open', () => {
+     await t.recovery.open('a');
+     expect(t.host.patchTake).not.toHaveBeenCalled();
+     expect(t.host.navigate).not.toHaveBeenCalled();
++    expect(t.host.requestPersist).not.toHaveBeenCalled();
+     expect(t.takes.get('a')?.status).toBe('recording');
+   });
+ 
+diff --git a/app/tests/unit/recording-take.test.ts b/app/tests/unit/recording-take.test.ts
+index 201a751..deacf9a 100644
+--- a/app/tests/unit/recording-take.test.ts
++++ b/app/tests/unit/recording-take.test.ts
+@@ -419,6 +419,37 @@ describe('recording a take', () => {
+     expect(t.session.getSnapshot().errorCode).toBeUndefined();
+   });
+ 
++  // Story 6.7: persistent storage is asked for after a take is saved, never before.
++  it('asks for persistent storage after a successful save, not before', async () => {
++    const requestPersist = vi.fn();
++    const t = await recording({ requestPersist });
++    expect(requestPersist).not.toHaveBeenCalled();
++    await t.session.stop('user');
++    expect(requestPersist).toHaveBeenCalledTimes(1);
++  });
++
++  it('does not ask for persistent storage after a failed save', async () => {
++    const requestPersist = vi.fn();
++    const t = await recording({
++      requestPersist,
++      writeCompressed: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
++    });
++    await t.session.stop('user');
++    await flush();
++    expect(requestPersist).not.toHaveBeenCalled();
++  });
++
++  it('a throwing persist request never changes the save', async () => {
++    const t = await recording({
++      requestPersist: () => {
++        throw new Error('no storage API');
++      },
++    });
++    await t.session.stop('user');
++    expect(t.deps.navigate).toHaveBeenCalledWith('take-1');
++    expect(t.session.getSnapshot()).toMatchObject({ recording: 'idle', savedSeq: 1 });
++  });
++
+   it('closes the writer and shows the error when the capture fails to start', async () => {
+     const t = setup({}, new AppError('mic-failed', 'no worklet'));
+     await t.session.allowMic();
+diff --git a/app/tests/unit/settings-screen.test.tsx b/app/tests/unit/settings-screen.test.tsx
+index 45aa900..530723c 100644
+--- a/app/tests/unit/settings-screen.test.tsx
++++ b/app/tests/unit/settings-screen.test.tsx
+@@ -9,10 +9,11 @@ import { Settings } from '../../src/ui/screens/Settings';
+ 
+ afterEach(cleanup);
+ 
+-function fakeSession(analysisDefaults: AnalysisSettings) {
++function fakeSession(analysisDefaults: AnalysisSettings, storageProtected: boolean | null = true) {
+   let snapshot: SettingsSnapshot = {
+     engine: { state: 'ready', version: '0.5.0' },
+     prefs: { barLines: true, analysisDefaults },
++    storageProtected,
+   };
+   const listeners = new Set<() => void>();
+   return {
+@@ -31,11 +32,11 @@ function fakeSession(analysisDefaults: AnalysisSettings) {
+   };
+ }
+ 
+-it('"Defaults for new takes" comes before About, with the three fields and no Re-analyse', () => {
++it('"Defaults for new takes" comes before Storage and About, with the fields and no Re-analyse', () => {
+   const session = fakeSession({ sensitivity: 0.5, minNoteMs: 40, maxFret: 24 });
+   render(<Settings session={session} />);
+   const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+-  expect(headings).toEqual(['Defaults for new takes', 'About']);
++  expect(headings).toEqual(['Defaults for new takes', 'Storage', 'About']);
+   const region = screen.getByRole('region', { name: 'Defaults for new takes' });
+   expect(region.textContent).toContain(
+     'New takes start with these values. Each take keeps its own copy in its Analysis settings.',
+@@ -66,3 +67,28 @@ it('saves each change: sensitivity 0.7 on change, a number on Enter', () => {
+   expect(session.setAnalysisDefaults).toHaveBeenLastCalledWith({ maxFret: 15 });
+   expect((fret as HTMLInputElement).value).toBe('15');
+ });
++
++// Story "Storage protection and Library states" (6.7; mockup settings.html): the Storage panel.
++const DEFAULTS = { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 };
++
++it('Storage reads "protected" with no link when storage is persisted', () => {
++  render(<Settings session={fakeSession(DEFAULTS, true)} />);
++  const region = screen.getByRole('region', { name: 'Storage' });
++  expect(region.textContent).toContain('Storage: protected');
++  expect(region.textContent).not.toContain('may be cleared');
++  expect(screen.queryByRole('link', { name: 'Back up library' })).toBeNull();
++});
++
++it('Storage warns and links to the Library when storage is not protected', () => {
++  render(<Settings session={fakeSession(DEFAULTS, false)} />);
++  const region = screen.getByRole('region', { name: 'Storage' });
++  expect(region.textContent).toContain('Storage: may be cleared by the browser');
++  expect(screen.getByRole('link', { name: 'Back up library' }).getAttribute('href')).toBe(
++    '#/library',
++  );
++});
++
++it('Storage shows no status before it is read', () => {
++  render(<Settings session={fakeSession(DEFAULTS, null)} />);
++  expect(screen.getByRole('region', { name: 'Storage' }).textContent).toBe('Storage');
++});
+diff --git a/app/tests/unit/settings-session.test.ts b/app/tests/unit/settings-session.test.ts
+index 666fd72..f135eea 100644
+--- a/app/tests/unit/settings-session.test.ts
++++ b/app/tests/unit/settings-session.test.ts
+@@ -8,7 +8,10 @@ import { flush } from './helpers';
+ describe('settings session', () => {
+   it('asks for the version on first subscribe and reports ready', async () => {
+     const version = vi.fn(() => Promise.resolve('0.1.0'));
+-    const session = createSettingsSession({ version });
++    // Storage protection is never read here, so only the version notifies.
++    const session = createSettingsSession({ version }, undefined, {
++      persisted: () => new Promise<boolean>(() => {}),
++    });
+     expect(version).not.toHaveBeenCalled();
+     expect(session.getSnapshot().engine).toEqual({ state: 'loading' });
+ 
+@@ -170,3 +173,42 @@ describe('settings session prefs (a failed defaults write)', () => {
+     expect(session.getSnapshot().prefs.analysisDefaults).toEqual(DEFAULT_PREFS.analysisDefaults);
+   });
+ });
++
++// Story "Storage protection and Library states" (6.7): whether storage is persisted.
++describe('settings session storage protection', () => {
++  const version = () => new Promise<string>(() => {});
++  const prefs = { loadPrefs: () => ({ ...DEFAULT_PREFS }), updatePrefs: vi.fn() };
++
++  it('is null until read, then read on each subscribe', async () => {
++    let persisted = false;
++    const read = vi.fn(async () => persisted);
++    const session = createSettingsSession({ version }, prefs, { persisted: read });
++    expect(session.getSnapshot().storageProtected).toBeNull();
++    expect(read).not.toHaveBeenCalled();
++    const off = session.subscribe(() => {});
++    await flush();
++    expect(session.getSnapshot().storageProtected).toBe(false);
++    off();
++    persisted = true;
++    session.subscribe(() => {});
++    await flush();
++    expect(read).toHaveBeenCalledTimes(2);
++    expect(session.getSnapshot().storageProtected).toBe(true);
++  });
++
++  it('subscribePrefs does not read it', () => {
++    const read = vi.fn(async () => true);
++    const session = createSettingsSession({ version }, prefs, { persisted: read });
++    session.subscribePrefs(() => {});
++    expect(read).not.toHaveBeenCalled();
++  });
++
++  it('a failed read is not protected, never a throw', async () => {
++    const session = createSettingsSession({ version }, prefs, {
++      persisted: () => Promise.reject(new Error('no api')),
++    });
++    session.subscribe(() => {});
++    await flush();
++    expect(session.getSnapshot().storageProtected).toBe(false);
++  });
++});
+diff --git a/app/tests/unit/tab-screen.test.tsx b/app/tests/unit/tab-screen.test.tsx
+index d7b1484..ffee7c2 100644
+--- a/app/tests/unit/tab-screen.test.tsx
++++ b/app/tests/unit/tab-screen.test.tsx
+@@ -1308,6 +1308,7 @@ describe('Tab screen tab area, header and selection', () => {
+       const snapshot: SettingsSnapshot = {
+         engine: { state: 'loading' },
+         prefs: { barLines, analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 } },
++        storageProtected: null,
+       };
+       return { subscribePrefs: () => () => {}, getSnapshot: () => snapshot, setBarLines: vi.fn() };
+     };
+@@ -2257,6 +2258,7 @@ describe('Tab screen flags, warnings and bar lines', () => {
+     let snapshot: SettingsSnapshot = {
+       engine: { state: 'loading' },
+       prefs: { barLines, analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 } },
++      storageProtected: null,
+     };
+     const listeners = new Set<() => void>();
+     return {
