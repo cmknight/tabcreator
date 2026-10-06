@@ -3,7 +3,7 @@ title: 'Back up the library'
 type: 'feature'
 ticket: '5'
 created: '2026-10-06'
-status: built
+status: done
 baseline_revision: '622294ac543c59118077fc8984667ff031e53603'
 route: 'full'
 route_source: 'auto'
