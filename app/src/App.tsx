@@ -56,12 +56,16 @@ const DEV_PAGES: DevPages | null = import.meta.env.DEV
   ? new Map([
       ['#/__test/storage', lazy(() => import('./dev/StorageTestPage'))],
       ['#/__test/ui', lazy(() => import('./dev/UiTestPage'))],
+      ['#/__test/tab500', lazy(() => import('./dev/Tab500Page'))],
     ])
   : null;
 
-/** The dev-only test page for `hash`, or null (always null in production builds). */
+/**
+ * The dev-only test page for `hash` (a `?query` after the path is the page's own), or null
+ * (always null in production builds).
+ */
 function renderDevPage(hash: string): ReactNode {
-  const Page = DEV_PAGES?.get(hash);
+  const Page = DEV_PAGES?.get(hash.split('?')[0]!);
   return Page ? <Page /> : null;
 }
 

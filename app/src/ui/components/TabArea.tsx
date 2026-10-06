@@ -32,10 +32,23 @@
 // Story "Re-fit feedback": the notes in `refitIds` show the re-fit outline (DESIGN.md
 // tab-note-refit, a dashed violet outline outside the selection outline) and `data-refit`;
 // with `refitFading` it fades out. The screen owns the set and its timer.
+//
+// Story "500-note edit latency" (CAP-14, AD-17): the layout keeps the systems whose notes did not
+// change (`createTabLayouter`), and each system renders as a memoised `SystemView` that renders
+// again only when its system, the metrics, or one of its notes' label, flag, selection, tab
+// stop, playing or re-fit state changed. Its event handlers are stable and read the latest props.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import { midiName, playedOrder } from '../../model/notes';
-import { layoutTab } from '../../model/tab-render';
+import { createTabLayouter, type TabSystem } from '../../model/tab-render';
 import type { Note } from '../../model/types';
 import { isOverlayOpen, subscribeOverlay } from '../a11y/overlays';
 import { TEXT_FIELD } from '../a11y/selectors';
@@ -202,9 +215,10 @@ export function TabArea({
     };
   }, []);
 
+  const [layouter] = useState(createTabLayouter);
   const layout = useMemo(
-    () => (metrics ? layoutTab(notes, metrics.widthChars, countInBpm) : null),
-    [notes, metrics, countInBpm],
+    () => (metrics ? layouter(notes, metrics.widthChars, countInBpm) : null),
+    [layouter, notes, metrics, countInBpm],
   );
   const labelById = useMemo(() => new Map(labels.map((l) => [l.id, l.label])), [labels]);
   const flagged = useMemo(
@@ -223,6 +237,42 @@ export function TabArea({
   const restoring = useRef(false);
   const lastSelected = useRef(selectedNoteId);
   const overlayOpen = useSyncExternalStore(subscribeOverlay, isOverlayOpen, isOverlayOpen);
+
+  // The note buttons' handlers are stable (so a memoised system need not render again for them)
+  // and call the latest callbacks, kept here after each commit.
+  const callbacks = useRef({ onSelect, onFocusNote, onNoteClick, onNoteDoubleClick });
+  useLayoutEffect(() => {
+    callbacks.current = { onSelect, onFocusNote, onNoteClick, onNoteDoubleClick };
+  });
+  const [handlers] = useState<NoteHandlers>(() => ({
+    ref(noteId, el) {
+      if (el) buttons.current.set(noteId, el);
+      else if (buttons.current.get(noteId)?.isConnected === false) {
+        buttons.current.delete(noteId);
+      }
+    },
+    focus(noteId, el) {
+      focused.current = { el, id: noteId };
+      callbacks.current.onFocusNote?.(noteId);
+      if (!restoring.current) callbacks.current.onSelect(noteId);
+    },
+    blur(el) {
+      // Focus really left when the button is still in the page; a button a reflow removed
+      // keeps its claim so the new one takes focus.
+      requestAnimationFrame(() => {
+        if (focused.current?.el === el && el.isConnected && document.activeElement !== el) {
+          focused.current = null;
+        }
+      });
+    },
+    click(noteId) {
+      callbacks.current.onSelect(noteId);
+      callbacks.current.onNoteClick?.(noteId);
+    },
+    doubleClick(noteId, el) {
+      callbacks.current.onNoteDoubleClick?.(noteId, el);
+    },
+  }));
 
   useLayoutEffect(() => {
     // An open overlay (the edit popover) holds focus; a selection moved meanwhile is focused
@@ -287,10 +337,6 @@ export function TabArea({
     return () => clearTimeout(timer);
   }, [playingNoteId, playing, layout]);
 
-  /** A note's re-fit outline state: shown, fading, or none (null). */
-  const refit = (noteId: string): 'true' | 'fading' | null =>
-    refitIds.has(noteId) ? (refitFading ? 'fading' : 'true') : null;
-
   const instructionsId = `${id ?? 'tab-area'}-instructions`;
   const systems = layout?.systems ?? [];
 
@@ -316,68 +362,140 @@ export function TabArea({
       </div>
       {metrics &&
         systems.map((system, i) => (
-          <div
-            key={i}
-            role="group"
-            className={styles.system}
-            aria-label={strings['tab.system'](i + 1, systems.length)}
-          >
-            <div className={styles.inner}>
-              <pre className={styles.lines} aria-hidden="true">
-                {system.lines.join('\n')}
-              </pre>
-              {system.cells.map((cell) => (
-                <button
-                  key={cell.noteId}
-                  ref={(el) => {
-                    if (el) buttons.current.set(cell.noteId, el);
-                    else if (buttons.current.get(cell.noteId)?.isConnected === false) {
-                      buttons.current.delete(cell.noteId);
-                    }
-                  }}
-                  type="button"
-                  className={noteClass(flagged.has(cell.noteId), refit(cell.noteId))}
-                  data-note-id={cell.noteId}
-                  data-playing={cell.noteId === playingNoteId ? 'true' : undefined}
-                  data-refit={refit(cell.noteId) ?? undefined}
-                  aria-label={labelById.get(cell.noteId)}
-                  aria-pressed={cell.noteId === selectedNoteId}
-                  tabIndex={cell.noteId === tabStop ? 0 : -1}
-                  style={{
-                    left: cell.col * metrics.charWidth,
-                    top: (cell.string - 1) * metrics.lineHeight,
-                    width: cell.width * metrics.charWidth,
-                    height: metrics.lineHeight,
-                  }}
-                  onFocus={(e) => {
-                    focused.current = { el: e.currentTarget, id: cell.noteId };
-                    onFocusNote?.(cell.noteId);
-                    if (!restoring.current) onSelect(cell.noteId);
-                  }}
-                  onBlur={(e) => {
-                    const el = e.currentTarget;
-                    // Focus really left when the button is still in the page; a button a reflow
-                    // removed keeps its claim so the new one takes focus.
-                    requestAnimationFrame(() => {
-                      if (
-                        focused.current?.el === el &&
-                        el.isConnected &&
-                        document.activeElement !== el
-                      ) {
-                        focused.current = null;
-                      }
-                    });
-                  }}
-                  onClick={() => {
-                    onSelect(cell.noteId);
-                    onNoteClick?.(cell.noteId);
-                  }}
-                  onDoubleClick={(e) => onNoteDoubleClick?.(cell.noteId, e.currentTarget)}
-                />
-              ))}
-            </div>
-          </div>
+          <SystemView
+            // By its first note, so a change in the system count does not remount every later
+            // system (and its note buttons).
+            key={system.cells[0]?.noteId ?? `empty-${i}`}
+            system={system}
+            index={i}
+            count={systems.length}
+            metrics={metrics}
+            labelById={labelById}
+            flagged={flagged}
+            selectedNoteId={selectedNoteId}
+            tabStop={tabStop}
+            playingNoteId={playingNoteId}
+            refitIds={refitIds}
+            refitFading={refitFading}
+            handlers={handlers}
+          />
         ))}
     </div>
   );
 }
+
+/** The note buttons' stable handlers (see TabArea). */
+interface NoteHandlers {
+  ref(noteId: string, el: HTMLButtonElement | null): void;
+  focus(noteId: string, el: HTMLButtonElement): void;
+  blur(el: HTMLButtonElement): void;
+  click(noteId: string): void;
+  doubleClick(noteId: string, el: HTMLButtonElement): void;
+}
+
+interface SystemViewProps {
+  system: TabSystem;
+  index: number;
+  count: number;
+  metrics: Metrics;
+  labelById: ReadonlyMap<string, string>;
+  flagged: ReadonlySet<string>;
+  selectedNoteId: string | null;
+  tabStop: string | null;
+  playingNoteId: string | null;
+  refitIds: ReadonlySet<string>;
+  refitFading: boolean;
+  handlers: NoteHandlers;
+}
+
+/** A note's re-fit outline state: shown, fading, or none (null). */
+function refitState(
+  noteId: string,
+  refitIds: ReadonlySet<string>,
+  refitFading: boolean,
+): 'true' | 'fading' | null {
+  return refitIds.has(noteId) ? (refitFading ? 'fading' : 'true') : null;
+}
+
+/**
+ * Whether a system renders the same for `a` and `b`: the same system, place, metrics and
+ * handlers, and the same label, flag, selection, tab stop, playing and re-fit state for each of
+ * its notes (the set-wide props may change for notes elsewhere).
+ */
+function sameSystemView(a: SystemViewProps, b: SystemViewProps): boolean {
+  if (
+    a.system !== b.system ||
+    a.index !== b.index ||
+    a.count !== b.count ||
+    a.metrics !== b.metrics ||
+    a.handlers !== b.handlers
+  ) {
+    return false;
+  }
+  return a.system.cells.every(
+    ({ noteId: id }) =>
+      a.labelById.get(id) === b.labelById.get(id) &&
+      a.flagged.has(id) === b.flagged.has(id) &&
+      (id === a.selectedNoteId) === (id === b.selectedNoteId) &&
+      (id === a.tabStop) === (id === b.tabStop) &&
+      (id === a.playingNoteId) === (id === b.playingNoteId) &&
+      refitState(id, a.refitIds, a.refitFading) === refitState(id, b.refitIds, b.refitFading),
+  );
+}
+
+/** One system: its six lines and a note button over each note's characters. */
+const SystemView = memo(function SystemView({
+  system,
+  index,
+  count,
+  metrics,
+  labelById,
+  flagged,
+  selectedNoteId,
+  tabStop,
+  playingNoteId,
+  refitIds,
+  refitFading,
+  handlers,
+}: SystemViewProps) {
+  return (
+    <div
+      role="group"
+      className={styles.system}
+      aria-label={strings['tab.system'](index + 1, count)}
+    >
+      <div className={styles.inner}>
+        <pre className={styles.lines} aria-hidden="true">
+          {system.lines.join('\n')}
+        </pre>
+        {system.cells.map((cell) => {
+          const refit = refitState(cell.noteId, refitIds, refitFading);
+          return (
+            <button
+              key={cell.noteId}
+              ref={(el) => handlers.ref(cell.noteId, el)}
+              type="button"
+              className={noteClass(flagged.has(cell.noteId), refit)}
+              data-note-id={cell.noteId}
+              data-playing={cell.noteId === playingNoteId ? 'true' : undefined}
+              data-refit={refit ?? undefined}
+              aria-label={labelById.get(cell.noteId)}
+              aria-pressed={cell.noteId === selectedNoteId}
+              tabIndex={cell.noteId === tabStop ? 0 : -1}
+              style={{
+                left: cell.col * metrics.charWidth,
+                top: (cell.string - 1) * metrics.lineHeight,
+                width: cell.width * metrics.charWidth,
+                height: metrics.lineHeight,
+              }}
+              onFocus={(e) => handlers.focus(cell.noteId, e.currentTarget)}
+              onBlur={(e) => handlers.blur(e.currentTarget)}
+              onClick={() => handlers.click(cell.noteId)}
+              onDoubleClick={(e) => handlers.doubleClick(cell.noteId, e.currentTarget)}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}, sameSystemView);

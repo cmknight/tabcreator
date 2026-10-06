@@ -1899,6 +1899,99 @@ describe('Tab screen tab area, header and selection', () => {
     expect(items).toEqual(ordered.map((n) => noteButton(n.id).getAttribute('aria-label')));
     expect(items[11]).toBe('Note 12: B string, fret 3, D4, at 4.25 seconds');
   });
+
+  describe('per-system reuse (story "500-note edit latency")', () => {
+    /** The shown tab matches a fresh layout of `ns` at 50 characters, labels and all. */
+    const expectShown = (ns: readonly Note[]) => {
+      const layout = layoutTab(ns, 50, TAKE.countInBpm);
+      const labels = new Map(noteLabels(ns).map((l) => [l.id, l.label]));
+      const groups = screen.getAllByRole('group', { name: /^Tab system/ });
+      expect(groups).toHaveLength(layout.systems.length);
+      layout.systems.forEach((system, i) => {
+        const group = groups[i]!;
+        expect(group.getAttribute('aria-label')).toBe(`Tab system ${i + 1} of ${groups.length}`);
+        expect(group.querySelector('pre')!.textContent).toBe(system.lines.join('\n'));
+        const ids = [...group.querySelectorAll('[data-note-id]')].map((b) =>
+          b.getAttribute('data-note-id'),
+        );
+        expect(ids).toEqual(system.cells.map((c) => c.noteId));
+        for (const cell of system.cells) {
+          expect(noteButton(cell.noteId).getAttribute('aria-label')).toBe(labels.get(cell.noteId));
+        }
+      });
+    };
+
+    it('a delete and an insert early on renumber the later, unchanged systems and their groups', () => {
+      const mock = analysed();
+      render(<Tab takeId="t1" createSession={mock.create} />);
+      expectShown(notes);
+      expect(noteButton('n30').getAttribute('aria-label')).toMatch(/^Note 31: /);
+
+      // Delete note 2 (in system 1); every other note object is kept.
+      const deleted = notes.filter((n) => n.id !== 'n1');
+      mock.set({ tab: { ...TAB40, notes: deleted } });
+      expectShown(deleted);
+      expect(noteButton('n30').getAttribute('aria-label')).toMatch(/^Note 30: /);
+
+      // Insert one before it.
+      const inserted = [...deleted, { ...note(99, 3, 7), startMs: 100, endMs: 200 }];
+      mock.set({ tab: { ...TAB40, notes: inserted } });
+      expectShown(inserted);
+      expect(noteButton('n30').getAttribute('aria-label')).toMatch(/^Note 31: /);
+
+      // Fewer systems: the system count changes.
+      const fewer = inserted.filter((n) => n.id === 'n99' || Number(n.id.slice(1)) >= 20);
+      mock.set({ tab: { ...TAB40, notes: fewer } });
+      expect(layoutTab(fewer, 50).systems.length).toBeLessThan(
+        layoutTab(inserted, 50).systems.length,
+      );
+      expectShown(fewer);
+    });
+
+    it("a fret-only edit in system 1 re-renders only system 1; a later system's nodes are kept", () => {
+      const mock = analysed();
+      render(<Tab takeId="t1" createSession={mock.create} />);
+      const groups = () => screen.getAllByRole('group', { name: /^Tab system/ });
+      const last = groups().at(-1)!;
+      const pre = last.querySelector('pre')!;
+      const text = pre.textContent;
+      const buttons = [...last.querySelectorAll('[data-note-id]')];
+      const systemName = vi.spyOn(strings, 'tab.system');
+
+      // n0 (system 1): fret 0 to 5, one digit, so no system's packing moves.
+      const edited = notes.map((n) => (n.id === 'n0' ? { ...n, fret: 5 } : n));
+      mock.set({ tab: { ...TAB40, notes: edited } });
+      expectShown(edited);
+      // Only system 1 rendered again.
+      expect(systemName.mock.calls.map(([i]) => i)).toEqual(systemName.mock.calls.map(() => 1));
+      expect(systemName).toHaveBeenCalled();
+      const after = groups().at(-1)!;
+      expect(after).toBe(last);
+      expect(after.querySelector('pre')).toBe(pre);
+      expect(pre.textContent).toBe(text);
+      expect([...after.querySelectorAll('[data-note-id]')]).toEqual(buttons);
+      buttons.forEach((b, i) => expect(after.querySelectorAll('[data-note-id]')[i]).toBe(b));
+    });
+
+    it('a click in a reused system calls the latest onSelect and onNoteClick', () => {
+      const labels = noteLabels(notes);
+      const first = { onSelect: vi.fn(), onNoteClick: vi.fn() };
+      const latest = { onSelect: vi.fn(), onNoteClick: vi.fn() };
+      const view = render(
+        <TabArea notes={notes} labels={labels} selectedNoteId={null} {...first} />,
+      );
+      const systemName = vi.spyOn(strings, 'tab.system');
+      view.rerender(<TabArea notes={notes} labels={labels} selectedNoteId={null} {...latest} />);
+      // Nothing a system shows changed: none rendered again.
+      expect(systemName).not.toHaveBeenCalled();
+      const target = notes[30]!.id;
+      fireEvent.click(noteButton(target));
+      expect(latest.onSelect).toHaveBeenCalledWith(target);
+      expect(latest.onNoteClick).toHaveBeenCalledWith(target);
+      expect(first.onSelect).not.toHaveBeenCalled();
+      expect(first.onNoteClick).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('Tab screen flags, warnings and bar lines', () => {

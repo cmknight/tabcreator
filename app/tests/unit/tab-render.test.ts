@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { layoutTab, toText, type TabLayout } from '../../src/model/tab-render';
+import { createTabLayouter, layoutTab, toText, type TabLayout } from '../../src/model/tab-render';
 import type { Note, StringNo, Take } from '../../src/model/types';
 
 let nextId = 0;
@@ -389,5 +389,53 @@ describe('toText', () => {
         '',
       ].join('\n'),
     );
+  });
+});
+
+describe('layoutTab with a previous layout (story "500-note edit latency")', () => {
+  /** Notes long enough to wrap into several systems at 40 characters. */
+  const notes = () => randomNotes(60, 7);
+
+  it('keeps every system when nothing changed', () => {
+    const before = notes();
+    const first = layoutTab(before, 40);
+    const again = layoutTab(before, 40, undefined, first);
+    expect(again.systems.length).toBeGreaterThan(3);
+    again.systems.forEach((system, i) => expect(system).toBe(first.systems[i]));
+  });
+
+  it("changes only the edited note's system when one fret changes; the result is unchanged", () => {
+    const before = notes();
+    const first = layoutTab(before, 40);
+    // A one-digit fret stays one digit, so the packing does not move.
+    const index = before.findIndex((n) => n.fret < 9);
+    const after = before.with(index, { ...before[index]!, fret: before[index]!.fret + 1 });
+    const next = layoutTab(after, 40, undefined, first);
+    expect(next).toEqual(layoutTab(after, 40));
+    const changed = next.systems.flatMap((system, i) => (system === first.systems[i] ? [] : [i]));
+    const home = next.systems.findIndex((s) => s.cells.some((c) => c.noteId === after[index]!.id));
+    expect(changed).toEqual([home]);
+  });
+
+  it('lays out the same as without one after inserts, deletes, bar lines and reflows', () => {
+    const before = notes();
+    const first = layoutTab(before, 40, 120);
+    const edited = [...before.slice(0, 10), ...before.slice(11), note(3, 12, 5_000)];
+    for (const [ns, width, bpm] of [
+      [edited, 40, 120],
+      [edited, 40, undefined],
+      [edited, 64, 120],
+      [before, 40, 120],
+    ] as const) {
+      expect(layoutTab(ns, width, bpm, first)).toEqual(layoutTab(ns, width, bpm));
+    }
+  });
+
+  it('createTabLayouter remembers its last layout', () => {
+    const layout = createTabLayouter();
+    const before = notes();
+    const first = layout(before, 40);
+    const second = layout([...before], 40);
+    second.systems.forEach((system, i) => expect(system).toBe(first.systems[i]));
   });
 });

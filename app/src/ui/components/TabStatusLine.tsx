@@ -4,7 +4,7 @@
 // end, disabled with its reason while nothing is flagged. Not a live region (spine AD-18): a
 // change of the counts is announced politely through the shared announcer.
 
-import { useEffect, useId, type MutableRefObject } from 'react';
+import { useEffect, useId, useMemo, type MutableRefObject } from 'react';
 import type { Note } from '../../model/types';
 import { announce } from '../a11y/announcer';
 import hidden from '../a11y/visually-hidden.module.css';
@@ -25,7 +25,8 @@ export interface TabStatusLineProps {
 export function TabStatusLine({ notes, onNextToCheck, lastLineRef }: TabStatusLineProps) {
   const reasonId = useId();
   const n = notes.length;
-  const k = notes.filter((note) => note.lowConfidence).length;
+  // Once per notes array, not on every render of the screen (story "500-note edit latency").
+  const k = useMemo(() => notes.filter((note) => note.lowConfidence).length, [notes]);
   const notesText = strings['tab.statusNotes'](n);
   const checkText = strings['tab.statusToCheck'](k);
   const line = strings['tab.statusLine'](notesText, checkText);

@@ -8,6 +8,11 @@ const SUBPATH_PORT = 4174;
 
 /** Specs that need dev-only code (`#/__test/*` pages) run against the dev server only. */
 const DEV_SPECS = /.*\.dev\.spec\.ts/;
+/**
+ * The timing spec (story "500-note edit latency"): a dev spec too, but in its own `perf`
+ * project, run alone after every other project so parallel workers cannot starve its gate.
+ */
+const PERF_SPECS = /.*edit-latency\.dev\.spec\.ts/;
 /** The sub-path spec runs against the build served under /tabcreator/, as on GitHub Pages. */
 const SUBPATH_SPECS = /.*subpath\.spec\.ts/;
 /** Specs that need a microphone in the production build run in the production-mic lane. */
@@ -82,11 +87,25 @@ export default defineConfig({
     {
       name: 'dev',
       testMatch: DEV_SPECS,
+      testIgnore: PERF_SPECS,
       use: {
         ...devices['Desktop Chrome'],
         baseURL: `http://localhost:${DEV_PORT}/`,
         // The fake mic (US-0.4) plays through an AudioContext started without a user gesture.
         launchOptions: { args: ['--autoplay-policy=no-user-gesture-required'] },
+      },
+    },
+    {
+      // Edit-to-paint timing against the dev server, alone: one worker, after the other
+      // projects have finished (`dependencies`), so no parallel test competes for the CPU.
+      name: 'perf',
+      testMatch: PERF_SPECS,
+      fullyParallel: false,
+      workers: 1,
+      dependencies: ['chromium', 'prod-mic', 'subpath', 'dev'],
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: `http://localhost:${DEV_PORT}/`,
       },
     },
   ],

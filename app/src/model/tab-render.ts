@@ -138,16 +138,44 @@ function renderSystem(units: readonly Unit[]): TabSystem {
 }
 
 /**
+ * The units each laid-out system was rendered from, so a later layout can reuse a system whose
+ * units are unchanged (`layoutTab`'s `previous`).
+ */
+const systemUnits = new WeakMap<TabSystem, readonly Unit[]>();
+
+/** Whether two systems' units are the same: the same note objects, spacing and bar lines. */
+function sameUnits(a: readonly Unit[], b: readonly Unit[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((u, i) => {
+    const v = b[i]!;
+    if (u.kind === 'bar' || v.kind === 'bar') return u.kind === v.kind;
+    return u.note === v.note && u.spacing === v.spacing;
+  });
+}
+
+/** A system's lookup key: its first note's id ('' with none). */
+function unitsKey(units: readonly Unit[]): string {
+  const first = units.find((u) => u.kind === 'note');
+  return first?.kind === 'note' ? first.note.id : '';
+}
+
+/**
  * Lays notes out as tab systems of six lines no wider than `widthChars` (a single note wider
  * than that still gets a system of its own). Notes go in `startMs` order; after each comes
  * `clamp(round(gap / 125), 1, 8)` dashes (the last note gets one). With `countInBpm` > 0, a bar
  * line is drawn at every 4-beat boundary up to the last note's start; a bar line at a wrap is
  * dropped, and wraps prefer a bar line in the system's last third.
+ *
+ * With `previous` (an earlier layout), a system laid out from exactly the same units (the same
+ * note objects, with the same spacing and bar lines) is that earlier system object, not a new
+ * one: an edit re-renders only the systems whose notes changed (story "500-note edit latency").
+ * The result is the same either way.
  */
 export function layoutTab(
   notes: readonly Note[],
   widthChars: number,
   countInBpm?: number,
+  previous?: TabLayout | null,
 ): TabLayout {
   const units = buildUnits(notes, countInBpm);
   if (units.length === 0) {
@@ -158,7 +186,40 @@ export function layoutTab(
     };
   }
   const available = widthChars - LINE_OVERHEAD;
-  return { systems: packUnits(units, available).map(renderSystem) };
+  const reusable = new Map<string, TabSystem[]>();
+  for (const system of previous?.systems ?? []) {
+    const old = systemUnits.get(system);
+    if (!old) continue;
+    const key = unitsKey(old);
+    reusable.set(key, [...(reusable.get(key) ?? []), system]);
+  }
+  return {
+    systems: packUnits(units, available).map((packed) => {
+      const candidates = reusable.get(unitsKey(packed)) ?? [];
+      const at = candidates.findIndex((system) => sameUnits(systemUnits.get(system)!, packed));
+      // Each earlier system is reused at most once.
+      if (at >= 0) return candidates.splice(at, 1)[0]!;
+      const system = renderSystem(packed);
+      systemUnits.set(system, packed);
+      return system;
+    }),
+  };
+}
+
+/**
+ * A layout function that remembers its last layout and passes it as `layoutTab`'s `previous`,
+ * so systems whose notes did not change keep their identity from one call to the next.
+ */
+export function createTabLayouter(): (
+  notes: readonly Note[],
+  widthChars: number,
+  countInBpm?: number,
+) => TabLayout {
+  let last: TabLayout | null = null;
+  return (notes, widthChars, countInBpm) => {
+    last = layoutTab(notes, widthChars, countInBpm, last);
+    return last;
+  };
 }
 
 function pad2(n: number): string {
