@@ -156,6 +156,46 @@ export function SettingsIcon({ className }: { className?: string }) {
   );
 }
 
+/** Copy: the Tab toolbar's Copy button (two overlapping sheets; mockup tab.html `#i-copy`). */
+export function CopyIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <rect
+        x="8"
+        y="8"
+        width="12"
+        height="12"
+        rx="2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <path
+        d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+    </svg>
+  );
+}
+
+/** Download: the Tab toolbar's Download button (an arrow into a tray; mockup `#i-download`). */
+export function DownloadIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M12 3v12M7 10l5 5 5-5M4 20h16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /** Trim: the Tab toolbar's Trim toggle (scissors; mockup tab.html `#i-trim`). */
 export function TrimIcon({ className }: { className?: string }) {
   return (

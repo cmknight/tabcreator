@@ -10,6 +10,7 @@ import {
   recordToggle,
   SHORTCUTS,
   tabEditShortcuts,
+  tabExportShortcuts,
   tabPlaybackShortcuts,
   tabSelectionShortcuts,
   type Shortcut,
@@ -430,6 +431,7 @@ describe('the Tab selection shortcuts', () => {
       ['Backspace', 'Delete note'],
       ['i', 'Insert note after selection'],
       ['Enter', 'Confirm selected note (clears flag, locks it)'],
+      ['c', 'Copy tab'],
     ]);
   });
 
@@ -1207,5 +1209,155 @@ describe('isMacPlatform', () => {
     platform(mac ? 'Win32' : 'MacIntel');
     userAgentData(value);
     expect(isMacPlatform()).toBe(mac);
+  });
+});
+
+// Story "Copy and Download on the Tab screen": Ctrl/⌘+Shift+C copies the shown tab.
+describe('the Tab copy shortcut', () => {
+  const take = {
+    title: 'Riff',
+    createdAt: new Date(2026, 9, 4, 9, 5).toISOString(),
+    countInBpm: 100,
+    trimStartMs: 1000,
+    trimEndMs: null,
+  };
+  const notes = [0, 500, 1500, 2000].map((startMs, i) => ({
+    id: `n${i}`,
+    string: 1,
+    fret: i,
+    startMs,
+    endMs: startMs + 100,
+    midi: 0,
+    confidence: 1,
+    locked: false,
+    lowConfidence: false,
+  }));
+  function fakeSession(over: Partial<TakeSnapshot> = {}) {
+    const snapshot = {
+      take,
+      tab: { notes },
+      selectedNoteId: null,
+      missing: false,
+      analysis: { kind: 'idle' },
+      ...over,
+    } as unknown as TakeSnapshot;
+    return { getSnapshot: () => snapshot };
+  }
+
+  let remove: () => void = () => {};
+  afterEach(() => {
+    remove();
+    document.body.innerHTML = '';
+    window.location.hash = '';
+  });
+
+  function install(
+    session: ReturnType<typeof fakeSession> | null,
+    { mac = false, barLines = true, hash = '#/tab/t1' } = {},
+  ) {
+    window.location.hash = hash;
+    const copy = vi.fn<(text: string) => Promise<void>>(() => Promise.resolve());
+    remove = installShortcuts(
+      window,
+      tabExportShortcuts(
+        () => session,
+        () => barLines,
+        copy,
+      ),
+      () => mac,
+    );
+    return copy;
+  }
+
+  it('is registered on the Tab route as Ctrl/⌘+Shift+C', () => {
+    expect(SHORTCUTS.find((s) => s.key === 'c')).toMatchObject({
+      route: 'tab',
+      mod: 'mod+shift',
+      description: 'Copy tab',
+    });
+  });
+
+  it('copies the visible notes (the trim applied) with Ctrl+Shift+C, or ⌘+Shift+C on a Mac', async () => {
+    const { tabExportText } = await import('../../src/ui/tab-export');
+    const copy = install(fakeSession());
+    expect(press(document.body, 'C', { ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(
+      true,
+    );
+    const visible = notes.slice(2) as unknown as Parameters<typeof tabExportText>[1];
+    expect(copy).toHaveBeenCalledWith(tabExportText(take, visible, true));
+    remove();
+    const mac = install(fakeSession(), { mac: true });
+    expect(press(document.body, 'C', { metaKey: true, shiftKey: true }).defaultPrevented).toBe(
+      true,
+    );
+    expect(mac).toHaveBeenCalledTimes(1);
+    // Ctrl+C without Shift stays the browser's.
+    expect(press(document.body, 'c', { metaKey: true }).defaultPrevented).toBe(false);
+  });
+
+  it('leaves out bar lines while the toggle is off', async () => {
+    const { tabExportText } = await import('../../src/ui/tab-export');
+    const copy = install(fakeSession(), { barLines: false });
+    press(document.body, 'C', { ctrlKey: true, shiftKey: true });
+    const visible = notes.slice(2) as unknown as Parameters<typeof tabExportText>[1];
+    expect(copy).toHaveBeenCalledWith(tabExportText(take, visible, false));
+  });
+
+  it("reads Bar lines from settingsSession's prefs by default (the Tab screen's default store)", async () => {
+    const { settingsSession } = await import('../../src/session/settings-session');
+    const { tabExportText } = await import('../../src/ui/tab-export');
+    const real = settingsSession.getSnapshot();
+    const spy = vi.spyOn(settingsSession, 'getSnapshot');
+    window.location.hash = '#/tab/t1';
+    const copy = vi.fn<(text: string) => Promise<void>>(() => Promise.resolve());
+    const session = fakeSession();
+    remove = installShortcuts(
+      window,
+      tabExportShortcuts(() => session, undefined, copy),
+      () => false,
+    );
+    const visible = notes.slice(2) as unknown as Parameters<typeof tabExportText>[1];
+    for (const barLines of [false, true]) {
+      spy.mockReturnValue({ ...real, prefs: { ...real.prefs, barLines } });
+      press(document.body, 'C', { ctrlKey: true, shiftKey: true });
+      expect(copy).toHaveBeenLastCalledWith(tabExportText(take, visible, barLines));
+    }
+    spy.mockRestore();
+  });
+
+  it('does nothing in a text field, the Trim strip, under an overlay, or with no tab shown', async () => {
+    const copy = install(fakeSession());
+    const input = add('input');
+    expect(press(input, 'C', { ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(false);
+    const strip = add('section', { 'data-trim-strip': '' });
+    const handle = strip.appendChild(document.createElement('div'));
+    expect(press(handle, 'C', { ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(false);
+    const { openOverlay } = await import('../../src/ui/a11y/overlays');
+    const popover = add('div');
+    popover.appendChild(document.createElement('button'));
+    const release = openOverlay({ element: popover, opener: null, onDismiss: () => {} });
+    expect(press(document.body, 'C', { ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(
+      false,
+    );
+    release();
+    expect(copy).not.toHaveBeenCalled();
+    remove();
+    for (const over of [
+      { analysis: { kind: 'running', progress: 0.2 } },
+      { tab: { notes: notes.slice(0, 2) } }, // all hidden by the trim: No notes found
+      { missing: true },
+    ] as Partial<TakeSnapshot>[]) {
+      const none = install(fakeSession(over));
+      expect(press(document.body, 'C', { ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(
+        false,
+      );
+      expect(none).not.toHaveBeenCalled();
+      remove();
+    }
+    const elsewhere = install(fakeSession(), { hash: '#/library' });
+    expect(press(document.body, 'C', { ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(
+      false,
+    );
+    expect(elsewhere).not.toHaveBeenCalled();
   });
 });

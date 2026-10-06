@@ -744,6 +744,8 @@ test('No notes found: Undo, Redo, Insert and Delete disabled with their reasons'
     'Redo',
     'Insert',
     'Delete',
+    'Copy',
+    'Download',
     'Trim',
     'Analysis settings',
   ]);
@@ -751,6 +753,8 @@ test('No notes found: Undo, Redo, Insert and Delete disabled with their reasons'
   await expectTool(page, 'Redo', false, 'Nothing to redo');
   await expectTool(page, 'Insert', false, 'No notes yet');
   await expectTool(page, 'Delete', false, 'No notes yet');
+  await expectTool(page, 'Copy', false, 'No notes to copy');
+  await expectTool(page, 'Download', false, 'No notes to download');
   // Trim stays enabled in No notes found, but a seeded take has no audio (story "Trim").
   await expectTool(page, 'Trim', false, 'Audio deleted');
   await expect(toolbar.getByRole('button', { name: 'Analysis settings' })).toBeEnabled();

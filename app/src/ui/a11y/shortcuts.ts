@@ -46,11 +46,16 @@
 // Story "Trim": with focus in the Trim strip, the note edit keys (digits, Delete, Backspace, `I`,
 // Enter), `N`, Space and `P` do not run: the strip's handles own their keys. Undo and redo still
 // do.
+//
+// Story "Copy and Download on the Tab screen": Ctrl/⌘+Shift+C copies the tab (as the toolbar's
+// Copy does: the shown notes, bar lines only with the toggle on) while it is shown, with the
+// edit keys' guards: not in a text field, not under an overlay, not in the Trim strip.
 
 import { useEffect } from 'react';
 import { recordingSession, type RecordingSession } from '../../session/recording-session';
 import type { RecordingSnapshot } from '../../session/recording-types';
 import { activePlayback, type PlaybackController } from '../../session/playback';
+import { settingsSession } from '../../session/settings-session';
 import {
   activeTakeSession,
   isTabShown,
@@ -61,6 +66,7 @@ import { parseRoute, type Route } from '../router';
 import { isOverlayOpen } from './overlays';
 import { NOTE_BUTTON, TAB_AREA, TEXT_FIELD, TOOLBAR, TRIM_STRIP } from './selectors';
 import { strings } from '../strings';
+import { copyTab, tabExportText } from '../tab-export';
 
 export interface Shortcut {
   /** `KeyboardEvent.key`, e.g. `' '` for Space. */
@@ -462,6 +468,33 @@ export function tabEditShortcuts(
   ];
 }
 
+/**
+ * Ctrl/⌘+Shift+C on the Tab screen: copies the shown tab (`toText` over the visible notes, bar
+ * lines only while `barLines()` is on) through `copy`, which toasts the outcome. Applies only
+ * while the tab is shown with visible notes, and not from the Trim strip (the guard covers text
+ * fields, the dispatcher overlays).
+ */
+export function tabExportShortcuts(
+  session: () => Pick<TakeSession, 'getSnapshot'> | null = activeTakeSession,
+  barLines: () => boolean = () => settingsSession.getSnapshot().prefs.barLines,
+  copy: (text: string) => Promise<void> = copyTab,
+): Shortcut[] {
+  return [
+    {
+      key: 'c',
+      mod: 'mod+shift',
+      route: 'tab',
+      description: strings['tab.shortcutCopy'],
+      when: (target) => !inTrimStrip(target) && isTabShown(session()?.getSnapshot()),
+      handler: () => {
+        const snap = session()?.getSnapshot();
+        if (!snap?.take || !isTabShown(snap)) return;
+        void copy(tabExportText(snap.take, shownNotes(snap), barLines()));
+      },
+    },
+  ];
+}
+
 /** Every shortcut in the app. */
 export const SHORTCUTS: readonly Shortcut[] = [
   {
@@ -474,6 +507,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   ...tabSelectionShortcuts(),
   ...tabPlaybackShortcuts(),
   ...tabEditShortcuts(),
+  ...tabExportShortcuts(),
 ];
 
 /**

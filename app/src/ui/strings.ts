@@ -420,6 +420,19 @@ export const strings = {
   /** The toolbar's Insert and Delete buttons (EXPERIENCE.md Toolbar). */
   'tab.insert': 'Insert',
   'tab.delete': 'Delete',
+  /** The toolbar's Copy and Download buttons (EXPERIENCE.md Toolbar; CAP-18). */
+  'tab.copy': 'Copy',
+  'tab.download': 'Download',
+  /** Copy's and Download's tooltips with no notes (No notes found; mockup tab.html). */
+  'tab.noNotesToCopy': 'No notes to copy',
+  'tab.noNotesToDownload': 'No notes to download',
+  /** The toasts after Copy (or Ctrl/⌘+Shift+C): the tab is on the clipboard, or it is not. */
+  'tab.copied': 'Tab copied',
+  'tab.copyFailed': "Couldn't copy the tab",
+  /** The toast when the browser refused the Download. */
+  'tab.downloadFailed': "Couldn't download the tab",
+  /** The Ctrl/⌘+Shift+C shortcut, as the `?` dialog lists it. */
+  'tab.shortcutCopy': 'Copy tab',
   /** Insert's and Delete's tooltip with no notes (No notes found). */
   'tab.noNotesYet': 'No notes yet',
   /** Delete's tooltip with notes but none selected. */

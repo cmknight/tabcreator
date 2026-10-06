@@ -55,6 +55,11 @@
 // disabled. The outcome (done, cancelled, failed) is announced. In No notes found the tip's
 // "Analysis settings" is a link-styled button that opens the panel and focuses Sensitivity.
 //
+// Story "Copy and Download on the Tab screen" (CAP-18): the toolbar's Copy and Download (after
+// Delete) export `toText` over the shown notes (ui/tab-export.ts), with bar lines only while the
+// Bar lines toggle is on. Disabled in No notes found ("No notes to copy" / "No notes to
+// download"); a re-analysis leaves them enabled (the shown tab is unchanged until it commits).
+//
 // Story "Trim": the toolbar's Trim toggle (before Bar lines; `aria-expanded`) opens the Trim
 // strip (components/TrimStrip) below the toolbar. Trim is disabled with "Audio deleted" when the
 // take has no audio, and while a re-analysis or trim runs; it stays enabled in No notes found.
@@ -104,7 +109,9 @@ import { TrimStrip, type TrimStripProps } from '../components/TrimStrip';
 import { EditPopover } from '../components/EditPopover';
 import {
   BarLinesIcon,
+  CopyIcon,
   DeleteIcon,
+  DownloadIcon,
   ErrorIcon,
   InsertIcon,
   RedoIcon,
@@ -120,6 +127,7 @@ import { TakeHeader } from '../components/TakeHeader';
 import { TakeWarnings, type DismissibleWarning } from '../components/TakeWarnings';
 import { reloadOrExplain } from '../reload-or-explain';
 import { strings } from '../strings';
+import { copyTab, downloadTab, tabExportText } from '../tab-export';
 import { showToast } from '../toast';
 import { usePlayback } from '../use-playback';
 import { useTakeSession } from '../use-take-session';
@@ -998,6 +1006,24 @@ export function Tab({
             }
             disabled={!editable || selectedNoteId === null}
             onClick={() => void session.deleteSelected()}
+          />
+          <ToolButton
+            icon={<CopyIcon className={tabStyles.toolIcon} />}
+            label={strings['tab.copy']}
+            tooltip={showTab ? null : strings['tab.noNotesToCopy']}
+            disabled={!showTab}
+            onClick={() => {
+              if (notes) void copyTab(tabExportText(take, notes, barLines));
+            }}
+          />
+          <ToolButton
+            icon={<DownloadIcon className={tabStyles.toolIcon} />}
+            label={strings['tab.download']}
+            tooltip={showTab ? null : strings['tab.noNotesToDownload']}
+            disabled={!showTab}
+            onClick={() => {
+              if (notes) downloadTab(take.title, tabExportText(take, notes, barLines));
+            }}
           />
           <ToolButton
             buttonRef={trimToggle}

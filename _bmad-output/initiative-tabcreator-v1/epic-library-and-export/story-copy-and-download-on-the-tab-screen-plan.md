@@ -3,12 +3,13 @@ title: 'Copy and Download on the Tab screen'
 type: 'feature'
 ticket: '4'
 created: '2026-10-06'
-status: 'draft'
+status: 'built'
+baseline_revision: 'b45d558992a1ca4331388f4bcbc4611691082fb3'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 context:
@@ -91,11 +92,11 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `app/src/ui/platform.ts` (+ a slug function in `app/src/model/` for the pure part) -- the platform helpers and the slug -- AD-2.
-- [ ] `app/src/ui/screens/Tab.tsx`, `icons.tsx`, `strings.ts` -- Copy and Download buttons, export text, toasts, disabled reasons -- CAP-18.
-- [ ] `app/src/ui/a11y/shortcuts.ts` -- Ctrl/⌘+Shift+C -- the shortcut.
-- [ ] Unit tests for every I/O row (slug, line endings with an injected platform, platform helpers with stubbed DOM/clipboard, toolbar state, shortcut).
-- [ ] `app/tests/e2e/export.dev.spec.ts` -- the ACs.
+- [x] `app/src/ui/platform.ts` (+ a slug function in `app/src/model/` for the pure part) -- the platform helpers and the slug -- AD-2.
+- [x] `app/src/ui/screens/Tab.tsx`, `icons.tsx`, `strings.ts` -- Copy and Download buttons, export text, toasts, disabled reasons -- CAP-18.
+- [x] `app/src/ui/a11y/shortcuts.ts` -- Ctrl/⌘+Shift+C -- the shortcut.
+- [x] Unit tests for every I/O row (slug, line endings with an injected platform, platform helpers with stubbed DOM/clipboard, toolbar state, shortcut).
+- [x] `app/tests/e2e/export.dev.spec.ts` -- the ACs.
 
 **Acceptance Criteria:**
 - Given a recorded `c_major_scale_pos1` take on the Tab screen, when the player clicks Copy and then Download, then the clipboard text equals the downloaded file's text, and every line of each tab system has the same length.
@@ -105,9 +106,40 @@ deferred: []
 
 ## Implementation Notes
 
+- The pure part lives in `app/src/model/export-file.ts` (`slugify`, `exportFileName`, `withPlatformLineEndings`); `app/src/ui/tab-export.ts` holds the shared glue (`tabExportText`, `copyTab` with its toasts, `downloadTab`) so the toolbar and the shortcut (`tabExportShortcuts` in `shortcuts.ts`, reading `settingsSession`'s `barLines`) export the same text.
+- Download object URLs are revoked 1 s after the click (revoking synchronously can cancel the download in some browsers).
+- The `dev` Playwright project uses the Desktop Chrome device, whose user agent is Windows, so `isWindowsPlatform()` is true there and downloads carry `\r\n`. `export.dev.spec.ts` checks the file's endings against the page's reported platform, then compares the `\n`-normalised file text with the clipboard.
+- Ctrl+Shift+C: Playwright delivers it to the page and the e2e passes. Not checked in a real, non-automated Chrome (no interactive browser in this session); desktop Chrome binds Ctrl+Shift+C to DevTools' Inspect element and may swallow it there. The toolbar Copy remains the path if so; worth a manual check.
+
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-06 — Review pass
+- verdicts: 22 findings — high 0, medium 0, low 18, false 3, maybe-false 1
+- findings:
+  - `[low]` `[patch]` (blind) `slugify` turns letters that NFD doesn't split (ß, ø, æ, œ, ł, đ) into hyphens — a small fold map runs before the ASCII filter (ß→ss, ø→o, æ→ae, œ→oe, ł→l, đ→d); non-Latin titles keep the spec's `tab.txt` fallback.
+  - `[low]` `[patch]` (blind) Download has no failure path — wrapped like Copy: "Couldn't download the tab" toast on a throw. No success toast: the browser shows the download.
+  - `[maybe-false]` `[reject]` (blind) Ctrl/⌘+Shift+C may be swallowed by the browser's DevTools inspector and was not checked by hand — needs a manual check in a real Chrome (recorded under residual risks); the spec names the binding, and the toolbar Copy is the dependable path. Low if true.
+  - `[low]` `[reject]` (blind) The e2e Windows branch isn't pinned — the probe shows `dev`'s Desktop Chrome reports `userAgentData.platform` "Windows", so e2e runs the `\r\n` branch; the `\n` branch is unit-tested with an injected platform.
+  - `[low]` `[patch]` (blind) `pickFile` waits forever where the input's `cancel` event isn't fired (Chromium before 113) — a window-focus fallback settles null when no file was chosen and removes the input; test added.
+  - `[low]` `[reject]` (blind) AD-2 isn't lint-enforced — a convention reviewed like the other AD rules; `use-playback`'s object URL predates it.
+  - `[low]` `[reject]` (blind) No clipboard fallback without `navigator.clipboard` — the app is served over HTTPS (a secure context), where the API exists; failure already toasts.
+  - `[low]` `[patch]` (blind) The new describe block orphans the edit-popover comment in tab-screen.test.tsx — moved.
+  - `[false]` `[reject]` (blind) Holding Ctrl+Shift+C starts overlapping copies — the dispatcher ignores auto-repeat unless an entry opts in (5.8), and this entry doesn't.
+  - `[low]` `[reject]` (blind) The `?` dialog test doesn't show the Shift modifier — the `?` dialog isn't built yet (epic Offline, accessibility and budgets).
+  - `[low]` `[patch]` (blind) The shortcut and the toolbar read Bar lines from different sources — the shortcut reads the same `settingsSession` prefs the Tab screen uses by default (one source); see the verification-gap test.
+  - `[low]` `[patch]` (edge) Windows-reserved slugs (con, nul, aux, prn, com1–9, lpt1–9) — suffixed with `-tab`.
+  - `[low]` `[patch]` (edge) `pickFile` cancel on old browsers — the same as the blind finding.
+  - `[low]` `[patch]` (edge) Non-decomposing letters — the same as the blind finding.
+  - `[low]` `[reject]` (edge) The e2e comment about Windows — accurate per the intent probe (`userAgentData.platform` reports Windows); the comment is clarified.
+  - `[false]` `[reject]` (edge) Literal equality fails on Windows — the spec says "except line endings"; the e2e normalises them.
+  - `[low]` `[patch]` (verification-gap) The shortcut's default Bar-lines source is never checked — an e2e step presses Ctrl+Shift+C on a count-in take with Bar lines off and compares with the toolbar Copy.
+  - `[low]` `[reject]` (verification-gap, other) The `\r\n` branch may not run in CI — it does (Windows UA data); `\n` is unit-tested.
+  - `[low]` `[reject]` (intent) The bar-lines check runs on a seeded take — recorded takes have no count-in by default, so only a count-in take can show the toggle's effect.
+  - `[false]` `[reject]` (intent) The platform detection is mirrored in e2e — `isWindowsPlatform` reads the browser-reported platform, the only observable one; the e2e asserts the matching endings.
+  - `[low]` `[reject]` (intent) The disabled reason is checked as a `title` — the toolbar's existing convention (Insert, Delete, Trim).
+  - `[low]` `[reject]` (intent) `pickFile` has no consumer yet — by design (R1a: for 6.5 and 6.6).
 
 ## Design Notes
 
@@ -118,3 +150,41 @@ deferred: []
 **Commands:**
 - `cd app && npx -y pnpm@12.6.0 lint && npx -y pnpm@12.6.0 typecheck && npx -y pnpm@12.6.0 format:check && npx -y pnpm@12.6.0 test` -- expected: pass.
 - `cd app && export PATH="$HOME/.cargo/bin:$PATH" && npx -y pnpm@12.6.0 exec playwright test --project=dev tests/e2e/export.dev.spec.ts tests/e2e/tab-edit.dev.spec.ts tests/e2e/tab-screen.dev.spec.ts` -- expected: pass.
+
+## Auto Run Result
+
+**Status:** built, 2026-10-06.
+
+**Summary:**
+- `ui/platform.ts` (AD-2) owns clipboard writes, text and blob downloads, the file picker (with a focus fallback where `cancel` isn't fired) and Windows detection.
+- The Tab toolbar's Copy and Download (after Delete) and Ctrl/⌘+Shift+C export `toText` of the visible notes, following the Bar lines toggle.
+  - Copy toasts "Tab copied", or "Couldn't copy the tab".
+  - Download saves `<slug>.txt` with `\r\n` on Windows, and toasts "Couldn't download the tab" on failure.
+  - The slug folds diacritics and ß/ø/æ/œ/ł/đ, is at most 60 characters, falls back to `tab.txt`, and avoids reserved device names.
+  - Both buttons are disabled with reasons in No notes found.
+
+**Files:**
+- `app/src/ui/platform.ts` (new), `app/src/model/export-file.ts` (new), `app/src/ui/tab-export.ts` (new).
+- `app/src/ui/screens/Tab.tsx`, `app/src/ui/a11y/shortcuts.ts`, `icons.tsx`, `strings.ts`.
+- Tests:
+  - unit: `platform`, `shortcuts`, `tab-screen`;
+  - e2e: `tests/e2e/export.dev.spec.ts`, and the toolbar list in `tab-edit.dev.spec.ts`.
+
+**Review:** thorough, 22 findings (18 low, 3 false, 1 maybe-false).
+- **Patched (low):**
+  - slug folding and reserved names;
+  - download failure toast;
+  - `pickFile` focus fallback;
+  - a test pinning the shortcut's Bar-lines source, plus the e2e shortcut step;
+  - a test comment moved.
+- **Deferred:** none.
+- **Rejected:** with reasons in the triage log.
+
+**Follow-up review: not recommended.** No high or medium.
+
+**Verification:**
+- lint, typecheck, format:check and test pass (1582).
+- Full Playwright: 199 passed (perf included).
+
+**Residual risks:**
+- Ctrl/⌘+Shift+C may be taken by the browser's DevTools inspector in a real Chrome; this needs a manual check. The toolbar Copy is the dependable path.

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommandLabel, EditLabel } from '../../src/model/edit-history';
 import type { AppErrorCode } from '../../src/model/errors';
 import type { Note, Tab as TabRecord, Take } from '../../src/model/types';
-import { layoutTab } from '../../src/model/tab-render';
+import { layoutTab, toText } from '../../src/model/tab-render';
 import {
   activeTakeSession,
   type EditEvent,
@@ -23,6 +23,7 @@ import { REFIT_FADE_MS, REFIT_HOLD_MS, Tab } from '../../src/ui/screens/Tab';
 import { announce } from '../../src/ui/a11y/announcer';
 import { reloadOrExplain } from '../../src/ui/reload-or-explain';
 import { dispatchShortcut } from '../../src/ui/a11y/shortcuts';
+import { copyText, downloadText, isWindowsPlatform } from '../../src/ui/platform';
 import { strings } from '../../src/ui/strings';
 import { dismissToast, getToast } from '../../src/ui/toast';
 import type { SettingsSnapshot } from '../../src/session/settings-session';
@@ -32,6 +33,11 @@ vi.mock('../../src/ui/a11y/announcer', async (importOriginal) => ({
   announce: vi.fn(),
 }));
 vi.mock('../../src/ui/reload-or-explain', () => ({ reloadOrExplain: vi.fn() }));
+vi.mock('../../src/ui/platform', () => ({
+  copyText: vi.fn(() => Promise.resolve()),
+  downloadText: vi.fn(),
+  isWindowsPlatform: vi.fn(() => false),
+}));
 
 // Story 5.6: the Tab screen's states from a mocked take session: loading, analysing (progress),
 // the tab as <pre> systems, failed and missing.
@@ -1055,7 +1061,16 @@ describe('Tab screen tab area, header and selection', () => {
     render(<Tab takeId="t1" createSession={create} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Tab tools' });
     const names = [...toolbar.querySelectorAll('button')].map((b) => b.textContent);
-    expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete', 'Trim', 'Analysis settings']);
+    expect(names).toEqual([
+      'Undo',
+      'Redo',
+      'Insert',
+      'Delete',
+      'Copy',
+      'Download',
+      'Trim',
+      'Analysis settings',
+    ]);
     const insert = screen.getByRole('button', { name: 'Insert' }) as HTMLButtonElement;
     const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement;
     expect(insert.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
@@ -1226,7 +1241,16 @@ describe('Tab screen tab area, header and selection', () => {
         expect(screen.getByRole('heading', { name: 'No notes found' })).toBeTruthy();
         const toolbar = screen.getByRole('toolbar', { name: 'Tab tools' });
         const names = [...toolbar.querySelectorAll('button')].map((b) => b.textContent);
-        expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete', 'Trim', 'Analysis settings']);
+        expect(names).toEqual([
+          'Undo',
+          'Redo',
+          'Insert',
+          'Delete',
+          'Copy',
+          'Download',
+          'Trim',
+          'Analysis settings',
+        ]);
         const expected: [string, string][] = [
           ['Undo', 'Nothing to undo'],
           ['Redo', 'Nothing to redo'],
@@ -1237,6 +1261,15 @@ describe('Tab screen tab area, header and selection', () => {
           expect(button(name).disabled).toBe(true);
           expect(tooltip(button(name))).toBe(reason);
         }
+      });
+
+      it('analysed empty: Copy and Download disabled, "No notes to copy" / "No notes to download"', () => {
+        const { create } = empty();
+        render(<Tab takeId="t1" createSession={create} />);
+        expect(button('Copy').disabled).toBe(true);
+        expect(tooltip(button('Copy'))).toBe('No notes to copy');
+        expect(button('Download').disabled).toBe(true);
+        expect(tooltip(button('Download'))).toBe('No notes to download');
       });
 
       it('deleted all: Undo enabled "Undo delete note"; a click undoes', () => {
@@ -1265,6 +1298,119 @@ describe('Tab screen tab area, header and selection', () => {
       expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
       set({ analysis: { kind: 'idle' }, missing: true });
       expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    });
+  });
+
+  // Story "Copy and Download on the Tab screen" (CAP-18).
+  describe('Copy and Download', () => {
+    const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
+    const settingsWith = (barLines: boolean) => {
+      const snapshot: SettingsSnapshot = {
+        engine: { state: 'loading' },
+        prefs: { barLines, analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 } },
+      };
+      return { subscribePrefs: () => () => {}, getSnapshot: () => snapshot, setBarLines: vi.fn() };
+    };
+    afterEach(() => dismissToast());
+
+    it('sit after Delete with icons, enabled with no tooltip while the tab is shown', () => {
+      const { create } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      for (const name of ['Copy', 'Download']) {
+        expect(button(name).disabled).toBe(false);
+        expect(button(name).querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+        expect(button(name).parentElement!.hasAttribute('title')).toBe(false);
+      }
+    });
+
+    it('Copy copies toText over the shown notes and toasts "Tab copied"', async () => {
+      const { create } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      await act(async () => {
+        fireEvent.click(button('Copy'));
+        await Promise.resolve();
+      });
+      expect(copyText).toHaveBeenCalledWith(toText(TAKE, notes));
+      expect(getToast()?.message).toBe('Tab copied');
+    });
+
+    it('a refused clipboard write toasts "Couldn\'t copy the tab"', async () => {
+      vi.mocked(copyText).mockRejectedValueOnce(new Error('denied'));
+      const { create } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      await act(async () => {
+        fireEvent.click(button('Copy'));
+        await Promise.resolve();
+      });
+      expect(getToast()?.message).toBe("Couldn't copy the tab");
+    });
+
+    it('Download saves the same text as <slug>.txt; \\r\\n on Windows only', () => {
+      const take = { ...TAKE, title: 'Blues / Riff 🎸 in A♯' };
+      const { create } = mockSession({
+        take,
+        tab: TAB40,
+        loading: false,
+        analysis: { kind: 'idle' },
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      fireEvent.click(button('Download'));
+      const text = toText(take, notes);
+      expect(downloadText).toHaveBeenLastCalledWith('blues-riff-in-a.txt', text);
+      vi.mocked(isWindowsPlatform).mockReturnValueOnce(true);
+      fireEvent.click(button('Download'));
+      expect(downloadText).toHaveBeenLastCalledWith(
+        'blues-riff-in-a.txt',
+        text.replace(/\n/g, '\r\n'),
+      );
+    });
+
+    it('exports only the notes the trim leaves visible', () => {
+      const take = { ...TAKE, trimStartMs: 5000 };
+      const { create } = mockSession({
+        take,
+        tab: TAB40,
+        loading: false,
+        analysis: { kind: 'idle' },
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      fireEvent.click(button('Download'));
+      const visible = notes.filter((n) => n.startMs >= 5000);
+      expect(visible.length).toBeLessThan(notes.length);
+      expect(downloadText).toHaveBeenCalledWith('take-3.txt', toText(take, visible));
+    });
+
+    it('bar lines go into the export only while the toggle is on', () => {
+      const take = { ...TAKE, countInBpm: 120 };
+      const withCountIn = () =>
+        mockSession({ take, tab: TAB40, loading: false, analysis: { kind: 'idle' } });
+      const plain: Take = { ...take };
+      delete plain.countInBpm;
+      const off = render(
+        <Tab takeId="t1" createSession={withCountIn().create} settings={settingsWith(false)} />,
+      );
+      fireEvent.click(button('Download'));
+      expect(downloadText).toHaveBeenLastCalledWith('take-3.txt', toText(plain, notes));
+      off.unmount();
+      render(
+        <Tab takeId="t1" createSession={withCountIn().create} settings={settingsWith(true)} />,
+      );
+      fireEvent.click(button('Download'));
+      expect(downloadText).toHaveBeenLastCalledWith('take-3.txt', toText(take, notes));
+      expect(toText(take, notes)).not.toBe(toText(plain, notes));
+    });
+
+    it('stay enabled while a re-analysis runs', () => {
+      const { create } = mockSession({
+        take: TAKE,
+        tab: TAB40,
+        loading: false,
+        analysis: { kind: 'idle' },
+        reanalysis: { progress: 0.4 },
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      expect(button('Copy').disabled).toBe(false);
+      expect(button('Download').disabled).toBe(false);
     });
   });
 
