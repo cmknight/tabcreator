@@ -295,4 +295,38 @@ describe('readBackup', () => {
       }),
     ).rejects.toMatchObject({ code: 'storage-failed' });
   });
+
+  it('a start failure names the Restore worker', async () => {
+    await expect(
+      readBackup(new Blob([]), {
+        createWorker: () => {
+          throw new Error('no workers');
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'storage-failed',
+      message: 'Restore worker failed to start',
+    });
+  });
+
+  it('a reply of another type rejects storage-failed and terminates the worker', async () => {
+    const { worker } = fakeWorker((w) => send(w, { type: 'progress', progress: 0.5 }));
+    await expect(readBackup(new Blob([]), { createWorker: () => worker })).rejects.toMatchObject({
+      code: 'storage-failed',
+      message: 'Restore worker: unexpected reply progress',
+    });
+    expect(worker.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a request that cannot be posted rejects storage-failed and terminates the worker', async () => {
+    const { worker } = fakeWorker(() => {});
+    vi.mocked(worker.postMessage).mockImplementationOnce(() => {
+      throw new Error('DataCloneError');
+    });
+    await expect(readBackup(new Blob([]), { createWorker: () => worker })).rejects.toMatchObject({
+      code: 'storage-failed',
+      message: 'Restore worker: posting failed',
+    });
+    expect(worker.terminate).toHaveBeenCalledTimes(1);
+  });
 });

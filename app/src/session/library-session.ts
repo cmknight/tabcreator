@@ -53,7 +53,10 @@ export interface LibraryStorage {
   protected: boolean | null;
   /** The bytes this origin uses (`estimate().usage`); null when unknown. */
   usageBytes: number | null;
-  /** A storage write failed with `storage-full` since the last committed save. */
+  /**
+   * A storage write failed with `storage-full`, and no committed save of another take, or a
+   * restore, has happened since.
+   */
   full: boolean;
 }
 

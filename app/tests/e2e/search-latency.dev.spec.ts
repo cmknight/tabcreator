@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { LIBRARY500_COUNT, library500Titles } from '../../src/dev/library500';
 import { searchKey } from '../../src/model/library';
+import { list } from './library-helpers';
 
 // Story "Search 500 takes" (CAP-17): per-keystroke filter-to-paint in the Library with 500 takes.
 // The dev page `#/__test/library500` seeds the generated library (src/dev/library500.ts) and opens
@@ -62,9 +63,11 @@ async function openLibrary500(page: Page) {
     if (Date.now() > deadline) throw new Error('library500: seeding took over 60 s');
     await page.waitForTimeout(100);
   }
-  await expect(
-    page.getByRole('list', { name: 'Takes, newest first' }).getByRole('listitem').first(),
-  ).toHaveAttribute('aria-setsize', String(LIBRARY500_COUNT), { timeout: 30_000 });
+  await expect(list(page).getByRole('listitem').first()).toHaveAttribute(
+    'aria-setsize',
+    String(LIBRARY500_COUNT),
+    { timeout: 30_000 },
+  );
   await installProbe(page);
 }
 

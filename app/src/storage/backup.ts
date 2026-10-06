@@ -102,8 +102,6 @@ export interface BackupResult {
 
 /** The zip entry name of the manifest. */
 export const MANIFEST_NAME = 'manifest.json';
-/** The zip's (and OPFS's) directory of compressed audio. */
-export const AUDIO_DIR = 'audio';
 
 const byCreatedAt = (a: Take, b: Take) =>
   a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
@@ -167,6 +165,53 @@ export function defaultBackupWorker(): BackupWorker {
 }
 
 /**
+ * Runs one request on a fresh backup worker (backup and restore share it): starts the worker
+ * (`createWorker`, else `defaultBackupWorker`), posts `request` and settles on its reply.
+ * `onReply` handles the request's own replies, calling `resolve` for the final one, and returns
+ * false for any other; an `error` reply then rejects with its code and message, anything else with
+ * `storage-failed`. A worker that fails to start, errors, sends an unreadable reply or cannot be
+ * posted to rejects with `storage-failed`, the messages prefixed `{label} worker`. The worker is
+ * terminated once it has replied or failed. Internal to storage/.
+ */
+export async function runBackupWorker<T>(
+  createWorker: (() => BackupWorker) | undefined,
+  label: 'Backup' | 'Restore',
+  request: ToBackupWorker,
+  onReply: (data: FromBackupWorker, resolve: (value: T) => void) => boolean,
+): Promise<T> {
+  let worker: BackupWorker;
+  try {
+    worker = (createWorker ?? defaultBackupWorker)();
+  } catch (err) {
+    throw new AppError('storage-failed', `${label} worker failed to start`, { cause: err });
+  }
+  return new Promise<T>((resolve, reject) => {
+    worker.onmessage = ({ data }) => {
+      if (onReply(data, resolve)) return;
+      if (data.type === 'error') reject(new AppError(data.code, data.message));
+      else reject(new AppError('storage-failed', `${label} worker: unexpected reply ${data.type}`));
+    };
+    worker.onerror = (event) => {
+      event.preventDefault?.();
+      reject(
+        new AppError(
+          'storage-failed',
+          `${label} worker failed: ${event.message || 'unknown error'}`,
+        ),
+      );
+    };
+    worker.onmessageerror = () => {
+      reject(new AppError('storage-failed', `${label} worker: a reply could not be read`));
+    };
+    try {
+      worker.postMessage(request);
+    } catch (err) {
+      reject(new AppError('storage-failed', `${label} worker: posting failed`, { cause: err }));
+    }
+  }).finally(() => worker.terminate());
+}
+
+/**
  * Backs up the library: reads every take and tab, then has a fresh backup worker build the zip
  * from OPFS. `onProgress` gets 0 at the start and then the worker's fraction of bytes zipped
  * (monotone, ending at 1). Reading the takes or the worker failing rejects with `storage-failed`. The worker is terminated once it has replied or failed.
@@ -187,50 +232,27 @@ export async function createBackup(
   const { files, unsupported } = backupFiles(manifest);
   onProgress(0);
 
-  let worker: BackupWorker;
-  try {
-    worker = (deps.createWorker ?? defaultBackupWorker)();
-  } catch (err) {
-    throw new AppError('storage-failed', 'Backup worker failed to start', { cause: err });
-  }
   let last = 0;
-  const { blob, missing } = await new Promise<{ blob: Blob; missing: string[] }>(
-    (resolve, reject) => {
-      worker.onmessage = ({ data }) => {
-        if (data.type === 'progress') {
-          // Monotone: a stray lower value never moves the bar back.
-          const p = Math.min(1, Math.max(last, data.progress));
-          if (p !== last) {
-            last = p;
-            onProgress(p);
-          }
-        } else if (data.type === 'done') {
-          resolve({ blob: data.blob, missing: data.missing });
-        } else if (data.type === 'error') {
-          reject(new AppError(data.code, data.message));
-        } else {
-          reject(new AppError('storage-failed', `Backup worker: unexpected reply ${data.type}`));
+  const { blob, missing } = await runBackupWorker<{ blob: Blob; missing: string[] }>(
+    deps.createWorker,
+    'Backup',
+    { type: 'backup', manifest, files },
+    (data, resolve) => {
+      if (data.type === 'progress') {
+        // Monotone: a stray lower value never moves the bar back.
+        const p = Math.min(1, Math.max(last, data.progress));
+        if (p !== last) {
+          last = p;
+          onProgress(p);
         }
-      };
-      worker.onerror = (event) => {
-        event.preventDefault?.();
-        reject(
-          new AppError(
-            'storage-failed',
-            `Backup worker failed: ${event.message || 'unknown error'}`,
-          ),
-        );
-      };
-      worker.onmessageerror = () => {
-        reject(new AppError('storage-failed', 'Backup worker: a reply could not be read'));
-      };
-      try {
-        worker.postMessage({ type: 'backup', manifest, files });
-      } catch (err) {
-        reject(new AppError('storage-failed', 'Backup worker: posting failed', { cause: err }));
+      } else if (data.type === 'done') {
+        resolve({ blob: data.blob, missing: data.missing });
+      } else {
+        return false;
       }
+      return true;
     },
-  ).finally(() => worker.terminate());
+  );
   if (last < 1) onProgress(1);
 
   return {

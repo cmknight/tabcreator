@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../src/model/errors';
 import type { Note, Tab, Take } from '../../src/model/types';
+import { capTitle } from '../../src/model/title';
 import type { AnalysisOutcome, ProgressListener, ReanalysisRun } from '../../src/session/analysis';
 import {
   activeTakeSession,
-  capTitle,
   createTakeSession,
   hasAudio,
   hasUnsavedEdits,

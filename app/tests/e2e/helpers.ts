@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 /** The compressed audio type every saved take uses (`Take.audioMime`). */
 export const MIME = 'audio/webm;codecs=opus';
@@ -37,3 +37,7 @@ export const stopButton = (page: Page) => page.getByRole('button', { name: 'Stop
 
 /** Record's elapsed-time readout. */
 export const timer = (page: Page) => page.getByRole('timer');
+
+/** The announcer's polite region (not the Library's storage notice, also role status). */
+export const politeRegion = (page: Page): Locator =>
+  page.locator('[role="status"][aria-live="polite"]');

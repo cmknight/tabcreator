@@ -12,9 +12,9 @@ import {
   type AudioExtension,
 } from '../model/audio-format';
 import { AppError } from '../model/errors';
+import { AUDIO_DIR } from './paths';
 import { assertDevSaveSpace, assertWritable, hasErrorName, toStorageError } from './write-guard';
 
-const AUDIO_DIR = 'audio';
 const RAW_DIR = 'raw';
 const RAW_EXT = '.f32';
 

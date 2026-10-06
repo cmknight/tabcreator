@@ -12,13 +12,8 @@
 import { mimeForExtension } from '../model/audio-format';
 import { AppError } from '../model/errors';
 import type { Tab, Take } from '../model/types';
-import {
-  AUDIO_DIR,
-  BACKUP_FORMAT,
-  defaultBackupWorker,
-  type BackupEntry,
-  type BackupWorker,
-} from './backup';
+import { BACKUP_FORMAT, runBackupWorker, type BackupEntry, type BackupWorker } from './backup';
+import { AUDIO_DIR } from './paths';
 
 /** A backup checked in full: ready to import. */
 export interface ValidBackup {
@@ -207,38 +202,13 @@ export function validateBackup(
  * terminated once it has replied or failed.
  */
 export async function readBackup(file: Blob, deps: RestoreDeps = {}): Promise<ValidBackup> {
-  let worker: BackupWorker;
-  try {
-    worker = (deps.createWorker ?? defaultBackupWorker)();
-  } catch (err) {
-    throw new AppError('storage-failed', 'Restore worker failed to start', { cause: err });
-  }
-  const { manifest, entries } = await new Promise<{
+  const { manifest, entries } = await runBackupWorker<{
     manifest: string | null;
     entries: BackupEntry[];
-  }>((resolve, reject) => {
-    worker.onmessage = ({ data }) => {
-      if (data.type === 'read') resolve({ manifest: data.manifest, entries: data.entries });
-      else if (data.type === 'error') reject(new AppError(data.code, data.message));
-      else reject(new AppError('storage-failed', `Restore worker: unexpected reply ${data.type}`));
-    };
-    worker.onerror = (event) => {
-      event.preventDefault?.();
-      reject(
-        new AppError(
-          'storage-failed',
-          `Restore worker failed: ${event.message || 'unknown error'}`,
-        ),
-      );
-    };
-    worker.onmessageerror = () => {
-      reject(new AppError('storage-failed', 'Restore worker: a reply could not be read'));
-    };
-    try {
-      worker.postMessage({ type: 'read', file });
-    } catch (err) {
-      reject(new AppError('storage-failed', 'Restore worker: posting failed', { cause: err }));
-    }
-  }).finally(() => worker.terminate());
+  }>(deps.createWorker, 'Restore', { type: 'read', file }, (data, resolve) => {
+    if (data.type !== 'read') return false;
+    resolve({ manifest: data.manifest, entries: data.entries });
+    return true;
+  });
   return validateBackup(manifest, entries);
 }

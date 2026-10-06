@@ -1,8 +1,9 @@
 import { readFile } from 'node:fs/promises';
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import type { Tab, Take } from '../../src/model/types';
 import { collectErrors, recordButton, stopButton, timer } from './helpers';
+import { backupButton, heading, nav, restoreButton, row } from './library-helpers';
 import { goLive } from './mic-helpers';
 import { opfsFileBase64, opfsFiles, readTab, readTakes } from './storage-helpers';
 
@@ -12,20 +13,8 @@ import { opfsFileBase64, opfsFiles, readTab, readTakes } from './storage-helpers
 // another format shows the error banner and changes nothing. Restore from backup is enabled in
 // the empty library while Back up library is not.
 
-const heading = (page: Page) => page.getByRole('heading', { level: 1, name: 'Library' });
-const list = (page: Page): Locator => page.getByRole('list', { name: 'Takes, newest first' });
-const row = (page: Page, id: string): Locator => list(page).locator(`li[data-take-id="${id}"]`);
-/** The header's Back up library (not the one-time storage notice's, story 6.7). */
-const backupButton = (page: Page) =>
-  page
-    .getByRole('button', { name: 'Back up library' })
-    .and(page.locator(':not([data-testid="persist-notice"] *)'));
-const restoreButton = (page: Page) =>
-  page.getByRole('button', { name: /^(Restore from backup|Restoring…)$/ });
 const toast = (page: Page) => page.getByTestId('toast');
 const errorBanner = (page: Page) => page.getByTestId('restore-error');
-const nav = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name, exact: true });
 
 /** Errors other than the dev-only warnings the app logs on purpose. */
 const unexpected = (errors: string[]) => errors.filter((e) => !e.includes('[tabcreator]'));

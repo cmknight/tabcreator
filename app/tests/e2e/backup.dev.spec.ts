@@ -1,9 +1,10 @@
 import { readFile } from 'node:fs/promises';
-import { expect, test, type Download, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Download, type Page } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
 import { extensionFor } from '../../src/model/audio-format';
 import type { Tab, Take } from '../../src/model/types';
 import { recordButton, stopButton, timer } from './helpers';
+import { backupButton, heading, nav, row } from './library-helpers';
 import { goLive } from './mic-helpers';
 import { opfsFileBase64, opfsFiles, readTab, readTakes } from './storage-helpers';
 
@@ -12,17 +13,6 @@ import { opfsFileBase64, opfsFiles, readTab, readTakes } from './storage-helpers
 // tab, exactly as stored) and each take's compressed audio, byte-identical (WAV included); a take
 // whose audio was deleted has no entry. "Backing up…" and a progress bar show while it runs, with
 // the button disabled.
-
-const heading = (page: Page) => page.getByRole('heading', { level: 1, name: 'Library' });
-const list = (page: Page): Locator => page.getByRole('list', { name: 'Takes, newest first' });
-const row = (page: Page, id: string): Locator => list(page).locator(`li[data-take-id="${id}"]`);
-/** The header's Back up library (not the one-time storage notice's, story 6.7). */
-const backupButton = (page: Page) =>
-  page
-    .getByRole('button', { name: 'Back up library' })
-    .and(page.locator(':not([data-testid="persist-notice"] *)'));
-const nav = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name, exact: true });
 
 /** Errors other than the dev-only warnings the app logs on purpose. */
 const unexpected = (errors: string[]) => errors.filter((e) => !e.includes('[tabcreator]'));

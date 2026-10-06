@@ -254,6 +254,21 @@ describe('createBackup', () => {
     expect(worker.terminate).toHaveBeenCalledTimes(1);
   });
 
+  it('a worker that cannot start rejects storage-failed', async () => {
+    await expect(
+      createBackup(
+        {
+          listTakes: async () => [],
+          listTabs: async () => [],
+          createWorker: () => {
+            throw new Error('no workers');
+          },
+        },
+        () => {},
+      ),
+    ).rejects.toMatchObject({ code: 'storage-failed', message: 'Backup worker failed to start' });
+  });
+
   it('a failed read of the takes rejects before any worker starts', async () => {
     const createWorker = vi.fn();
     const cause = new Error('idb');
@@ -435,6 +450,16 @@ describe('backup worker handler', () => {
     const messages = await run(fakeRoot({}), { manifest: empty, files: [] });
     expect(messages.map((m) => m.type)).toEqual(['progress', 'done']);
     expect(messages[0]).toEqual({ type: 'progress', progress: 1 });
+  });
+
+  it('the audio directory failing to open (not NotFound) replies storage-failed', async () => {
+    const root: BackupRoot = {
+      async getDirectoryHandle() {
+        throw Object.assign(new Error('denied'), { name: 'NotAllowedError' });
+      },
+    };
+    const messages = await run(root, { manifest, files });
+    expect(messages.at(-1)).toMatchObject({ type: 'error', code: 'storage-failed' });
   });
 
   it('a file failing to open replies storage-failed', async () => {

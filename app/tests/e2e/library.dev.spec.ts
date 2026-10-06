@@ -4,7 +4,8 @@ import { formatMegabytes, libraryRow } from '../../src/model/library';
 import type { Tab, Take } from '../../src/model/types';
 import { formatElapsed, formatTakeDate } from '../../src/ui/format';
 import { strings } from '../../src/ui/strings';
-import { collectErrors, recordButton, stopButton, timer } from './helpers';
+import { collectErrors, politeRegion, recordButton, stopButton, timer } from './helpers';
+import { heading, list, nav, row } from './library-helpers';
 import { expectNoSeriousAxe, FIXTURE, goLive, held, meter } from './mic-helpers';
 import { opfsFiles, readTab, readTake } from './storage-helpers';
 import { seedTab, tabArea } from './tab-helpers';
@@ -15,12 +16,7 @@ import { seedTab, tabArea } from './tab-helpers';
 // Story "Rename, delete take and delete audio" (6.2): the row menu, inline rename, Delete take
 // and Delete audio only, and their Cancel/Esc.
 
-const list = (page: Page): Locator => page.getByRole('list', { name: 'Takes, newest first' });
 const rows = (page: Page): Locator => list(page).getByRole('listitem');
-const row = (page: Page, id: string): Locator => list(page).locator(`li[data-take-id="${id}"]`);
-const heading = (page: Page) => page.getByRole('heading', { level: 1, name: 'Library' });
-/** The announcer's polite region (not the storage notice, also role status; story 6.7). */
-const politeRegion = (page: Page): Locator => page.locator('[role="status"][aria-live="polite"]');
 
 /** Errors other than the dev-only warnings the app logs on purpose. */
 const unexpected = (errors: string[]) => errors.filter((e) => !e.includes('[tabcreator]'));
@@ -43,10 +39,7 @@ async function recordAndAnalyse(page: Page): Promise<string> {
 }
 
 async function openLibrary(page: Page): Promise<void> {
-  await page
-    .getByRole('navigation', { name: 'Main' })
-    .getByRole('link', { name: 'Library' })
-    .click();
+  await nav(page, 'Library').click();
   await expect(page).toHaveURL(/#\/library$/);
   await expect(heading(page)).toBeVisible();
 }
@@ -118,10 +111,7 @@ test('takes recorded through the fake mic list newest first; a new take appears 
 
   // A third take, recorded in another visit to Record, is at the top; no page reload.
   await page.evaluate(() => ((window as unknown as { __noReload: boolean }).__noReload = true));
-  await page
-    .getByRole('navigation', { name: 'Main' })
-    .getByRole('link', { name: 'Record' })
-    .click();
+  await nav(page, 'Record').click();
   await expect(recordButton(page)).toBeEnabled();
   const third = await recordAndAnalyse(page);
   await openLibrary(page);
@@ -209,10 +199,7 @@ const dialog = (page: Page): Locator => page.getByRole('alertdialog');
 
 /** Records about 2 s of the fake mic from Record (analysis held by the URL); returns the id. */
 async function recordHeld(page: Page): Promise<string> {
-  await page
-    .getByRole('navigation', { name: 'Main' })
-    .getByRole('link', { name: 'Record' })
-    .click();
+  await nav(page, 'Record').click();
   await expect(recordButton(page)).toBeEnabled();
   await recordButton(page).click();
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
@@ -298,10 +285,7 @@ test('delete audio of an analysed take keeps its tab; delete take removes it and
   test.setTimeout(90_000);
   const errors = await goLive(page, FIXTURE);
   const analysed = await recordAndAnalyse(page);
-  await page
-    .getByRole('navigation', { name: 'Main' })
-    .getByRole('link', { name: 'Record' })
-    .click();
+  await nav(page, 'Record').click();
   await expect(recordButton(page)).toBeEnabled();
   const other = await recordAndAnalyse(page);
   await openLibrary(page);

@@ -379,8 +379,6 @@ export interface TakeSession {
   cancelReanalysis(): void;
 }
 
-export { capTitle, TITLE_MAX } from '../model/title';
-
 const WRITER = 'take-session';
 
 function errorCode(err: unknown): AppErrorCode {

@@ -16,7 +16,8 @@
 // nothing; restore.ts validates what comes back.
 
 import { strToU8, unzipSync, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
-import { AUDIO_DIR, MANIFEST_NAME } from './backup';
+import { MANIFEST_NAME } from './backup';
+import { AUDIO_DIR } from './paths';
 import type {
   BackupEntry,
   BackupRequest,

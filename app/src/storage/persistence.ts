@@ -118,7 +118,10 @@ export function markStorageFull(takeId?: string): void {
   setStorageFull(true);
 }
 
-/** Whether a storage write failed with `storage-full` since the last committed save. */
+/**
+ * Whether a storage write failed with `storage-full`, until a committed save of another take, or a
+ * restore.
+ */
 export function isStorageFull(): boolean {
   return storageFull;
 }

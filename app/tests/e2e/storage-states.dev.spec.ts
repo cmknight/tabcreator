@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { strings } from '../../src/ui/strings';
 import { collectErrors, recordButton, stopButton, timer } from './helpers';
+import { heading, list, nav, row } from './library-helpers';
 import { expectNoSeriousAxe, goLive, held } from './mic-helpers';
 import { seedTab } from './tab-helpers';
 
@@ -44,28 +45,22 @@ async function stubStorage(page: Page, stub: StorageStub): Promise<void> {
 const persistCalls = (page: Page) =>
   page.evaluate(() => (window as unknown as { __persistCalls: number }).__persistCalls);
 
-const nav = (page: Page, name: string) =>
-  page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name }).click();
-
-const heading = (page: Page) => page.getByRole('heading', { level: 1, name: 'Library' });
 const notice = (page: Page): Locator => page.getByTestId('persist-notice');
 const fullBanner = (page: Page): Locator => page.getByTestId('library-storage-full');
 const footer = (page: Page): Locator => page.getByTestId('library-footer');
-const list = (page: Page): Locator => page.getByRole('list', { name: 'Takes, newest first' });
-const row = (page: Page, id: string): Locator => list(page).locator(`li[data-take-id="${id}"]`);
 
 /** Errors other than the dev-only warnings the app logs on purpose. */
 const unexpected = (errors: string[]) => errors.filter((e) => !e.includes('[tabcreator]'));
 
 async function openLibrary(page: Page): Promise<void> {
-  await nav(page, 'Library');
+  await nav(page, 'Library').click();
   await expect(page).toHaveURL(/#\/library$/);
   await expect(heading(page)).toBeVisible();
 }
 
 /** Records about 2 s of the fake mic from Record (analysis held by the URL); returns the id. */
 async function recordHeld(page: Page): Promise<string> {
-  await nav(page, 'Record');
+  await nav(page, 'Record').click();
   await expect(recordButton(page)).toBeEnabled();
   await recordButton(page).click();
   await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true');
@@ -129,7 +124,7 @@ test('persist refused: asked once after the first save; the Library notice shows
   await expect(heading(page)).toBeFocused();
 
   // Settings: not protected, with the link to the Library.
-  await nav(page, 'Settings');
+  await nav(page, 'Settings').click();
   const storage = page.getByRole('region', { name: 'Storage' });
   await expect(storage).toContainText(strings['settings.storageAtRisk']);
   await expect(
@@ -153,7 +148,7 @@ test('persist granted: Settings shows Storage: protected and the Library shows n
   const errors = await goLive(page, held());
   await recordHeld(page);
   await expect.poll(() => persistCalls(page)).toBe(1);
-  await nav(page, 'Settings');
+  await nav(page, 'Settings').click();
   const storage = page.getByRole('region', { name: 'Storage' });
   await expect(storage).toContainText(strings['settings.storageProtected']);
   await expect(storage.getByRole('link')).toHaveCount(0);
@@ -209,7 +204,7 @@ test('a save failing storage-full shows the Library banner, also after navigatin
   await expect(fullBanner(page).getByRole('link')).toHaveCount(0);
 
   // Still there when the Library is opened again in the same page load.
-  await nav(page, 'Settings');
+  await nav(page, 'Settings').click();
   await openLibrary(page);
   await expect(fullBanner(page)).toBeVisible();
   await expectNoSeriousAxe(page);

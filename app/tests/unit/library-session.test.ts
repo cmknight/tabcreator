@@ -1055,6 +1055,10 @@ describe('library session: storage states (story 6.7)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const session = createLibrarySession(lib.deps);
     expect(() => session.markPersistNoticeShown()).not.toThrow();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('remembering the storage notice failed'),
+      expect.any(AppError),
+    );
     warn.mockRestore();
   });
 
@@ -1067,6 +1071,27 @@ describe('library session: storage states (story 6.7)', () => {
     session.subscribe(() => {});
     await flush();
     expect(session.getSnapshot().storage).toMatchObject({ protected: false, usageBytes: null });
+  });
+
+  it('a usage read from an earlier visit is dropped', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1), 3, 100);
+    let landEarlier!: (bytes: number) => void;
+    vi.mocked(lib.deps.estimateUsage)
+      .mockImplementationOnce(
+        () => new Promise<number | null>((resolve) => (landEarlier = resolve)),
+      )
+      // The later visit's read stays pending.
+      .mockImplementationOnce(() => new Promise<number | null>(() => {}));
+    const session = createLibrarySession(lib.deps);
+    // The first visit ends before its read lands (the newest read so far, so only the visit
+    // decides); the next visit's read is still pending.
+    session.subscribe(() => {})();
+    landEarlier(1_000_000);
+    await flush();
+    session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot().storage.usageBytes).toBeNull();
   });
 
   it('refreshes usage after storage events', async () => {
