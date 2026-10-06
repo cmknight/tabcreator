@@ -3,7 +3,7 @@ title: 'Trim'
 type: 'feature'
 ticket: '7'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: 'c793a11c8dfda9fda8e4fa29d56a1f2408f9a89f'
 route: 'full'
 route_source: 'auto'
