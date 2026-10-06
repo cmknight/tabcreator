@@ -3,7 +3,7 @@ title: 'Library list (tracer)'
 type: 'feature'
 ticket: '1'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: 'cc3d08d4f81c44dfacdc5765027aedc80cd35071'
 route: 'full'
 route_source: 'auto'
