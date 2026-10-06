@@ -23,6 +23,7 @@
     "src/engine/engine-worker.ts",
     "src/storage/opfs-worker.ts",
     "src/audio/recorder-worklet.ts",
-    "src/engine/pkg"
+    "src/engine/pkg",
+    "src/audio/waveform-worker.ts"
   ]
 }

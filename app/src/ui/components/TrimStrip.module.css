@@ -1,0 +1,126 @@
+/* The Trim strip (story "Trim"; DESIGN.md Trim strip): an inline surface below the toolbar,
+   like the Analysis settings panel. A full-width 64 px waveform in text-muted on surface, two
+   8 px primary handles with their times in the numeric font, then Save and Reset trim. */
+.strip {
+  margin-block-start: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.title {
+  margin: 0 0 var(--space-3);
+  font: var(--font-ui);
+  font-weight: 600;
+}
+
+/* The waveform and its handles; room below for the handles' time labels. */
+.track {
+  position: relative;
+  block-size: 64px;
+  margin-block-end: calc(var(--space-6) + var(--space-2));
+  background: var(--color-surface);
+  touch-action: none;
+}
+
+.wave {
+  display: block;
+  inline-size: 100%;
+  block-size: 64px;
+}
+
+.wave[hidden] {
+  display: none;
+}
+
+.waveMessage {
+  margin: 0;
+  padding-block-start: var(--space-4);
+  color: var(--color-text-muted);
+  font: var(--font-ui-small);
+  text-align: center;
+}
+
+/* A handle: an 8 px primary bar the full height of the waveform, its time below. */
+.handle {
+  position: absolute;
+  inset-block-start: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  inline-size: 8px;
+  block-size: 64px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.handle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* The end handle's bar ends at its time, so a full-length range stays inside the strip. */
+.endHandle {
+  transform: translateX(-100%);
+}
+
+.bar {
+  flex: none;
+  inline-size: 8px;
+  block-size: 64px;
+  background: var(--color-primary);
+  border-radius: 2px;
+}
+
+.time {
+  position: absolute;
+  inset-block-start: calc(64px + var(--space-1));
+  font: var(--font-numeric);
+  white-space: nowrap;
+}
+
+.startHandle .time {
+  inset-inline-start: 0;
+}
+
+.endHandle .time {
+  inset-inline-end: 0;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+/* A trim's run: "Analysing…", the bar, its percentage and Cancel. */
+.progressBlock {
+  margin-block-start: var(--space-4);
+}
+
+.label {
+  display: block;
+  font: var(--font-ui);
+}
+
+.progressRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  margin-block-start: var(--space-2);
+}
+
+.progress {
+  display: block;
+  flex: 1 1 240px;
+  min-inline-size: 0;
+  max-inline-size: 480px;
+}
+
+.percent {
+  min-inline-size: 4ch;
+  font: var(--font-numeric);
+  text-align: end;
+}

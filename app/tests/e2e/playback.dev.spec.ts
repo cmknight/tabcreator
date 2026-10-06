@@ -256,7 +256,11 @@ test('No audio: Play disabled with "Audio deleted"; Space does nothing', async (
   const play = playButton(page);
   await expect(play).toBeDisabled();
   await expect(play).toHaveAccessibleDescription('Audio deleted');
-  await expect(page.locator('span[title="Audio deleted"]')).toHaveCount(1);
+  // Play's tooltip, and the toolbar's Trim's (story "Trim": disabled with no audio too).
+  await expect(page.locator('span[title="Audio deleted"]')).toHaveCount(2);
+  await expect(
+    page.getByRole('toolbar', { name: 'Tab tools' }).getByRole('button', { name: 'Trim' }),
+  ).toBeDisabled();
   await expect(page.getByRole('button', { name: '1 times speed' })).toBeEnabled();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press(' ');

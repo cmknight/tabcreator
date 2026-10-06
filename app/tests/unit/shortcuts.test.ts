@@ -654,6 +654,29 @@ describe('the Tab selection shortcuts', () => {
     expect(stop).toHaveBeenCalledWith('user');
     expect(session.select).not.toHaveBeenCalled();
   });
+
+  it('N skips flagged notes hidden by the trim, and does nothing in the Trim strip (story "Trim")', () => {
+    const session = fakeSession(null, 3, {}, [0]);
+    const snap = session.getSnapshot() as unknown as {
+      take: unknown;
+      tab: { notes: { startMs: number }[] };
+    };
+    // n0, the only flagged note, starts before the trim start: hidden.
+    snap.take = { trimStartMs: 1000, trimEndMs: null };
+    snap.tab.notes.forEach((n, i) => (n.startMs = i * 1000));
+    install(session);
+    expect(press(document.body, 'n').defaultPrevented).toBe(false);
+    expect(session.selectNextFlagged).not.toHaveBeenCalled();
+    snap.take = { trimStartMs: 0, trimEndMs: null };
+    const strip = add('section', { 'data-trim-strip': '' });
+    const handle = document.createElement('div');
+    handle.tabIndex = 0;
+    strip.append(handle);
+    handle.focus();
+    expect(press(handle, 'n').defaultPrevented).toBe(false);
+    expect(press(document.body, 'n').defaultPrevented).toBe(true);
+    expect(session.selectNextFlagged).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('the Tab playback shortcuts', () => {
@@ -786,6 +809,21 @@ describe('the Tab playback shortcuts', () => {
     const playback = fakePlayback();
     install(fakeSession('n1'), playback);
     expect(press(add('input'), 'p').defaultPrevented).toBe(false);
+    expect(playback.playFromNote).not.toHaveBeenCalled();
+  });
+
+  it('in the Trim strip, Space and P are left to the strip (story "Trim")', () => {
+    const playback = fakePlayback();
+    install(fakeSession('n0'), playback);
+    const strip = add('section', { 'data-trim-strip': '' });
+    const handle = document.createElement('div');
+    handle.setAttribute('role', 'slider');
+    handle.tabIndex = 0;
+    strip.append(handle);
+    handle.focus();
+    expect(press(handle, ' ').defaultPrevented).toBe(false);
+    expect(press(handle, 'p').defaultPrevented).toBe(false);
+    expect(playback.toggle).not.toHaveBeenCalled();
     expect(playback.playFromNote).not.toHaveBeenCalled();
   });
 });
@@ -1067,6 +1105,44 @@ describe('the Tab edit shortcuts', () => {
       expect(dispatchShortcut(event, 'tab', shortcuts, true)).toBe(false);
     }
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  // Story "Trim".
+  /** A focused trim handle inside the Trim strip. */
+  function trimHandle(): HTMLElement {
+    const strip = add('section', { 'data-trim-strip': '' });
+    const handle = document.createElement('div');
+    handle.setAttribute('role', 'slider');
+    handle.tabIndex = 0;
+    strip.append(handle);
+    handle.focus();
+    return handle;
+  }
+
+  it('in the Trim strip, digits, Delete, Backspace and I are left to the strip', () => {
+    const session = fakeSession('n1');
+    install(session);
+    const handle = trimHandle();
+    for (const key of ['5', 'Delete', 'Backspace', 'i']) {
+      expect(press(handle, key).defaultPrevented).toBe(false);
+    }
+    expect(session.typeDigit).not.toHaveBeenCalled();
+    expect(session.deleteSelected).not.toHaveBeenCalled();
+    expect(session.insert).not.toHaveBeenCalled();
+    // Outside the strip they still work.
+    expect(press(document.body, '5').defaultPrevented).toBe(true);
+    expect(session.typeDigit).toHaveBeenCalledWith(5);
+  });
+
+  it('every note hidden by the trim (No notes found) with history: Ctrl+Z undoes', () => {
+    const session = fakeSession(null, {
+      take: { trimStartMs: 5000, trimEndMs: null },
+      tab: { notes: [{ id: 'n0', startMs: 100 }] },
+    } as unknown as Partial<TakeSnapshot>);
+    session.canUndo.mockReturnValue(true);
+    install(session);
+    expect(press(document.body, 'z', { ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(session.undo).toHaveBeenCalledTimes(1);
   });
 });
 

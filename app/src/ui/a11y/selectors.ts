@@ -12,3 +12,6 @@ export const NOTE_BUTTON = `${TAB_AREA} [data-note-id]`;
 
 /** A toolbar, which owns its arrow keys (ARIA toolbar pattern). */
 export const TOOLBAR = '[role="toolbar"]';
+
+/** The Trim strip (story "Trim"): its handles own their keys, so Tab screen shortcuts skip it. */
+export const TRIM_STRIP = '[data-trim-strip]';

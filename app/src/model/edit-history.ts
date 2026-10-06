@@ -20,8 +20,16 @@
 // (`mergeReanalysis`), the one fret-mapping request with a lock per locked note, and placing its
 // result (`placeReanalysed`). An inserted note is marked `inserted`, and deleting it records no
 // `deletedStartMs`.
+//
+// Story "Trim": a note whose `startMs` lies outside the take's trim range is hidden
+// (`model/notes.ts` `isHidden`). The commands keep hidden notes stored as they are but leave
+// them out of every phrase, neighbour and insert position; a trim or a reset of it is a snapshot
+// step like a re-analysis (`{kind: 'trim'}`, `{kind: 'resetTrim'}`), whose merge keeps hidden
+// locked notes aside, unchanged and out of the fret mapping (`hiddenLocked`). A trim's fresh
+// notes take the times and ids of the existing unlocked notes they re-detect, and an existing
+// note not re-detected is kept as it is (`anchorToExisting`), so a trim never moves a note.
 
-import { playedOrder } from './notes';
+import { FULL_TAKE, isHidden, playedOrder, visibleNotes, type TrimRange } from './notes';
 import { phraseOf } from './phrase';
 import {
   OPEN_MIDI,
@@ -44,6 +52,22 @@ export interface EditState extends TabState {
   maxFret: number;
   /** Where the take starts, in ms (its trim start); an insert before the first note stops there. */
   takeStartMs?: number;
+  /**
+   * Where the take ends, in ms (its trim end; null or absent: the end). With `takeStartMs` it is
+   * the trim range: notes outside it are hidden and left out of every re-fit.
+   */
+  trimEndMs?: number | null;
+}
+
+/** `state`'s trim range. */
+function trimOf(state: EditState): TrimRange {
+  return { trimStartMs: state.takeStartMs ?? 0, trimEndMs: state.trimEndMs ?? null };
+}
+
+/** Whether a note is visible in `state`'s trim range (a phrase filter). */
+function shownIn(state: EditState): (note: { startMs: number }) => boolean {
+  const trim = trimOf(state);
+  return (note) => !isHidden(note, trim);
 }
 
 /**
@@ -78,7 +102,9 @@ export type CommandLabel =
   | { kind: 'delete' }
   | { kind: 'insert' }
   | { kind: 'confirm' }
-  | { kind: 'reanalyse' };
+  | { kind: 'reanalyse' }
+  | { kind: 'trim' }
+  | { kind: 'resetTrim' };
 
 export interface EditCommand {
   /** The note the command edits; the selection follows it on undo and redo. */
@@ -202,7 +228,11 @@ function refitting(
  */
 function lockedEdit(state: EditState, index: number, next: Note): Edited {
   const notes = next === state.notes[index] ? state.notes : state.notes.with(index, next);
-  return { notes, deletedStartMs: state.deletedStartMs, phrases: [phraseOf(notes, index)] };
+  return {
+    notes,
+    deletedStartMs: state.deletedStartMs,
+    phrases: [phraseOf(notes, index, shownIn(state))],
+  };
 }
 
 /**
@@ -274,9 +304,9 @@ export function confirmNote(noteId: string): EditCommand {
   );
 }
 
-/** The ids of the notes before and after `noteId` in played order (null at an end). */
-function neighbours(notes: readonly Note[], noteId: string) {
-  const order = playedOrder(notes);
+/** The ids of the visible notes before and after `noteId` in played order (null at an end). */
+function neighbours(notes: readonly Note[], noteId: string, trim: TrimRange) {
+  const order = playedOrder(visibleNotes(notes, trim));
   const at = order.findIndex((n) => n.id === noteId);
   return { prev: order[at - 1]?.id ?? null, next: order[at + 1]?.id ?? null };
 }
@@ -294,13 +324,13 @@ export function deleteNote(noteId: string): EditCommand {
     (state) => {
       const index = state.notes.findIndex((n) => n.id === noteId);
       if (index < 0) return null;
-      const { prev, next } = neighbours(state.notes, noteId);
+      const { prev, next } = neighbours(state.notes, noteId, trimOf(state));
       const notes = state.notes.toSpliced(index, 1);
       const phrases: number[][] = [];
       for (const id of [prev, next]) {
         const i = id === null ? -1 : notes.findIndex((n) => n.id === id);
         if (i < 0 || phrases.some((p) => p.includes(i))) continue;
-        phrases.push(phraseOf(notes, i));
+        phrases.push(phraseOf(notes, i, shownIn(state)));
       }
       const deleted = state.notes[index]!;
       return {
@@ -313,7 +343,7 @@ export function deleteNote(noteId: string): EditCommand {
       };
     },
     (before) => {
-      const { prev, next } = neighbours(before.notes, noteId);
+      const { prev, next } = neighbours(before.notes, noteId, trimOf(before));
       return next ?? prev;
     },
   );
@@ -339,7 +369,9 @@ export function insertNote(newId: string, afterNoteId: string | null): EditComma
     () => ({ kind: 'insert' }),
     (state) => {
       if (state.notes.some((n) => n.id === newId)) return null;
-      const order = playedOrder(state.notes);
+      // Hidden notes (outside the trim) are no reference and no neighbour.
+      const trim = trimOf(state);
+      const order = playedOrder(visibleNotes(state.notes, trim));
       let startMs: number;
       let string: StringNo;
       /** With no reference note it goes before the first, even at the same `startMs`. */
@@ -362,6 +394,10 @@ export function insertNote(newId: string, afterNoteId: string | null): EditComma
         startMs = following
           ? (after.startMs + following.startMs) / 2
           : after.startMs + INSERT_OFFSET_MS;
+        // Never at or past the trim end, where it would be hidden: midway to it at most.
+        if (!following && trim.trimEndMs !== null) {
+          startMs = Math.min(startMs, (after.startMs + trim.trimEndMs) / 2);
+        }
         string = after.string;
       }
       const inserted: Note = {
@@ -381,7 +417,11 @@ export function insertNote(newId: string, afterNoteId: string | null): EditComma
         : state.notes.findIndex((n) => n.startMs > startMs);
       if (index < 0) index = state.notes.length;
       const notes = state.notes.toSpliced(index, 0, inserted);
-      return { notes, deletedStartMs: state.deletedStartMs, phrases: [phraseOf(notes, index)] };
+      return {
+        notes,
+        deletedStartMs: state.deletedStartMs,
+        phrases: [phraseOf(notes, index, shownIn(state))],
+      };
     },
     () => newId,
   );
@@ -410,7 +450,7 @@ export interface AnalysisSnapshot extends TabState {
   analysisVersion: string | null;
 }
 
-/** A re-analysis's undo step: the whole snapshot before and after; no target note. */
+/** A re-analysis's (or a trim's) undo step: the whole snapshot before and after; no target note. */
 export interface SnapshotStep {
   label: CommandLabel;
   target: null;
@@ -539,20 +579,79 @@ export type MergedNote = Note | FreshNote;
  * The re-analysis merge (US-4.6): the fresh notes, less any starting within 50 ms of a locked
  * note of `current` or of a `deletedStartMs` entry, plus every locked note of `current`
  * unchanged (the same objects), sorted by `startMs` (stable). Unlocked current notes go.
+ *
+ * Story "Trim": only what lies in `trim` (default the full take) takes part. Fresh notes outside
+ * it (the engine trims, so none in practice) are dropped, and locked notes outside it are left
+ * out here: `hiddenLocked` keeps them aside and `placeReanalysed` puts them back unchanged.
  */
 export function mergeReanalysis(
   fresh: readonly FreshNote[],
   current: readonly Note[],
   deletedStartMs: readonly number[],
+  trim: TrimRange = FULL_TAKE,
 ): MergedNote[] {
   const near = (a: number, b: number) => Math.abs(a - b) <= REANALYSIS_WINDOW_MS;
-  const locked = current.filter((n) => n.locked);
+  const locked = current.filter((n) => n.locked && !isHidden(n, trim));
   const kept = fresh.filter(
     (n) =>
+      !isHidden(n, trim) &&
       !locked.some((l) => near(l.startMs, n.startMs)) &&
       !deletedStartMs.some((d) => near(d, n.startMs)),
   );
   return [...kept, ...locked].sort((a, b) => a.startMs - b.startMs);
+}
+
+/**
+ * Story "Trim" (user ruling): a trim or a trim reset keeps existing notes' times. The engine
+ * re-detects onsets in a trimmed range a few ms off the full take's, so:
+ * - fresh notes outside `trim` are dropped first (none can take an in-range note's time);
+ * - each remaining fresh note within `REANALYSIS_WINDOW_MS` (inclusive) of an unlocked note of
+ *   `current` that lies in `trim` takes that note's `startMs`, `endMs` and `id`, keeping its own
+ *   `midi`, `confidence` and `lowConfidence`. Matching is one-to-one, nearest pairs first (ties:
+ *   the earlier fresh note, then the earlier existing note);
+ * - an unlocked in-range note that no fresh note matched is returned in `unmatched`, to be kept
+ *   unchanged (the same object: id, times, string and fret), out of the fret mapping.
+ * Unmatched fresh notes are returned as they are (the same objects), in the given order. Not
+ * used by a settings re-analysis (US-4.6).
+ */
+export function anchorToExisting(
+  fresh: readonly FreshNote[],
+  current: readonly Note[],
+  trim: TrimRange,
+): { fresh: FreshNote[]; unmatched: Note[] } {
+  const inRange = fresh.filter((n) => !isHidden(n, trim));
+  const existing = current.filter((n) => !n.locked && !isHidden(n, trim));
+  const pairs: { f: number; e: number; d: number }[] = [];
+  inRange.forEach((n, f) => {
+    existing.forEach((x, e) => {
+      const d = Math.abs(n.startMs - x.startMs);
+      if (d <= REANALYSIS_WINDOW_MS) pairs.push({ f, e, d });
+    });
+  });
+  pairs.sort((a, b) => a.d - b.d || a.f - b.f || a.e - b.e);
+  const matchOf = new Map<number, Note>();
+  const used = new Set<number>();
+  for (const { f, e } of pairs) {
+    if (matchOf.has(f) || used.has(e)) continue;
+    matchOf.set(f, existing[e]!);
+    used.add(e);
+  }
+  return {
+    fresh: inRange.map((n, f) => {
+      const x = matchOf.get(f);
+      return x ? { ...n, id: x.id, startMs: x.startMs, endMs: x.endMs } : n;
+    }),
+    unmatched: existing.filter((_, e) => !used.has(e)),
+  };
+}
+
+/**
+ * The locked notes of `current` that `trim` hides (story "Trim"): kept stored as they are (the
+ * same objects) through a re-analysis or a trim, out of the merge and the fret mapping. Unlocked
+ * hidden notes are not kept.
+ */
+export function hiddenLocked(current: readonly Note[], trim: TrimRange): Note[] {
+  return current.filter((n) => n.locked && isHidden(n, trim));
 }
 
 /** The one fret-mapping request for `merged`: every note, with a lock for each locked one. */
@@ -570,9 +669,14 @@ export function reanalysisRequest(merged: readonly MergedNote[], maxFret: number
 /**
  * The re-analysed notes: each locked note as it was (whatever the mapper said), each fresh note
  * at its position; a fresh note with no position (null: none within the highest fret) is
- * dropped, as the first analysis drops it.
+ * dropped, as the first analysis drops it. The `hidden` notes (`hiddenLocked`) are put back
+ * unchanged, and the whole sorted by `startMs` (stable).
  */
-export function placeReanalysed(merged: readonly MergedNote[], positions: EngineResult): Note[] {
+export function placeReanalysed(
+  merged: readonly MergedNote[],
+  positions: EngineResult,
+  hidden: readonly Note[] = [],
+): Note[] {
   const notes: Note[] = [];
   merged.forEach((n, i) => {
     if (n.locked) {
@@ -583,5 +687,6 @@ export function placeReanalysed(merged: readonly MergedNote[], positions: Engine
     if (!position) return;
     notes.push({ ...n, string: position.string, fret: position.fret });
   });
-  return notes;
+  if (hidden.length === 0) return notes;
+  return [...notes, ...hidden].sort((a, b) => a.startMs - b.startMs);
 }

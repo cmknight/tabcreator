@@ -10,6 +10,17 @@ export function formatElapsed(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+/**
+ * A trim handle's time (story "Trim"), `m:ss.cc` to the hundredth of a second: 130 ms is
+ * "0:00.13", 2000 ms "0:02.00".
+ */
+export function formatTrimTime(ms: number): string {
+  const hundredths = Math.max(0, Math.round(ms / 10));
+  const seconds = Math.floor(hundredths / 100);
+  const cc = String(hundredths % 100).padStart(2, '0');
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}.${cc}`;
+}
+
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
 const MONTHS = [
   'Jan',

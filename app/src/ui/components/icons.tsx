@@ -155,3 +155,20 @@ export function SettingsIcon({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/** Trim: the Tab toolbar's Trim toggle (scissors; mockup tab.html `#i-trim`). */
+export function TrimIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="6" cy="6" r="3" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="6" cy="18" r="3" fill="none" stroke="currentColor" strokeWidth="2" />
+      <path
+        d="M8.5 7.5 20 18M8.5 16.5 20 6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

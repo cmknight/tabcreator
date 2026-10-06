@@ -42,15 +42,24 @@
 // Enter exception for note buttons). Undo and redo also work in the No notes found state while
 // there is history. While an overlay is open (`ui/a11y/overlays.ts`) no shortcut runs: the
 // overlay owns the keys, Esc first.
+//
+// Story "Trim": with focus in the Trim strip, the note edit keys (digits, Delete, Backspace, `I`,
+// Enter), `N`, Space and `P` do not run: the strip's handles own their keys. Undo and redo still
+// do.
 
 import { useEffect } from 'react';
 import { recordingSession, type RecordingSession } from '../../session/recording-session';
 import type { RecordingSnapshot } from '../../session/recording-types';
 import { activePlayback, type PlaybackController } from '../../session/playback';
-import { activeTakeSession, isTabShown, type TakeSession } from '../../session/take-session';
+import {
+  activeTakeSession,
+  isTabShown,
+  shownNotes,
+  type TakeSession,
+} from '../../session/take-session';
 import { parseRoute, type Route } from '../router';
 import { isOverlayOpen } from './overlays';
-import { NOTE_BUTTON, TAB_AREA, TEXT_FIELD, TOOLBAR } from './selectors';
+import { NOTE_BUTTON, TAB_AREA, TEXT_FIELD, TOOLBAR, TRIM_STRIP } from './selectors';
 import { strings } from '../strings';
 
 export interface Shortcut {
@@ -198,6 +207,14 @@ function inToolbar(target: EventTarget | null): boolean {
 }
 
 /**
+ * Whether `target` is inside the Trim strip (story "Trim"): its handles own their keys, so the
+ * note edit, Next to check and playback shortcuts do not run there.
+ */
+function inTrimStrip(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(TRIM_STRIP) !== null;
+}
+
+/**
  * Moves focus onto the selected note's button (Next to check), unless it already has it. A
  * selection that moved is focused by the tab area too; this also covers one that did not (a
  * lone flagged note already selected, with focus elsewhere).
@@ -264,11 +281,11 @@ export function tabSelectionShortcuts(
       description: strings['tab.shortcutNextToCheck'],
       when: (target) =>
         !inToolbar(target) &&
+        !inTrimStrip(target) &&
         tabShown() &&
-        (session()
-          ?.getSnapshot()
-          .tab?.notes.some((n) => n.lowConfidence) ??
-          false),
+        shownNotes(session()?.getSnapshot() ?? { take: null, tab: null }).some(
+          (n) => n.lowConfidence,
+        ),
       handler: () => {
         const s = session();
         if (!s) return;
@@ -291,7 +308,7 @@ export function tabPlaybackShortcuts(
   playback: () => PlaybackController | null = activePlayback,
 ): Shortcut[] {
   const applies = (target: EventTarget | null) => {
-    if (inToolbar(target)) return false;
+    if (inToolbar(target) || inTrimStrip(target)) return false;
     return isTabShown(session()?.getSnapshot()) && (playback()?.available() ?? false);
   };
   const selected = () => session()?.getSnapshot().selectedNoteId ?? null;
@@ -345,7 +362,7 @@ export function tabEditShortcuts(
 ): Shortcut[] {
   const tabShown = () => isTabShown(session()?.getSnapshot());
   const selected = () => (session()?.getSnapshot().selectedNoteId ?? null) !== null;
-  /** The No notes found state: analysed, idle, a tab with no notes. */
+  /** The No notes found state: analysed, idle, a tab with no visible notes. */
   const noNotes = () => {
     const snap = session()?.getSnapshot();
     return (
@@ -353,20 +370,25 @@ export function tabEditShortcuts(
       !snap.missing &&
       snap.analysis.kind === 'idle' &&
       !!snap.take &&
-      snap.tab?.notes.length === 0
+      !!snap.tab &&
+      shownNotes(snap).length === 0
     );
   };
   const canUndo = () => tabShown() || (noNotes() && (session()?.canUndo() ?? false));
   const canRedo = () => tabShown() || (noNotes() && (session()?.canRedo() ?? false));
   const inArea = (target: EventTarget | null) =>
     inTabArea(target) && !inToolbar(target) && tabShown() && selected();
-  const onScreen = (target: EventTarget | null) => !inToolbar(target) && tabShown();
+  const onScreen = (target: EventTarget | null) =>
+    !inToolbar(target) && !inTrimStrip(target) && tabShown();
   const digits: Shortcut[] = Array.from({ length: 10 }, (_, digit) => ({
     key: String(digit),
     route: 'tab',
     shiftOk: true,
     description: strings['tab.shortcutSetFret'],
-    when: () => tabShown() && (session()?.getSnapshot().selectedNoteId ?? null) !== null,
+    when: (target) =>
+      !inTrimStrip(target) &&
+      tabShown() &&
+      (session()?.getSnapshot().selectedNoteId ?? null) !== null,
     handler: () => session()?.typeDigit(digit),
   }));
   return [

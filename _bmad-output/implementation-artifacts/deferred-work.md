@@ -46,3 +46,6 @@
 - source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-analysis-settings-and-re-analysis-plan.md`
   summary: EXPERIENCE.md does not yet carry story 8.6's copy — the Confirm dialog title "Re-analyse <take title>?" and its buttons, "No audio to analyse", "Re-analysed: N notes", "Re-analysis cancelled", "Re-analysis failed — try again", the slider's value text, "Defaults for new takes" field hints, and "Undo re-analyse" — owner: UX owner.
   evidence: Strings in app/src/ui/strings.ts; the dialog decision is in epic Tab editing's Notes (2026-10-05).
+- source_plan: `_bmad-output/initiative-tabcreator-v1/epic-tab-editing/story-trim-plan.md`
+  summary: EXPERIENCE.md does not yet carry story 8.7's trim copy — handle names and times ("Trim start 0:02.00"), "Loading waveform…", "Couldn't load the waveform", "Trimmed: n notes", "Trim reset: n notes", "Trim cancelled", "Trim failed — try again", "Busy trimming", "Busy re-analysing", "Trim and re-analyse", "Undo trim" — owner: UX owner.
+  evidence: Strings in app/src/ui/strings.ts.

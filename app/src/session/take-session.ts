@@ -51,14 +51,26 @@
 // Tab and the analysis-owned Take fields together through `commitAnalysis`. Its `before`
 // settings are those the replaced tab was analysed with (`analysedSettings`). A re-analysis does
 // not reset history.
+//
+// Story "Trim": `trim(startMs, endMs)` and `resetTrim()` run the same queued re-analysis with
+// the new trim range in place of the take's (`{kind: 'trim'}` / `{kind: 'resetTrim'}` snapshot
+// steps), committing `trimStartMs` and `trimEndMs` with the Tab (the end stored as null at the
+// duration). The audio is never written. Notes outside the take's trim range are hidden
+// (`model/notes.ts` `visibleNotes`): kept stored, but not selectable, steppable, flagged for Next
+// to check or counted by `isTabShown`; every re-analysis keeps hidden locked notes unchanged and
+// out of `mapFrets` (`hiddenLocked`), and drops hidden unlocked ones. A trim or a reset keeps
+// existing notes' times: its fresh notes take the times and ids of the unlocked notes they
+// re-detect (`anchorToExisting`).
 
 import { engineClient } from '../engine/engine-client';
 import { AppError, isAppError, type AppErrorCode } from '../model/errors';
 import { devDb } from '../dev/hooks/analysis';
 import { clampAnalysisSettings, sameSettings } from '../model/analysis-settings';
 import {
+  anchorToExisting,
   EMPTY_HISTORY,
   freshNotes,
+  hiddenLocked,
   mergeReanalysis,
   placeReanalysed,
   reanalysisRequest,
@@ -83,8 +95,17 @@ import {
   type MapFretsRequest,
 } from '../model/edit-history';
 import { devWarn } from '../model/log';
-import { playedOrder } from '../model/notes';
-import type { AnalysisSettings, StringNo, Tab, Take } from '../model/types';
+import { playedOrder, visibleNotes, type TrimRange } from '../model/notes';
+import {
+  clampMs,
+  endLimits,
+  isFullTake,
+  MIN_TRIM_MS,
+  sameTrim,
+  startLimits,
+  storedTrim,
+} from '../model/trim';
+import type { AnalysisSettings, Note, StringNo, Tab, Take } from '../model/types';
 import { audioStore } from '../storage/audio-store';
 import { db, type TakeDb } from '../storage/db';
 import { subscribe as subscribeStorage, type StorageListener } from '../storage/events';
@@ -131,9 +152,10 @@ export interface TakeSnapshot {
   redoLabel: CommandLabel | null;
   /**
    * A re-analysis in flight (US-4.6): its progress, 0–0.9 from the engine, 1 once the frets are
-   * mapped (never backward); null otherwise. The tab stays shown meanwhile.
+   * mapped (never backward); null otherwise. The tab stays shown meanwhile. `trim` marks the run
+   * of a trim or a trim reset (story "Trim"), whose progress the Trim strip shows.
    */
-  reanalysis: { progress: number } | null;
+  reanalysis: { progress: number; trim?: true } | null;
   /**
    * Whether the take still has its raw file, read at load; null until read (or when the read
    * failed). With no compressed audio and no raw file it cannot be re-analysed.
@@ -165,12 +187,14 @@ export type EditEvent =
     }
   | { kind: 'undo' | 'redo'; label: CommandLabel }
   | { kind: 'failed' }
-  /** A re-analysis committed, with this many notes. */
+  /** A re-analysis committed, with this many visible notes. */
   | { kind: 'reanalysed'; notes: number }
-  /** A re-analysis was cancelled: nothing changed. */
-  | { kind: 'reanalyseCancelled' }
-  /** A re-analysis failed (`audio-missing`: no audio): nothing changed. */
-  | { kind: 'reanalyseFailed'; code: AppErrorCode };
+  /** A trim (`reset`: a trim reset) committed, with this many visible notes. */
+  | { kind: 'trimmed'; reset: boolean; notes: number }
+  /** A re-analysis (`trim`: a trim or trim reset) was cancelled: nothing changed. */
+  | { kind: 'reanalyseCancelled'; trim?: true }
+  /** A re-analysis (`trim`: a trim or trim reset) failed (`audio-missing`: no audio): nothing changed. */
+  | { kind: 'reanalyseFailed'; code: AppErrorCode; trim?: true };
 
 /** The debounce before an edited Tab is saved (EXPERIENCE.md Saving). */
 export const SAVE_DEBOUNCE_MS = 300;
@@ -178,17 +202,27 @@ export const SAVE_DEBOUNCE_MS = 300;
 export const DIGIT_WINDOW_MS = 400;
 
 /**
+ * The tab's notes the take's trim leaves visible (story "Trim"): what the screen renders,
+ * counts, plays and selects. Empty with no tab.
+ */
+export function shownNotes(snapshot: Pick<TakeSnapshot, 'take' | 'tab'>): Note[] {
+  const notes = snapshot.tab?.notes ?? [];
+  return snapshot.take ? visibleNotes(notes, snapshot.take) : notes;
+}
+
+/**
  * Whether the take's tab is shown: the take exists, no analysis is running or failed, and its
- * tab has notes. The Tab screen shows the tab area then, and the Tab shortcuts apply only then.
+ * tab has visible notes (hidden by the trim do not count: then No notes found). The Tab screen
+ * shows the tab area then, and the Tab shortcuts apply only then.
  */
 export function isTabShown(
-  snapshot: Pick<TakeSnapshot, 'missing' | 'analysis' | 'tab'> | null | undefined,
+  snapshot: Pick<TakeSnapshot, 'missing' | 'analysis' | 'tab' | 'take'> | null | undefined,
 ): boolean {
   return (
     !!snapshot &&
     !snapshot.missing &&
     snapshot.analysis.kind === 'idle' &&
-    (snapshot.tab?.notes.length ?? 0) > 0
+    shownNotes(snapshot).length > 0
   );
 }
 
@@ -323,7 +357,21 @@ export interface TakeSession {
    * announced through `onEditEvent`.
    */
   reanalyse(): Promise<void>;
-  /** Cancel during a re-analysis: stops it; the tab, history and settings stay as they were. */
+  /**
+   * Saves the trim range `startMs`..`endMs` (untrimmed ms; an end at or past the duration is
+   * stored as null) and re-analyses that range (story "Trim"), as `reanalyse` does: one snapshot
+   * step (`{kind: 'trim'}`). Locked notes outside the range stay stored, unchanged and hidden;
+   * unlocked ones outside it go. The same range as stored does nothing. The audio is never
+   * written. Rejects as `reanalyse` does (`audio-missing` with no audio).
+   */
+  trim(startMs: number, endMs: number | null): Promise<void>;
+  /**
+   * Reset trim: re-analyses the full take (`{trimStartMs: 0, trimEndMs: null}`), one snapshot
+   * step (`{kind: 'resetTrim'}`); hidden locked notes come back unchanged. Already the full
+   * take: nothing.
+   */
+  resetTrim(): Promise<void>;
+  /** Cancel during a re-analysis (or a trim): stops it; the tab, history, settings and trim stay as they were. */
   cancelReanalysis(): void;
 }
 
@@ -466,13 +514,15 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     if (snapshot.undoLabel !== undoLabel || snapshot.redoLabel !== redoLabel) {
       snapshot = { ...snapshot, undoLabel, redoLabel };
     }
-    // The selection follows its note: cleared when the note is gone (deleted, re-analysed).
+    // The selection follows its note: cleared when the note is gone (deleted, re-analysed) or
+    // hidden by the trim.
+    const shown = shownNotes(snapshot);
     const selected = snapshot.selectedNoteId;
-    if (selected !== null && !snapshot.tab?.notes.some((n) => n.id === selected)) {
+    if (selected !== null && !shown.some((n) => n.id === selected)) {
       snapshot = { ...snapshot, selectedNoteId: null };
     }
     const focused = snapshot.lastFocusedNoteId;
-    if (focused !== null && !snapshot.tab?.notes.some((n) => n.id === focused)) {
+    if (focused !== null && !shown.some((n) => n.id === focused)) {
       snapshot = { ...snapshot, lastFocusedNoteId: null };
     }
     // A digit waiting for its second belongs to the note it was typed on (an inserted note's
@@ -676,15 +726,14 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   function select(noteId: string | null) {
     // The player chose a note: a digit typed next goes there, not to a pending insert.
     if (noteId !== pendingInsertId) pendingInsertId = null;
-    const next =
-      noteId !== null && snapshot.tab?.notes.some((n) => n.id === noteId) ? noteId : null;
+    const next = noteId !== null && exists(noteId) ? noteId : null;
     if (next === snapshot.selectedNoteId) return;
     publish({ selectedNoteId: next });
   }
 
   /** Moves the selection `step` notes along played order, stopping at the ends. */
   function step(step: 1 | -1, from?: string | null) {
-    const notes = playedOrder(snapshot.tab?.notes ?? []);
+    const notes = playedOrder(shownNotes(snapshot));
     if (notes.length === 0) return;
     const current = snapshot.selectedNoteId ?? from ?? snapshot.lastFocusedNoteId;
     const at = notes.findIndex((n) => n.id === current);
@@ -698,7 +747,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   }
 
   function nextFlagged(from?: string | null) {
-    const notes = playedOrder(snapshot.tab?.notes ?? []);
+    const notes = playedOrder(shownNotes(snapshot));
     if (!notes.some((n) => n.lowConfidence)) return;
     const current = snapshot.selectedNoteId ?? from ?? snapshot.lastFocusedNoteId;
     const at = notes.findIndex((n) => n.id === current);
@@ -847,6 +896,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
         ...tabState(tab),
         maxFret: take.settings.maxFret,
         takeStartMs: take.trimStartMs,
+        trimEndMs: take.trimEndMs,
       };
       const planned = revision;
       const requests = command.plan(state);
@@ -924,9 +974,9 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     });
   }
 
-  /** Whether note `id` is in the shown Tab. */
+  /** Whether note `id` is in the shown Tab (and not hidden by the trim). */
   function exists(id: string): boolean {
-    return snapshot.tab?.notes.some((n) => n.id === id) ?? false;
+    return shownNotes(snapshot).some((n) => n.id === id);
   }
 
   function travel(direction: 'undo' | 'redo') {
@@ -1053,10 +1103,48 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   function reanalysisProgress(progress: number) {
     const current = snapshot.reanalysis;
     if (current === null || progress <= current.progress) return;
-    publish({ reanalysis: { progress } });
+    publish({ reanalysis: { ...current, progress } });
+  }
+
+  /** What a queued re-analysis run does: a plain re-analysis, a trim or a trim reset. */
+  interface RunKind {
+    label: Extract<CommandLabel, { kind: 'reanalyse' | 'trim' | 'resetTrim' }>;
+    /** The trim range to analyse and commit; absent: the take's own. */
+    trim?: TrimRange;
+  }
+
+  /** `{trim: true}` for a trim or reset run's events, else nothing. */
+  function trimFlag(kind: RunKind): { trim?: true } {
+    return kind.trim ? { trim: true } : {};
   }
 
   function reanalyse(): Promise<void> {
+    return startRun({ label: { kind: 'reanalyse' } });
+  }
+
+  function trim(startMs: number, endMs: number | null): Promise<void> {
+    const take = snapshot.take;
+    const duration = take?.durationMs ?? 0;
+    // Non-finite input, or a take too short for the 500 ms minimum: nothing.
+    if (!take || !Number.isFinite(startMs) || (endMs !== null && !Number.isFinite(endMs))) {
+      return Promise.resolve();
+    }
+    if (!(duration >= MIN_TRIM_MS)) return Promise.resolve();
+    // The handles' own rules: the end in 500 ms..duration, the start in 0..end − 500.
+    const end = clampMs(endMs ?? duration, endLimits(0, duration));
+    const start = clampMs(startMs, startLimits(end));
+    const range = storedTrim(start, end, duration);
+    if (sameTrim(range, take)) return Promise.resolve();
+    return startRun({ label: { kind: 'trim' }, trim: range });
+  }
+
+  function resetTrim(): Promise<void> {
+    const take = snapshot.take;
+    if (!take || isFullTake(take)) return Promise.resolve();
+    return startRun({ label: { kind: 'resetTrim' }, trim: { trimStartMs: 0, trimEndMs: null } });
+  }
+
+  function startRun(kind: RunKind): Promise<void> {
     if (
       reanalysisQueued ||
       snapshot.missing ||
@@ -1068,7 +1156,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       return Promise.resolve();
     }
     if (!hasAudio(snapshot)) {
-      emitEdit({ kind: 'reanalyseFailed', code: 'audio-missing' });
+      emitEdit({ kind: 'reanalyseFailed', code: 'audio-missing', ...trimFlag(kind) });
       return Promise.reject(new AppError('audio-missing', `No audio for take ${takeId}`));
     }
     pendingDigit = null;
@@ -1076,11 +1164,11 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     const at = epoch;
     const seq = ++reanalysisSeq;
     // Shown at once, even queued behind other work: edits, undo and redo look disabled now.
-    publish({ reanalysis: { progress: 0 } });
+    publish({ reanalysis: kind.trim ? { progress: 0, trim: true } : { progress: 0 } });
     let failure: AppError | null = null;
     return enqueue(async () => {
       try {
-        failure = await runReanalysis(at, seq);
+        failure = await runReanalysis(at, seq, kind);
       } finally {
         reanalysisQueued = false;
         reanalysisRunning = false;
@@ -1090,8 +1178,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     });
   }
 
-  /** The queued re-analysis; returns the error it failed with, or null. */
-  async function runReanalysis(at: number, seq: number): Promise<AppError | null> {
+  /** The queued re-analysis (or trim); returns the error it failed with, or null. */
+  async function runReanalysis(at: number, seq: number, kind: RunKind): Promise<AppError | null> {
     const current = () => seq === reanalysisSeq && at === epoch && !snapshot.missing;
     await settingsWrites;
     if (!current()) return null; // cancelled while queued, or the take deleted
@@ -1102,20 +1190,33 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     reanalysisRunning = true;
     const take = snapshot.take!;
     const tab = snapshot.tab!;
+    // The range analysed and committed: a trim's new one, else the take's own (story "Trim").
+    const range: TrimRange = kind.trim ?? {
+      trimStartMs: take.trimStartMs,
+      trimEndMs: take.trimEndMs,
+    };
     try {
-      const run = await deps.analysis.reanalyse(take, (p) => {
+      const run = await deps.analysis.reanalyse({ ...take, ...range }, (p) => {
         if (current()) reanalysisProgress(p);
       });
       if (!current()) return null;
-      const fresh = freshNotes(run.result.notes, run.result.confidenceThreshold, newId);
-      const merged = mergeReanalysis(fresh, tab.notes, tab.deletedStartMs);
+      const detected = freshNotes(run.result.notes, run.result.confidenceThreshold, newId);
+      // A trim or a reset keeps existing notes' times and ids (user ruling); a settings
+      // re-analysis takes the engine's as they are.
+      const anchored = kind.trim ? anchorToExisting(detected, tab.notes, range) : null;
+      const fresh = anchored ? anchored.fresh : detected;
+      // Locked notes outside the range are kept aside, unchanged and out of the fret mapping.
+      const merged = mergeReanalysis(fresh, tab.notes, tab.deletedStartMs, range);
+      // Kept aside unchanged, out of the fret mapping: hidden locked notes, and (a trim) the
+      // in-range unlocked notes the engine did not re-detect.
+      const hidden = [...hiddenLocked(tab.notes, range), ...(anchored?.unmatched ?? [])];
       const positions =
         merged.length > 0
           ? await deps.mapFrets(takeId, reanalysisRequest(merged, take.settings.maxFret))
           : [];
       if (!current()) return null;
       reanalysisProgress(1);
-      const notes = placeReanalysed(merged, positions);
+      const notes = placeReanalysed(merged, positions, hidden);
       const warnings = {
         tuningOffsetCents: run.result.tuningOffsetCents,
         belowRangeNotes: run.result.belowRangeNotes,
@@ -1133,19 +1234,24 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
         notes,
         deletedStartMs: tab.deletedStartMs,
         settings: take.settings,
-        trimStartMs: take.trimStartMs,
-        trimEndMs: take.trimEndMs,
+        trimStartMs: range.trimStartMs,
+        trimEndMs: range.trimEndMs,
         warnings,
         analysisVersion: run.analysisVersion,
       };
       reanalysisCommitting = true;
       const committed = await commitTab(
         { ...tab, notes },
-        { analysisVersion: run.analysisVersion, warnings },
+        {
+          analysisVersion: run.analysisVersion,
+          warnings,
+          // The audio file is never touched: the trim is only these two fields (spine AD-7).
+          ...(kind.trim ? { trimStartMs: range.trimStartMs, trimEndMs: range.trimEndMs } : {}),
+        },
       );
       if (at !== epoch || snapshot.missing) return null;
       const reanalysed: HistoryStep = {
-        label: { kind: 'reanalyse' },
+        label: kind.label,
         target: null,
         before,
         after,
@@ -1156,7 +1262,12 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       analysedSettings = take.settings;
       heldTabs.delete(takeId);
       publish({ take: committed.take, tab: committed.tab, reanalysis: null, saveFailed: null });
-      emitEdit({ kind: 'reanalysed', notes: committed.tab.notes.length });
+      const shown = visibleNotes(committed.tab.notes, committed.take).length;
+      emitEdit(
+        kind.trim
+          ? { kind: 'trimmed', reset: kind.label.kind === 'resetTrim', notes: shown }
+          : { kind: 'reanalysed', notes: shown },
+      );
       if (run.fromRaw) {
         // The raw file goes only after the commit (spine AD-9); a failed delete leaves an orphan.
         try {
@@ -1172,11 +1283,11 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
       const code = errorCode(err);
       publish({ reanalysis: null });
       if (code === 'analysis-cancelled') {
-        emitEdit({ kind: 'reanalyseCancelled' });
+        emitEdit({ kind: 'reanalyseCancelled', ...trimFlag(kind) });
         return null;
       }
       devWarn(`re-analysis of take ${takeId} failed`, err);
-      emitEdit({ kind: 'reanalyseFailed', code });
+      emitEdit({ kind: 'reanalyseFailed', code, ...trimFlag(kind) });
       return isAppError(err) ? err : new AppError(code, 're-analysis failed', { cause: err });
     } finally {
       reanalysisCommitting = false;
@@ -1188,8 +1299,11 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     reanalysisSeq++; // the cancelled run's results are ignored
     deps.analysis.cancel(takeId);
     deps.cancel(takeId); // its fret mapping, if it got that far
+    const trimming = snapshot.reanalysis.trim === true;
     publish({ reanalysis: null });
-    emitEdit({ kind: 'reanalyseCancelled' });
+    emitEdit(
+      trimming ? { kind: 'reanalyseCancelled', trim: true } : { kind: 'reanalyseCancelled' },
+    );
   }
 
   function typeDigit(digit: number) {
@@ -1229,7 +1343,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   /** The selected note, or null. */
   function selectedNote() {
     const id = snapshot.selectedNoteId;
-    return id === null ? null : (snapshot.tab?.notes.find((n) => n.id === id) ?? null);
+    return id === null ? null : (shownNotes(snapshot).find((n) => n.id === id) ?? null);
   }
 
   // The selected note is read when the queued command runs, so a held ↑ moves from the string
@@ -1339,7 +1453,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
 
     focusNote(noteId) {
       if (noteId === snapshot.lastFocusedNoteId) return;
-      if (!snapshot.tab?.notes.some((n) => n.id === noteId)) return;
+      if (!exists(noteId)) return;
       publish({ lastFocusedNoteId: noteId });
     },
     select,
@@ -1349,6 +1463,8 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     rename,
     setSettings,
     reanalyse,
+    trim,
+    resetTrim,
     cancelReanalysis,
   };
 }

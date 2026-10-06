@@ -12,11 +12,16 @@ type Timed = Pick<Note, 'startMs' | 'endMs'>;
 
 /**
  * The phrases of `notes`, in played order: each is the indexes into `notes` of its notes, in
- * played order. Every index appears in exactly one phrase.
+ * played order. Every index `include` accepts (default: all) appears in exactly one phrase; the
+ * others (notes hidden by the trim, story "Trim") are in none and split nothing.
  */
-export function phrases(notes: readonly Timed[]): number[][] {
+export function phrases(
+  notes: readonly Timed[],
+  include: (note: Timed) => boolean = () => true,
+): number[][] {
   const order = notes
     .map((note, i) => ({ note, i }))
+    .filter(({ note }) => include(note))
     .sort((a, b) => a.note.startMs - b.note.startMs || a.i - b.i);
   const result: number[][] = [];
   let current: number[] = [];
@@ -33,7 +38,14 @@ export function phrases(notes: readonly Timed[]): number[][] {
   return result;
 }
 
-/** The phrase (indexes into `notes`, in played order) holding note `index`, or [] if none. */
-export function phraseOf(notes: readonly Timed[], index: number): number[] {
-  return phrases(notes).find((p) => p.includes(index)) ?? [];
+/**
+ * The phrase (indexes into `notes`, in played order) holding note `index`, or [] if none (or if
+ * `include` rejects it). Only notes `include` accepts count.
+ */
+export function phraseOf(
+  notes: readonly Timed[],
+  index: number,
+  include?: (note: Timed) => boolean,
+): number[] {
+  return phrases(notes, include).find((p) => p.includes(index)) ?? [];
 }

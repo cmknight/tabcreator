@@ -4,6 +4,10 @@
     "lib": ["ES2023", "WebWorker"],
     "types": ["vite/client"]
   },
-  "include": ["src/engine/engine-worker.ts", "src/storage/opfs-worker.ts"],
+  "include": [
+    "src/engine/engine-worker.ts",
+    "src/storage/opfs-worker.ts",
+    "src/audio/waveform-worker.ts"
+  ],
   "exclude": []
 }

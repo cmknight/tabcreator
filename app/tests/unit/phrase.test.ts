@@ -42,3 +42,14 @@ describe('phraseOf', () => {
     expect(phraseOf(notes, 9)).toEqual([]);
   });
 });
+
+// Story "Trim": notes the filter leaves out (hidden by the trim) are in no phrase and split nothing.
+describe('phrases with a filter', () => {
+  it('leaves rejected notes out, joining across them', () => {
+    const notes = [n(0, 100), n(500, 600), n(1000, 1100)];
+    const shown = (note: { startMs: number }) => note.startMs !== 500;
+    expect(phrases(notes, shown)).toEqual([[0, 2]]);
+    expect(phraseOf(notes, 1, shown)).toEqual([]);
+    expect(phraseOf(notes, 2, shown)).toEqual([0, 2]);
+  });
+});

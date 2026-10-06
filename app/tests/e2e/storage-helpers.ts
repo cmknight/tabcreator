@@ -107,3 +107,26 @@ export function rawFileExists(page: Page, id: string): Promise<boolean> {
     }
   }, id);
 }
+
+/**
+ * The SHA-256 (hex) of the take's compressed audio file (`audio/<id>.<ext>`), or null when it
+ * has none (story "Trim": the audio is never rewritten).
+ */
+export function audioSha256(page: Page, id: string): Promise<string | null> {
+  return page.evaluate(async (takeId) => {
+    const root = await navigator.storage.getDirectory();
+    let dir: FileSystemDirectoryHandle;
+    try {
+      dir = await root.getDirectoryHandle('audio');
+    } catch {
+      return null;
+    }
+    for await (const name of (dir as unknown as { keys(): AsyncIterable<string> }).keys()) {
+      if (!name.startsWith(`${takeId}.`)) continue;
+      const file = await (await dir.getFileHandle(name)).getFile();
+      const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    }
+    return null;
+  }, id);
+}

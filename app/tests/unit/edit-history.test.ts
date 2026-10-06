@@ -19,7 +19,9 @@ import {
   type EngineResult,
   type HistoryStep,
   type MapFretsRequest,
+  anchorToExisting,
   freshNotes,
+  hiddenLocked,
   isLowConfidence,
   mergeReanalysis,
   placeReanalysed,
@@ -33,6 +35,17 @@ import {
   sameSettings,
 } from '../../src/model/analysis-settings';
 import { OPEN_MIDI, type Note, type StringNo } from '../../src/model/types';
+import { FULL_TAKE, isHidden, visibleNotes } from '../../src/model/notes';
+import {
+  clampMs,
+  endLimits,
+  isFullTake,
+  MIN_TRIM_MS,
+  sameTrim,
+  shownEnd,
+  startLimits,
+  storedTrim,
+} from '../../src/model/trim';
 
 // Story "Change a fret and undo it" (spine AD-4): the set-fret command and the undo history.
 
@@ -360,11 +373,10 @@ describe('insertNote', () => {
     const next = run(insertNote('new', null), state);
     expect(next.notes.map((n) => n.id)).toEqual(['new', 'p', 'q']);
     expect(next.notes[0]).toMatchObject({ startMs: 60, string: 4 });
-    // A first note that starts before the take start: the insert takes its start, still first.
+    // Story "Trim": a note that starts before the take start is hidden, so it is no reference:
+    // with no visible note, nothing is inserted.
     const before: EditState = { ...state, notes: [at('p', 30, 4)] };
-    const first = run(insertNote('new', null), before);
-    expect(first.notes.map((n) => n.id)).toEqual(['new', 'p']);
-    expect(first.notes[0]!.startMs).toBe(30);
+    expect(run(insertNote('new', null), before)).toBe(before);
   });
 
   it('an unknown reference note, no notes, or an id in use: nothing', () => {
@@ -665,6 +677,149 @@ describe('re-analysis merge', () => {
   });
 });
 
+// Story "Trim": notes outside the trim range are hidden; the commands and the merge leave them be.
+describe('trim: hidden notes', () => {
+  const fresh = (id: string, startMs: number, midi = 60): FreshNote => ({
+    id,
+    startMs,
+    endMs: startMs + 100,
+    midi,
+    confidence: 0.9,
+    locked: false,
+    lowConfidence: false,
+  });
+  const trim = { trimStartMs: 2000, trimEndMs: null };
+
+  it('merge: a locked note outside the range is not merged (no lock, no near-drop); hiddenLocked keeps it aside', () => {
+    const outside = note('O', 1000, 3, 7, { locked: true });
+    const inside = note('I', 2500, 2, 1, { locked: true });
+    const unlockedOutside = note('U', 1200, 2, 1);
+    const current = [outside, unlockedOutside, inside];
+    const merged = mergeReanalysis(
+      [fresh('a', 2000), fresh('b', 2520), fresh('c', 3000)],
+      current,
+      [],
+      trim,
+    );
+    expect(merged.map((n) => n.id)).toEqual(['a', 'I', 'c']);
+    expect(reanalysisRequest(merged, 24).locks).toEqual([{ index: 1, string: 2, fret: 1 }]);
+    const hidden = hiddenLocked(current, trim);
+    expect(hidden).toEqual([outside]);
+    expect(hidden[0]).toBe(outside);
+    const placed = placeReanalysed(merged, fakeMap(reanalysisRequest(merged, 24)), hidden);
+    expect(placed.map((n) => n.id)).toEqual(['O', 'a', 'I', 'c']);
+    expect(placed[0]).toBe(outside);
+  });
+
+  it('anchor: a fresh note within 50 ms takes the existing note’s times and id, keeping its own pitch and confidence', () => {
+    const existing = note('X', 2500, 2, 1, { endMs: 2650 });
+    const f = { ...fresh('f', 2515, 61), confidence: 0.3, lowConfidence: true, endMs: 2600 };
+    const out = anchorToExisting([f], [existing], trim);
+    expect(out.fresh).toEqual([{ ...f, id: 'X', startMs: 2500, endMs: 2650 }]);
+    expect(out.fresh[0]).toMatchObject({ midi: 61, confidence: 0.3, lowConfidence: true });
+    expect(out.unmatched).toEqual([]);
+  });
+
+  it('anchor: 50 ms matches, 51 ms does not; unmatched fresh notes untouched; unmatched existing notes kept as they are', () => {
+    const x = note('X', 3000, 1, 0);
+    const y = note('Y', 4000, 1, 0);
+    const at50 = fresh('a', 3050);
+    const at51 = fresh('b', 3949);
+    const lone = fresh('c', 5000);
+    const out = anchorToExisting([at50, at51, lone], [x, y], trim);
+    expect(out.fresh[0]).toMatchObject({ id: 'X', startMs: 3000 });
+    expect(out.fresh[1]).toBe(at51);
+    expect(out.fresh[2]).toBe(lone);
+    // Y was not re-detected within 50 ms: kept, the same object (id, times, string, fret).
+    expect(out.unmatched).toEqual([y]);
+    expect(out.unmatched[0]).toBe(y);
+  });
+
+  it('anchor: nearest pairs first, one-to-one', () => {
+    const x = note('X', 3000, 1, 0);
+    const y = note('Y', 3040, 1, 0);
+    // a is 10 from X and 30 from Y; b is 5 from Y and 45 from X: a–X and b–Y.
+    const out = anchorToExisting([fresh('a', 3010), fresh('b', 3045)], [x, y], trim);
+    expect(out.fresh.map((n) => n.id)).toEqual(['X', 'Y']);
+    // Two fresh notes near one existing note: only the nearer takes it.
+    const one = anchorToExisting([fresh('a', 3020), fresh('b', 2990)], [x], trim);
+    expect(one.fresh.map((n) => [n.id, n.startMs])).toEqual([
+      ['a', 3020],
+      ['X', 3000],
+    ]);
+  });
+
+  it('anchor: locked notes and notes outside the new range are never anchors, nor kept as unmatched', () => {
+    const lockedX = note('L', 3000, 1, 0, { locked: true });
+    const hiddenX = note('H', 1990, 1, 0);
+    const a = fresh('a', 3010);
+    const b = fresh('b', 2010);
+    const out = anchorToExisting([a, b], [lockedX, hiddenX], trim);
+    expect(out.fresh[0]).toBe(a);
+    expect(out.fresh[1]).toBe(b);
+    expect(out.unmatched).toEqual([]);
+  });
+
+  it('anchor: fresh notes outside the range are dropped first, so none takes an in-range time', () => {
+    const x = note('X', 2010, 1, 0);
+    // 1990 is 20 ms from X but before the 2 s trim start.
+    const out = anchorToExisting([fresh('out', 1990)], [x], trim);
+    expect(out.fresh).toEqual([]);
+    expect(out.unmatched).toEqual([x]);
+  });
+
+  it('merge: fresh notes outside the range are dropped; the default range is the full take', () => {
+    expect(
+      mergeReanalysis([fresh('a', 100), fresh('b', 2100)], [], [], {
+        trimStartMs: 0,
+        trimEndMs: 2000,
+      }).map((n) => n.id),
+    ).toEqual(['a']);
+    expect(mergeReanalysis([fresh('a', 100)], [], []).map((n) => n.id)).toEqual(['a']);
+    expect(
+      hiddenLocked([note('L', 100, 1, 0, { locked: true })], { trimStartMs: 0, trimEndMs: null }),
+    ).toEqual([]);
+  });
+
+  it('setFret re-fits the visible notes of the phrase only; a hidden note stays the same object', () => {
+    // Without the trim, a, b and c are one phrase.
+    const state: EditState = { ...STATE, takeStartMs: 250 };
+    const plan = setFret('b', 5).plan(state);
+    expect(plan).toHaveLength(1);
+    expect(plan[0]!.notes.map((n) => n.startMs)).toEqual([300, 600]);
+    const next = run(setFret('b', 5), state);
+    expect(next.notes[0]).toBe(A);
+    const ended: EditState = { ...STATE, trimEndMs: 500 };
+    expect(
+      setFret('b', 5)
+        .plan(ended)[0]!
+        .notes.map((n) => n.startMs),
+    ).toEqual([0, 300]);
+  });
+
+  it('delete re-fits its visible neighbours; selection skips hidden notes', () => {
+    const state: EditState = { ...STATE, takeStartMs: 250 };
+    const cmd = deleteNote('b');
+    expect(cmd.plan(state).map((r) => r.notes.map((n) => n.startMs))).toEqual([[600]]);
+    // b was the first visible note: the next visible one is selected, never the hidden a.
+    const next = run(cmd, state);
+    expect(cmd.selectAfter!(state, next)).toBe('c');
+    const lastVisible: EditState = { ...STATE, trimEndMs: 700 };
+    const del = deleteNote('c');
+    expect(del.selectAfter!(lastVisible, run(del, lastVisible))).toBe('b');
+  });
+
+  it('insert: hidden notes are no reference; after the last visible note it stays before the trim end', () => {
+    const state: EditState = { ...STATE, takeStartMs: 250, trimEndMs: 700 };
+    const first = run(insertNote('new', null), state);
+    // Before b (the first visible), not before the hidden a, and not before the take start.
+    expect(first.notes.find((n) => n.id === 'new')!.startMs).toBe(250);
+    const after = run(insertNote('new', 'c'), state);
+    // c at 600 is the last visible note: midway to the trim end (650), not 600 + 250.
+    expect(after.notes.find((n) => n.id === 'new')!.startMs).toBe(650);
+  });
+});
+
 describe('snapshot steps', () => {
   const snap = (n: number): AnalysisSnapshot => ({
     notes: [note(`s${n}`, n, 1, 0)],
@@ -711,5 +866,40 @@ describe('analysis settings ranges', () => {
     });
     expect(clampSensitivity(0.35, 0)).toBe(0.35);
     expect(sameSettings(fallback, { ...fallback })).toBe(true);
+  });
+});
+
+describe('trim range rules', () => {
+  it('isHidden / visibleNotes: outside [start, end ?? ∞) is hidden; nothing hidden returns the same array', () => {
+    const range = { trimStartMs: 300, trimEndMs: 2000 };
+    expect(isHidden({ startMs: 299 }, range)).toBe(true);
+    expect(isHidden({ startMs: 300 }, range)).toBe(false);
+    expect(isHidden({ startMs: 1999 }, range)).toBe(false);
+    expect(isHidden({ startMs: 2000 }, range)).toBe(true);
+    expect(isHidden({ startMs: 1e9 }, FULL_TAKE)).toBe(false);
+    expect(visibleNotes(STATE.notes, range).map((n) => n.id)).toEqual(['b', 'c']);
+    expect(visibleNotes(STATE.notes, FULL_TAKE)).toBe(STATE.notes);
+  });
+
+  it('handle limits keep a 500 ms range inside the take', () => {
+    expect(MIN_TRIM_MS).toBe(500);
+    expect(startLimits(4000)).toEqual({ min: 0, max: 3500 });
+    expect(startLimits(300)).toEqual({ min: 0, max: 0 });
+    expect(endLimits(2000, 4000)).toEqual({ min: 2500, max: 4000 });
+    expect(endLimits(3800, 4000)).toEqual({ min: 4000, max: 4000 });
+    expect(clampMs(3600, startLimits(4000))).toBe(3500);
+    expect(clampMs(-5, startLimits(4000))).toBe(0);
+    expect(clampMs(12.6, startLimits(4000))).toBe(13);
+    expect(clampMs(Number.NaN, endLimits(0, 4000))).toBe(500);
+  });
+
+  it('stored: the end is null at the duration; full take is 0 / null', () => {
+    expect(storedTrim(2000, 4000, 4000)).toEqual({ trimStartMs: 2000, trimEndMs: null });
+    expect(storedTrim(2000, 3000, 4000)).toEqual({ trimStartMs: 2000, trimEndMs: 3000 });
+    expect(shownEnd({ trimStartMs: 0, trimEndMs: null }, 4000)).toBe(4000);
+    expect(shownEnd({ trimStartMs: 0, trimEndMs: 3000 }, 4000)).toBe(3000);
+    expect(isFullTake(FULL_TAKE)).toBe(true);
+    expect(isFullTake({ trimStartMs: 0, trimEndMs: 3000 })).toBe(false);
+    expect(sameTrim(FULL_TAKE, { trimStartMs: 0, trimEndMs: null })).toBe(true);
   });
 });

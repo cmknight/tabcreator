@@ -46,6 +46,10 @@ function commandPhrase(label: CommandLabel): string {
       return 'confirm note';
     case 'reanalyse':
       return 're-analyse';
+    case 'trim':
+      return 'trim';
+    case 'resetTrim':
+      return 'reset trim';
   }
 }
 
@@ -370,6 +374,34 @@ export const strings = {
   'tab.commandInsert': 'Insert note',
   'tab.commandConfirm': 'Confirm note',
   'tab.commandReanalyse': 'Re-analyse',
+  'tab.commandTrim': 'Trim',
+  'tab.commandResetTrim': 'Reset trim',
+  /** The toolbar's Trim toggle and the Trim strip's heading (story "Trim"; EXPERIENCE.md Trim strip). */
+  'tab.trim': 'Trim',
+  /** The trim handles' accessible names. */
+  'tab.trimStart': 'Trim start',
+  'tab.trimEnd': 'Trim end',
+  /** Announced politely after a handle stops moving: "Trim start 0:02.00". */
+  'tab.trimMoved': (handle: string, time: string) => `${handle} ${time}`,
+  /** The Trim strip's Save: saves the range and re-analyses it. */
+  'tab.trimSave': 'Save',
+  /** The Trim strip's Reset trim: re-analyses the full take. */
+  'tab.trimReset': 'Reset trim',
+  /** Shown in the waveform's place until its peaks arrive. */
+  'tab.trimLoading': 'Loading waveform…',
+  /** Shown in the waveform's place when its peaks could not be read. */
+  'tab.trimWaveformFailed': "Couldn't load the waveform",
+  /** The Confirm dialog's confirm button before a trim with an edited (locked) note shown. */
+  'tab.trimConfirm': 'Trim and re-analyse',
+  /** Announced when a trim (or a trim reset) run is cancelled, or failed: nothing changed. */
+  'tab.trimCancelled': 'Trim cancelled',
+  'tab.trimFailed': 'Trim failed — try again',
+  /** Why Trim and Analysis settings are disabled while a run goes. */
+  'tab.busyReanalysing': 'Busy re-analysing',
+  'tab.busyTrimming': 'Busy trimming',
+  /** Announced after a trim and after a trim reset committed. */
+  'tab.trimmed': (n: number) => `Trimmed: ${n} ${n === 1 ? 'note' : 'notes'}`,
+  'tab.trimResetDone': (n: number) => `Trim reset: ${n} ${n === 1 ? 'note' : 'notes'}`,
   /** Announced after a string move (EXPERIENCE.md Accessibility floor): "Moved to G string, fret 7". */
   'tab.editMoved': (string: StringNo, fret: number) =>
     `Moved to ${TAB_STRING_NAMES[string]} string, fret ${fret}`,

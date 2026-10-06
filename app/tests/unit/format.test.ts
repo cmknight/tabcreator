@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { formatSigned, formatTakeDate, inputDisplayName } from '../../src/ui/format';
+import {
+  formatSigned,
+  formatTakeDate,
+  formatTrimTime,
+  inputDisplayName,
+} from '../../src/ui/format';
 
 describe('formatSigned', () => {
   it('writes minus as U+2212, plus as +, and zero (also −0) bare', () => {
@@ -27,5 +32,15 @@ describe('formatTakeDate', () => {
   it('accepts an ISO string, shown in local time', () => {
     const local = new Date(2026, 8, 27, 21, 14);
     expect(formatTakeDate(local.toISOString())).toBe('Sun 27 Sep 2026, 21:14');
+  });
+});
+
+describe('formatTrimTime', () => {
+  it('m:ss.cc to the hundredth', () => {
+    expect(formatTrimTime(0)).toBe('0:00.00');
+    expect(formatTrimTime(130)).toBe('0:00.13');
+    expect(formatTrimTime(2000)).toBe('0:02.00');
+    expect(formatTrimTime(65_432)).toBe('1:05.43');
+    expect(formatTrimTime(-5)).toBe('0:00.00');
   });
 });

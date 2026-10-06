@@ -10,6 +10,7 @@ import {
   hasUnsavedEdits,
   isTabShown,
   onPageHide,
+  shownNotes,
   type EditEvent,
   setActiveTakeSession,
   type TakeSessionDeps,
@@ -2442,6 +2443,316 @@ describe('take session analysis settings and re-analysis', () => {
       await settle();
       await session.reanalyse();
       expect(h.deps.analysis.reanalyse).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Story "Trim": Save and Reset trim re-analyse the range as one snapshot step; notes outside
+  // the trim are hidden.
+  describe('trim', () => {
+    /** L (locked, 1000 ms) and P (2000 ms), a deleted time at 1500; the take 4 s long. */
+    async function trimmed(start = 2000, end: number | null = null) {
+      const opened = await open();
+      const done = opened.session.trim(start, end);
+      await settle();
+      opened.engine.run.resolve(run([detected(2000, 2), detected(2500, 4, 0.4)]));
+      await done;
+      return opened;
+    }
+
+    it('trims the first 2 s: the range re-analysed; the locked note before it kept, hidden and out of mapFrets', async () => {
+      const { h, session, events } = await trimmed();
+      expect(h.deps.analysis.reanalyse).toHaveBeenCalledWith(
+        { ...ANALYZED, trimStartMs: 2000, trimEndMs: null },
+        expect.any(Function),
+      );
+      const request = vi.mocked(h.deps.mapFrets).mock.calls[0]![1];
+      expect(request.notes.map((n) => n.startMs)).toEqual([2000, 2500]);
+      expect(request.locks).toEqual([]);
+      const [, tab, patch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]!;
+      // P (unlocked, in range) is re-detected at 2000: the fresh note keeps P's id and times;
+      // the 2500 note is new. L stays the same object.
+      expect(tab.notes.map((n) => n.id)).toEqual(['L', 'P', 'new2']);
+      expect(tab.notes[0]).toBe(LOCKED);
+      expect(tab.notes.slice(1).map((n) => n.startMs)).toEqual([2000, 2500]);
+      expect(tab.deletedStartMs).toEqual([1500]);
+      expect(patch).toEqual({
+        analysisVersion: '0.5.0',
+        warnings: { tuningOffsetCents: 4, belowRangeNotes: 0 },
+        trimStartMs: 2000,
+        trimEndMs: null,
+      });
+      const snap = session.getSnapshot();
+      expect(snap.take).toMatchObject({ trimStartMs: 2000, trimEndMs: null });
+      expect(shownNotes(snap).map((n) => n.id)).toEqual(['P', 'new2']);
+      expect(snap.undoLabel).toEqual({ kind: 'trim' });
+      expect(events.at(-1)).toEqual({ kind: 'trimmed', reset: false, notes: 2 });
+    });
+
+    it('a trim keeps existing notes’ times: a re-detection 15 ms off takes the existing start, end and id', async () => {
+      const { h, session, engine } = await open();
+      const done = session.trim(1500, null);
+      await settle();
+      engine.run.resolve(run([detected(2015, 6, 0.4), detected(3000, 1)]));
+      await done;
+      const [, tab] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]!;
+      const p = tab.notes.find((n) => n.id === 'P')!;
+      expect(p).toMatchObject({
+        startMs: PLAIN.startMs,
+        endMs: PLAIN.endMs,
+        midi: 70,
+        confidence: 0.4,
+        lowConfidence: true,
+        fret: 6,
+      });
+      expect(tab.notes.find((n) => n.startMs === 3000)!.id).toBe('new2');
+    });
+
+    it('a settings re-analysis does not anchor: the engine’s times as they are', async () => {
+      const { h, session, engine } = await open();
+      const done = session.reanalyse();
+      await settle();
+      engine.run.resolve(run([detected(2015, 6)]));
+      await done;
+      const [, tab] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]!;
+      expect(tab.notes.map((n) => [n.id, n.startMs])).toEqual([
+        ['L', 1000],
+        ['new1', 2015],
+      ]);
+    });
+
+    it('a trim keeps an in-range note the engine did not re-detect: same id, times, string and fret, out of mapFrets', async () => {
+      const { h, session, engine } = await open();
+      const done = session.trim(1500, null);
+      await settle();
+      engine.run.resolve(run([detected(3000, 1)])); // nothing near P (2000)
+      await done;
+      const request = vi.mocked(h.deps.mapFrets).mock.calls[0]![1];
+      expect(request.notes.map((n) => n.startMs)).toEqual([3000]);
+      const [, tab] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]!;
+      expect(tab.notes.find((n) => n.id === 'P')).toBe(PLAIN);
+    });
+
+    it('trim clamps to the handle rules: the end within the duration, a 500 ms minimum; non-finite input does nothing', async () => {
+      const { h, session, engine } = await open();
+      let done = session.trim(3900, 9000); // the end at the duration; the start at most end − 500
+      await settle();
+      engine.run.resolve(run([]));
+      await done;
+      expect(vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]![2]).toMatchObject({
+        trimStartMs: 3500,
+        trimEndMs: null,
+      });
+      done = session.trim(-50, 200); // the end at least 500
+      await settle();
+      engine.run.resolve(run([]));
+      await done;
+      expect(vi.mocked(h.deps.db.commitAnalysis).mock.calls[1]![2]).toMatchObject({
+        trimStartMs: 0,
+        trimEndMs: 500,
+      });
+      await session.trim(Number.NaN, null);
+      await session.trim(100, Number.POSITIVE_INFINITY);
+      expect(h.deps.analysis.reanalyse).toHaveBeenCalledTimes(2);
+    });
+
+    it('a failed trim is announced as a trim', async () => {
+      const { session, events, engine } = await open();
+      const done = session.trim(2000, null);
+      await settle();
+      engine.run.reject(new AppError('analysis-failed', 'boom'));
+      await expect(done).rejects.toMatchObject({ code: 'analysis-failed' });
+      expect(events.at(-1)).toEqual({
+        kind: 'reanalyseFailed',
+        code: 'analysis-failed',
+        trim: true,
+      });
+    });
+
+    it('a trim end at 2500: an edit re-fit leaves out the note after it; an insert after the last visible note lands before 2500', async () => {
+      const after = note('A', 2600, 4); // hidden by the 2500 end, within a phrase gap of P
+      const tab: Tab = { ...TAB, notes: [PLAIN, after] };
+      const { h, session } = await open(tab, { ...ANALYZED, trimEndMs: 2500 });
+      session.select('P');
+      session.typeDigit(5);
+      await settle();
+      expect(vi.mocked(h.deps.mapFrets).mock.calls[0]![1].notes.map((n) => n.startMs)).toEqual([
+        2000,
+      ]);
+      expect(session.getSnapshot().tab!.notes.find((n) => n.id === 'A')).toBe(after);
+      session.select('P');
+      await session.insert();
+      const inserted = session.getSnapshot().tab!.notes.find((n) => n.inserted)!;
+      expect(inserted.startMs).toBeGreaterThan(2000);
+      expect(inserted.startMs).toBeLessThan(2500);
+    });
+
+    it('shows its progress marked as a trim while it runs', async () => {
+      const { session, engine } = await open();
+      const done = session.trim(2000, null);
+      expect(session.getSnapshot().reanalysis).toEqual({ progress: 0, trim: true });
+      await settle();
+      engine.progress!(0.5);
+      expect(session.getSnapshot().reanalysis).toEqual({ progress: 0.5, trim: true });
+      engine.run.resolve(run([]));
+      await done;
+      expect(session.getSnapshot().reanalysis).toBeNull();
+    });
+
+    it('an end at the duration is stored as null; an earlier end as itself; the saved range again does nothing', async () => {
+      const { h, session, engine } = await open();
+      let done = session.trim(500, 4000);
+      await settle();
+      engine.run.resolve(run([]));
+      await done;
+      expect(vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]![2]).toMatchObject({
+        trimStartMs: 500,
+        trimEndMs: null,
+      });
+      done = session.trim(500, 3000);
+      await settle();
+      engine.run.resolve(run([]));
+      await done;
+      expect(vi.mocked(h.deps.db.commitAnalysis).mock.calls[1]![2]).toMatchObject({
+        trimStartMs: 500,
+        trimEndMs: 3000,
+      });
+      await session.trim(500, 3000);
+      expect(h.deps.analysis.reanalyse).toHaveBeenCalledTimes(2);
+    });
+
+    it('Reset trim: the full take re-analysed; the hidden locked note shown again, unchanged, as a lock', async () => {
+      const { h, session, events, engine } = await trimmed();
+      const done = session.resetTrim();
+      await settle();
+      expect(vi.mocked(h.deps.analysis.reanalyse).mock.calls[1]![0]).toMatchObject({
+        trimStartMs: 0,
+        trimEndMs: null,
+      });
+      engine.run.resolve(run([detected(990, 5), detected(2000, 2), detected(3000, 1)]));
+      await done;
+      const request = vi.mocked(h.deps.mapFrets).mock.calls[1]![1];
+      expect(request.locks).toEqual([{ index: 0, string: 1, fret: 7 }]);
+      const [, tab, patch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[1]!;
+      expect(tab.notes[0]).toBe(LOCKED); // 990 is within 50 ms of it
+      // The 2500 note (from the trim) was not re-detected: kept as it was.
+      expect(tab.notes.map((n) => n.startMs)).toEqual([1000, 2000, 2500, 3000]);
+      expect(patch).toMatchObject({ trimStartMs: 0, trimEndMs: null });
+      const snap = session.getSnapshot();
+      expect(shownNotes(snap)[0]).toBe(LOCKED);
+      expect(snap.undoLabel).toEqual({ kind: 'resetTrim' });
+      expect(events.at(-1)).toEqual({ kind: 'trimmed', reset: true, notes: 4 });
+      // Already the full take: nothing.
+      await session.resetTrim();
+      expect(h.deps.analysis.reanalyse).toHaveBeenCalledTimes(2);
+    });
+
+    it('undo restores the untrimmed tab and trim exactly; redo the trimmed', async () => {
+      const { h, session, events } = await trimmed();
+      const after = session.getSnapshot().tab!;
+      await session.undo();
+      const [, tab, patch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[1]!;
+      expect(tab.notes).toEqual(TAB2.notes);
+      expect(tab.deletedStartMs).toEqual([1500]);
+      expect(patch).toEqual({
+        settings: ANALYZED.settings,
+        trimStartMs: 0,
+        trimEndMs: null,
+        warnings: undefined,
+        analysisVersion: '0.4.0',
+      });
+      expect(session.getSnapshot().take).toMatchObject({ trimStartMs: 0, trimEndMs: null });
+      expect(shownNotes(session.getSnapshot()).map((n) => n.id)).toEqual(['L', 'P']);
+      await session.redo();
+      expect(vi.mocked(h.deps.db.commitAnalysis).mock.calls[2]![1].notes).toEqual(after.notes);
+      expect(session.getSnapshot().take).toMatchObject({ trimStartMs: 2000, trimEndMs: null });
+      expect(events.slice(-2)).toEqual([
+        { kind: 'undo', label: { kind: 'trim' } },
+        { kind: 'redo', label: { kind: 'trim' } },
+      ]);
+    });
+
+    it('Cancel during the trim run: nothing changes', async () => {
+      const { h, session, events } = await open();
+      const before = session.getSnapshot();
+      const done = session.trim(2000, null);
+      await settle();
+      session.cancelReanalysis();
+      await done;
+      expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+      const snap = session.getSnapshot();
+      expect(snap.tab).toBe(before.tab);
+      expect(snap.take).toBe(before.take);
+      expect(snap.reanalysis).toBeNull();
+      expect(snap.undoLabel).toBeNull();
+      expect(events.at(-1)).toEqual({ kind: 'reanalyseCancelled', trim: true });
+    });
+
+    it('no audio (no compressed audio, no raw file): a forced call rejects audio-missing', async () => {
+      const { h, session } = await open(TAB2, { ...ANALYZED, audioMime: null });
+      expect(hasAudio(session.getSnapshot())).toBe(false);
+      await expect(session.trim(2000, null)).rejects.toMatchObject({ code: 'audio-missing' });
+      await expect(session.resetTrim()).resolves.toBeUndefined(); // already the full take
+      expect(h.deps.analysis.reanalyse).not.toHaveBeenCalled();
+    });
+
+    it('a re-analysis of a trimmed take leaves the hidden locked note untouched and out of mapFrets', async () => {
+      const take = { ...ANALYZED, trimStartMs: 1500 };
+      const { h, session, engine } = await open(TAB2, take);
+      const done = session.reanalyse();
+      await settle();
+      expect(vi.mocked(h.deps.analysis.reanalyse).mock.calls[0]![0]).toEqual(take);
+      engine.run.resolve(run([detected(1000, 9), detected(2000, 2)]));
+      await done;
+      const request = vi.mocked(h.deps.mapFrets).mock.calls[0]![1];
+      expect(request.notes.map((n) => n.startMs)).toEqual([2000]);
+      expect(request.locks).toEqual([]);
+      const [, tab, patch] = vi.mocked(h.deps.db.commitAnalysis).mock.calls[0]!;
+      expect(tab.notes[0]).toBe(LOCKED);
+      expect(tab.notes.map((n) => n.startMs)).toEqual([1000, 2000]);
+      expect(patch).not.toHaveProperty('trimStartMs');
+      expect(session.getSnapshot().undoLabel).toEqual({ kind: 'reanalyse' });
+    });
+
+    it('hidden notes: not selectable, stepped over, not flagged for Next to check, not counted', async () => {
+      const flagged = note('F', 500, 2, { lowConfidence: true });
+      const tab: Tab = { ...TAB, notes: [flagged, LOCKED, PLAIN] };
+      const { session } = await open(tab, { ...ANALYZED, trimStartMs: 1500 });
+      session.select('L');
+      expect(session.getSnapshot().selectedNoteId).toBeNull();
+      session.selectPrev();
+      expect(session.getSnapshot().selectedNoteId).toBe('P');
+      session.selectPrev();
+      expect(session.getSnapshot().selectedNoteId).toBe('P'); // the first visible note
+      session.select(null);
+      session.selectNextFlagged();
+      expect(session.getSnapshot().selectedNoteId).toBeNull(); // F is hidden
+      session.focusNote('F');
+      expect(session.getSnapshot().lastFocusedNoteId).toBeNull();
+      expect(isTabShown(session.getSnapshot())).toBe(true);
+      const allHidden = await open(tab, { ...ANALYZED, trimStartMs: 3000 });
+      expect(isTabShown(allHidden.session.getSnapshot())).toBe(false); // No notes found
+    });
+
+    it('a trim hides the selected note: the selection clears', async () => {
+      const { session, engine } = await open();
+      session.select('L');
+      const done = session.trim(2000, null);
+      await settle();
+      engine.run.resolve(run([]));
+      await done;
+      expect(session.getSnapshot().selectedNoteId).toBeNull();
+    });
+
+    it('an edit re-fits the visible notes only; a hidden note stays stored as it was', async () => {
+      const near = note('H', 1300, 4); // hidden, but within a phrase gap of P
+      const tab: Tab = { ...TAB, notes: [near, PLAIN] };
+      const { h, session } = await open(tab, { ...ANALYZED, trimStartMs: 1500 });
+      session.select('P');
+      session.typeDigit(5);
+      await settle();
+      const request = vi.mocked(h.deps.mapFrets).mock.calls[0]![1];
+      expect(request.notes.map((n) => n.startMs)).toEqual([2000]);
+      expect(session.getSnapshot().tab!.notes[0]).toBe(near);
     });
   });
 });

@@ -54,6 +54,15 @@
 // stays shown and the panel shows "Analysing…", the bar and Cancel; edits, undo and redo are
 // disabled. The outcome (done, cancelled, failed) is announced. In No notes found the tip's
 // "Analysis settings" is a link-styled button that opens the panel and focuses Sensitivity.
+//
+// Story "Trim": the toolbar's Trim toggle (before Bar lines; `aria-expanded`) opens the Trim
+// strip (components/TrimStrip) below the toolbar. Trim is disabled with "Audio deleted" when the
+// take has no audio, and while a re-analysis or trim runs; it stays enabled in No notes found.
+// The strip and the Analysis settings panel are never open together: opening one closes the
+// other. Save trims and re-analyses (`session.trim`), Reset trim re-analyses the full take; the
+// run's progress and Cancel show in the strip. Notes outside the trim are hidden: the tab area,
+// note labels, status line, warnings, playback and the popover see only the visible notes
+// (`session/take-session.ts` `shownNotes`).
 
 import {
   useEffect,
@@ -69,7 +78,8 @@ import {
 } from 'react';
 import type { CommandLabel } from '../../model/edit-history';
 import type { AppErrorCode } from '../../model/errors';
-import type { Tab as TabRecord, Take } from '../../model/types';
+import { visibleNotes } from '../../model/notes';
+import type { Note, Take } from '../../model/types';
 import { activePlayback, setActivePlayback } from '../../session/playback';
 import { settingsSession, type SettingsSession } from '../../session/settings-session';
 import {
@@ -90,6 +100,7 @@ import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
 import { AnalysisSettingsFields } from '../components/AnalysisSettingsFields';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { TrimStrip, type TrimStripProps } from '../components/TrimStrip';
 import { EditPopover } from '../components/EditPopover';
 import {
   BarLinesIcon,
@@ -98,6 +109,7 @@ import {
   InsertIcon,
   RedoIcon,
   SettingsIcon,
+  TrimIcon,
   UndoIcon,
 } from '../components/icons';
 import { StorageFullBannerView } from '../components/StorageFullBannerView';
@@ -118,6 +130,8 @@ import tabStyles from './Tab.module.css';
 const TAB_AREA_ID = 'tab-area';
 /** The Analysis settings panel's element id (the toggle's `aria-controls`). */
 const PANEL_ID = 'analysis-settings';
+/** The Trim strip's element id (the Trim toggle's `aria-controls`). */
+const TRIM_ID = 'trim-strip';
 /** The panel's Sensitivity slider's element id (the No notes found link focuses it). */
 const SENSITIVITY_ID = 'analysis-sensitivity';
 
@@ -221,6 +235,10 @@ export function commandLabelText(label: CommandLabel): string {
       return strings['tab.commandConfirm'];
     case 'reanalyse':
       return strings['tab.commandReanalyse'];
+    case 'trim':
+      return strings['tab.commandTrim'];
+    case 'resetTrim':
+      return strings['tab.commandResetTrim'];
   }
 }
 
@@ -238,6 +256,8 @@ function ToolButton({
   buttonRef,
   onFocus,
   onBlur,
+  expanded,
+  controls,
 }: {
   icon: ReactNode;
   label: string;
@@ -247,6 +267,10 @@ function ToolButton({
   buttonRef?: Ref<HTMLButtonElement>;
   onFocus?: () => void;
   onBlur?: (event: FocusEvent<HTMLButtonElement>) => void;
+  /** A disclosure toggle (the Trim toggle): its `aria-expanded`, shown pressed while true. */
+  expanded?: boolean;
+  /** The element a disclosure toggle opens. */
+  controls?: string | undefined;
 }) {
   const tooltipId = useId();
   return (
@@ -254,8 +278,10 @@ function ToolButton({
       <button
         ref={buttonRef}
         type="button"
-        className={`${buttons.secondary} ${tabStyles.toolButton}`}
+        className={`${buttons.secondary} ${expanded !== undefined ? buttons.toggle : ''} ${tabStyles.toolButton}`}
         disabled={disabled}
+        aria-expanded={expanded}
+        aria-controls={controls}
         aria-describedby={tooltip !== null ? tooltipId : undefined}
         onClick={onClick}
         onFocus={onFocus}
@@ -288,15 +314,19 @@ function editText(event: Extract<EditEvent, { kind: 'edit' }>): string {
       return strings['tab.editConfirmed'];
     case 'reanalyse': // not an edit: a re-analysis is announced as `reanalysed`
       return strings['tab.commandReanalyse'];
+    case 'trim': // not an edit: a trim is announced as `trimmed`
+      return strings['tab.commandTrim'];
+    case 'resetTrim':
+      return strings['tab.commandResetTrim'];
   }
 }
 
-/** What a failed re-analysis announces, by its code. */
-function reanalyseFailedText(code: AppErrorCode): string {
+/** What a failed re-analysis (`trim`: a trim or trim reset) announces, by its code. */
+function reanalyseFailedText(code: AppErrorCode, trim: boolean): string {
   if (code === 'audio-missing') return strings['tab.noAudioToAnalyse'];
   if (code === 'engine-unavailable') return strings['global.engineFailed'];
   if (code === 'storage-full') return strings['tab.storageFull'];
-  return strings['tab.reanalyseFailed'];
+  return trim ? strings['tab.trimFailed'] : strings['tab.reanalyseFailed'];
 }
 
 /** What an edit outcome announces, and how. */
@@ -312,10 +342,20 @@ export function editAnnouncement(event: EditEvent): [string, 'polite' | 'asserti
       return [strings['tab.editFailed'], 'assertive'];
     case 'reanalysed':
       return [strings['tab.reanalysed'](event.notes), 'polite'];
+    case 'trimmed':
+      return [
+        event.reset
+          ? strings['tab.trimResetDone'](event.notes)
+          : strings['tab.trimmed'](event.notes),
+        'polite',
+      ];
     case 'reanalyseCancelled':
-      return [strings['tab.reanalyseCancelled'], 'polite'];
+      return [
+        event.trim ? strings['tab.trimCancelled'] : strings['tab.reanalyseCancelled'],
+        'polite',
+      ];
     case 'reanalyseFailed':
-      return [reanalyseFailedText(event.code), 'assertive'];
+      return [reanalyseFailedText(event.code, event.trim === true), 'assertive'];
   }
 }
 
@@ -327,14 +367,15 @@ export function editAnnouncement(event: EditEvent): [string, 'polite' | 'asserti
  */
 function AnalysisSettingsPanel({
   take,
-  tab,
+  notes,
   reanalysis,
   audio,
   session,
   onEscape,
 }: {
   take: Take;
-  tab: TabRecord;
+  /** The shown (visible) notes: a locked one asks first. Hidden locked notes stay untouched. */
+  notes: readonly Note[];
   reanalysis: TakeSnapshot['reanalysis'];
   /** Whether the take has audio to re-analyse. */
   audio: boolean;
@@ -395,7 +436,7 @@ function AnalysisSettingsPanel({
             disabled={!audio || running}
             aria-describedby={reason !== null ? reasonId : undefined}
             onClick={() => {
-              if (tab.notes.some((n) => n.locked)) setConfirming(true);
+              if (notes.some((n) => n.locked)) setConfirming(true);
               else start();
             }}
           >
@@ -480,6 +521,8 @@ export interface TabProps {
   settings?: Pick<SettingsSession, 'subscribePrefs' | 'getSnapshot' | 'setBarLines'>;
   /** Reads the take's compressed audio for playback; tests pass their own. */
   readAudio?: (takeId: string) => Promise<Blob | null>;
+  /** The Trim strip's waveform peaks; tests pass their own. */
+  loadPeaks?: TrimStripProps['loadPeaks'];
 }
 
 /**
@@ -564,7 +607,13 @@ function useRefitOutline() {
 /** No warning dismissed. */
 const NONE_DISMISSED: ReadonlySet<DismissibleWarning> = new Set();
 
-export function Tab({ takeId, createSession, settings = settingsSession, readAudio }: TabProps) {
+export function Tab({
+  takeId,
+  createSession,
+  settings = settingsSession,
+  readAudio,
+  loadPeaks,
+}: TabProps) {
   const { snapshot, session } = useTakeSession(takeId, createSession);
   const { take, tab, analysis, missing, selectedNoteId, reanalysis } = snapshot;
   // A re-analysis's progress is announced as a first analysis's is.
@@ -574,11 +623,15 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
   useMaxLengthToast(missing ? null : take);
   const { barLines } = useSyncExternalStore(settings.subscribePrefs, settings.getSnapshot).prefs;
   const [noteList, setNoteList] = useState(false);
-  /** Whether the Analysis settings panel is open. */
-  const [panelOpen, setPanelOpen] = useState(false);
+  /**
+   * The open panel below the toolbar: the Analysis settings panel or the Trim strip, never both
+   * (opening one closes the other).
+   */
+  const [openPanel, setOpenPanel] = useState<'settings' | 'trim' | null>(null);
   /** Set by the No notes found link: Sensitivity takes focus once the panel shows. */
   const focusSensitivity = useRef(false);
   const panelToggle = useRef<HTMLButtonElement>(null);
+  const trimToggle = useRef<HTMLButtonElement>(null);
   /** The note the edit popover is open on, and the button it opened from. */
   const [popover, setPopover] = useState<{ noteId: string; anchor: HTMLElement } | null>(null);
   /**
@@ -592,13 +645,21 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
   const dismissed = dismissedFor.warnings === take?.warnings ? dismissedFor.kinds : NONE_DISMISSED;
   /** The status line last shown on this visit (see TabStatusLine). */
   const lastStatusLine = useRef<string | null>(null);
-  const notes = tab?.notes;
+  // The notes the trim leaves visible (story "Trim"): all the screen renders, counts and plays.
+  const allNotes = tab?.notes;
+  const trimStartMs = take?.trimStartMs ?? 0;
+  const trimEndMs = take?.trimEndMs ?? null;
+  const notes = useMemo(
+    () => (allNotes ? visibleNotes(allNotes, { trimStartMs, trimEndMs }) : undefined),
+    [allNotes, trimStartMs, trimEndMs],
+  );
   const labels = useMemo(() => (notes ? noteLabels(notes) : []), [notes]);
   // `take` is set whenever the tab is shown; checked here too so the render below can use it.
   const showTab = isTabShown(snapshot) && !!tab && !!take;
   const playback = usePlayback({
     takeId,
     take: missing ? null : take,
+    // The cursor follows the visible notes only.
     notes: notes ?? null,
     ...(readAudio ? { readAudio } : {}),
   });
@@ -627,7 +688,9 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
         const [message, politeness] = editAnnouncement(event);
         announce(message, politeness);
         // A failed edit takes the outline away; an edit that changed nothing leaves it.
-        if (event.kind === 'failed' || event.kind === 'reanalysed') clearRefit();
+        if (event.kind === 'failed' || event.kind === 'reanalysed' || event.kind === 'trimmed') {
+          clearRefit();
+        }
         if (event.kind === 'edit' && event.refingered) {
           // A new re-fit replaces the outline (none: it goes); its news follows the edit's.
           showRefit(event.refingered);
@@ -684,8 +747,12 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
   const showToolbar = !missing && analysis.kind === 'idle' && !!tab && !!take;
   /** Whether edits apply: the tab is shown and no re-analysis runs. */
   const editable = showTab && reanalysis === null;
-  // The panel stays open while a re-analysis runs: its progress and Cancel are there.
-  const showPanel = showToolbar && (panelOpen || reanalysis !== null);
+  const trimRun = reanalysis !== null && reanalysis.trim === true;
+  // The panel stays open while a re-analysis runs: its progress and Cancel are there; the strip
+  // likewise while a trim runs.
+  const showPanel = showToolbar && !trimRun && (openPanel === 'settings' || reanalysis !== null);
+  const showTrim = showToolbar && (trimRun || (openPanel === 'trim' && reanalysis === null));
+  const audio = hasAudio(snapshot);
   useLayoutEffect(() => {
     if (!focusSensitivity.current || !showPanel) return;
     focusSensitivity.current = false;
@@ -763,7 +830,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
         </button>
       </div>
     );
-  } else if (analysis.kind === 'idle' && tab && take && tab.notes.length === 0) {
+  } else if (analysis.kind === 'idle' && tab && take && notes?.length === 0) {
     body = (
       <div className={tabStyles.noNotes} data-testid="tab-no-notes">
         <h2 className={tabStyles.noNotesTitle}>{strings['tab.noNotes']}</h2>
@@ -781,7 +848,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
                   return;
                 }
                 focusSensitivity.current = true;
-                setPanelOpen(true);
+                setOpenPanel('settings');
               }}
             >
               {strings['tab.analysisSettings']}
@@ -790,7 +857,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
         </ul>
       </div>
     );
-  } else if (analysis.kind === 'idle' && tab && take && tab.notes.length > 0) {
+  } else if (analysis.kind === 'idle' && tab && take && notes && notes.length > 0) {
     body = (
       <>
         <button
@@ -811,7 +878,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
         <div className={tabStyles.systems}>
           <TabArea
             id={TAB_AREA_ID}
-            notes={tab.notes}
+            notes={notes}
             labels={labels}
             countInBpm={barLines ? take.countInBpm : undefined}
             selectedNoteId={selectedNoteId}
@@ -832,7 +899,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
     );
   }
   const popoverNote =
-    showTab && popover ? (tab.notes.find((n) => n.id === popover.noteId) ?? null) : null;
+    showTab && popover ? (notes?.find((n) => n.id === popover.noteId) ?? null) : null;
   // A popover whose note went away (an undo, a re-analysis) stays closed if the note comes back;
   // a re-analysis starting closes it too (its edits would do nothing).
   if (popover !== null && (popoverNote === null || reanalysis !== null)) setPopover(null);
@@ -870,7 +937,7 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
       {!missing && take && (
         <TakeWarnings
           take={take}
-          notes={showToolbar && tab ? tab.notes : null}
+          notes={showToolbar && notes ? notes : null}
           dismissed={dismissed}
           onDismiss={(kind) =>
             setDismissedFor({ warnings: take.warnings, kinds: new Set(dismissed).add(kind) })
@@ -938,6 +1005,24 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
             disabled={!editable || selectedNoteId === null}
             onClick={() => void session.deleteSelected()}
           />
+          <ToolButton
+            buttonRef={trimToggle}
+            icon={<TrimIcon className={tabStyles.toolIcon} />}
+            label={strings['tab.trim']}
+            tooltip={
+              !audio
+                ? strings['tab.audioDeleted']
+                : trimRun
+                  ? strings['tab.busyTrimming']
+                  : reanalysis !== null
+                    ? strings['tab.busyReanalysing']
+                    : null
+            }
+            disabled={!audio || reanalysis !== null}
+            expanded={showTrim}
+            controls={showTrim ? TRIM_ID : undefined}
+            onClick={() => setOpenPanel(showTrim ? null : 'trim')}
+          />
           {showBarLines && (
             <button
               type="button"
@@ -949,37 +1034,54 @@ export function Tab({ takeId, createSession, settings = settingsSession, readAud
               {strings['tab.barLines']}
             </button>
           )}
-          <button
-            ref={panelToggle}
-            type="button"
-            className={`${buttons.secondary} ${buttons.toggle} ${tabStyles.toolButton}`}
-            aria-expanded={showPanel}
-            aria-controls={showPanel ? PANEL_ID : undefined}
+          <ToolButton
+            buttonRef={panelToggle}
+            icon={<SettingsIcon className={tabStyles.toolIcon} />}
+            label={strings['tab.analysisSettings']}
+            // While a trim runs its strip stays open, so the panel cannot open.
+            tooltip={trimRun ? strings['tab.busyTrimming'] : null}
+            disabled={trimRun}
+            expanded={showPanel}
+            controls={showPanel ? PANEL_ID : undefined}
             // While a re-analysis runs the panel stays open: its progress and Cancel are there.
-            onClick={() => setPanelOpen(reanalysis !== null || !showPanel)}
-          >
-            <SettingsIcon className={tabStyles.toolIcon} />
-            {strings['tab.analysisSettings']}
-          </button>
+            onClick={() => setOpenPanel(reanalysis !== null || !showPanel ? 'settings' : null)}
+          />
         </div>
       )}
-      {showPanel && tab && take && (
+      {showPanel && notes && take && (
         <AnalysisSettingsPanel
           take={take}
-          tab={tab}
+          notes={notes}
           reanalysis={reanalysis}
-          audio={hasAudio(snapshot)}
+          audio={audio}
           session={session}
           onEscape={() => {
             if (reanalysis !== null) return; // its progress and Cancel stay while it runs
-            setPanelOpen(false);
+            setOpenPanel(null);
             panelToggle.current?.focus();
           }}
         />
       )}
-      {showTab && tab && (
+      {showTrim && notes && take && (
+        <div id={TRIM_ID}>
+          <TrimStrip
+            take={take}
+            lockedShown={notes.some((n) => n.locked)}
+            running={trimRun ? reanalysis : null}
+            onSave={(start, end) => void session.trim(start, end).catch(() => {})}
+            onReset={() => void session.resetTrim().catch(() => {})}
+            onCancel={() => session.cancelReanalysis()}
+            onEscape={() => {
+              setOpenPanel(null);
+              trimToggle.current?.focus();
+            }}
+            {...(loadPeaks ? { loadPeaks } : {})}
+          />
+        </div>
+      )}
+      {showTab && notes && (
         <TabStatusLine
-          notes={tab.notes}
+          notes={notes}
           lastLineRef={lastStatusLine}
           onNextToCheck={() => {
             session.selectNextFlagged();

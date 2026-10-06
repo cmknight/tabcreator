@@ -132,6 +132,8 @@ function mockSession(initial: Snap) {
     confirm: vi.fn(() => Promise.resolve()),
     setSettings: vi.fn(() => Promise.resolve()),
     reanalyse: vi.fn(() => Promise.resolve()),
+    trim: vi.fn(() => Promise.resolve()),
+    resetTrim: vi.fn(() => Promise.resolve()),
     cancelReanalysis: vi.fn(),
     onEditEvent: vi.fn((listener: (event: EditEvent) => void) => {
       editListeners.add(listener);
@@ -537,6 +539,14 @@ describe('Tab screen analysis states', () => {
       act(() => vi.advanceTimersByTime(REFIT_FADE_MS));
       expect(refitted()).toEqual([]);
       expect(button('n1').className).not.toMatch(/refit/);
+    });
+
+    it('a trim committing clears the outline (story "Trim")', () => {
+      const { edit } = setup();
+      edit(moved(['n1']));
+      expect(refitted()).toEqual([['n1', 'true']]);
+      edit({ kind: 'trimmed', reset: false, notes: 4 });
+      expect(refitted()).toEqual([]);
     });
 
     it('one moved: "1 nearby note re-fingered"', () => {
@@ -1038,7 +1048,7 @@ describe('Tab screen tab area, header and selection', () => {
     render(<Tab takeId="t1" createSession={create} />);
     const toolbar = screen.getByRole('toolbar', { name: 'Tab tools' });
     const names = [...toolbar.querySelectorAll('button')].map((b) => b.textContent);
-    expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete', 'Analysis settings']);
+    expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete', 'Trim', 'Analysis settings']);
     const insert = screen.getByRole('button', { name: 'Insert' }) as HTMLButtonElement;
     const del = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement;
     expect(insert.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
@@ -1209,7 +1219,7 @@ describe('Tab screen tab area, header and selection', () => {
         expect(screen.getByRole('heading', { name: 'No notes found' })).toBeTruthy();
         const toolbar = screen.getByRole('toolbar', { name: 'Tab tools' });
         const names = [...toolbar.querySelectorAll('button')].map((b) => b.textContent);
-        expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete', 'Analysis settings']);
+        expect(names).toEqual(['Undo', 'Redo', 'Insert', 'Delete', 'Trim', 'Analysis settings']);
         const expected: [string, string][] = [
           ['Undo', 'Nothing to undo'],
           ['Redo', 'Nothing to redo'],
@@ -1255,9 +1265,11 @@ describe('Tab screen tab area, header and selection', () => {
   // Story "Analysis settings and re-analysis" (US-4.6).
   describe('analysis settings and re-analysis', () => {
     const toggle = () =>
-      screen
-        .getByRole('toolbar', { name: 'Tab tools' })
-        .querySelector<HTMLElement>('button[aria-expanded]')!;
+      [
+        ...screen
+          .getByRole('toolbar', { name: 'Tab tools' })
+          .querySelectorAll<HTMLElement>('button[aria-expanded]'),
+      ].find((b) => b.textContent === 'Analysis settings')!;
     const panel = () => screen.queryByRole('region', { name: 'Analysis settings' });
     const reanalyseButton = () =>
       screen.getByRole('button', { name: 'Re-analyse' }) as HTMLButtonElement;
@@ -1528,6 +1540,213 @@ describe('Tab screen tab area, header and selection', () => {
       expect(panel()).not.toBeNull();
       expect(document.activeElement).toBe(screen.getByRole('slider', { name: 'Sensitivity' }));
       expect(reanalyseButton().disabled).toBe(false);
+    });
+  });
+
+  // Story "Trim": the Trim toggle, the one-panel rule, the strip's commands, hidden notes.
+  describe('trim', () => {
+    const toolbarButton = (name: string) =>
+      [...screen.getByRole('toolbar', { name: 'Tab tools' }).querySelectorAll('button')].find(
+        (b) => b.textContent === name,
+      )!;
+    const trimToggle = () => toolbarButton('Trim');
+    const strip = () => screen.queryByRole('region', { name: 'Trim' });
+    const settingsPanel = () => screen.queryByRole('region', { name: 'Analysis settings' });
+    const noPeaks = () => new Promise<never>(() => {});
+    const open = (over: Partial<TakeSnapshot> = {}) =>
+      mockSession({
+        take: TAKE,
+        tab: TAB40,
+        loading: false,
+        analysis: { kind: 'idle' },
+        ...over,
+      });
+
+    it('the toggle sits before Bar lines, with the trim icon; it opens and closes the strip', () => {
+      const { create } = open({ take: { ...TAKE, countInBpm: 100 } });
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      const toolbar = screen.getByRole('toolbar', { name: 'Tab tools' });
+      const names = [...toolbar.querySelectorAll('button')].map((b) => b.textContent);
+      expect(names.slice(-3)).toEqual(['Trim', 'Bar lines', 'Analysis settings']);
+      expect(trimToggle().querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+      expect(trimToggle().className).toContain('toggle');
+      expect(trimToggle().getAttribute('aria-expanded')).toBe('false');
+      fireEvent.click(trimToggle());
+      expect(trimToggle().getAttribute('aria-expanded')).toBe('true');
+      expect(strip()).toBeTruthy();
+      expect(document.getElementById(trimToggle().getAttribute('aria-controls')!)).toBeTruthy();
+      // Save is the screen's one primary button while the strip is open.
+      expect(document.querySelectorAll('button[class*="primary"]')).toHaveLength(1);
+      fireEvent.click(trimToggle());
+      expect(strip()).toBeNull();
+    });
+
+    it('one panel at a time: opening one closes the other', () => {
+      const { create } = open();
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      fireEvent.click(toolbarButton('Analysis settings'));
+      expect(settingsPanel()).toBeTruthy();
+      fireEvent.click(trimToggle());
+      expect(settingsPanel()).toBeNull();
+      expect(strip()).toBeTruthy();
+      fireEvent.click(toolbarButton('Analysis settings'));
+      expect(strip()).toBeNull();
+      expect(settingsPanel()).toBeTruthy();
+    });
+
+    it('no audio: disabled with "Audio deleted"; an unknown raw file counts as audio', () => {
+      const { create, set } = open({ take: { ...TAKE, audioMime: null }, hasRaw: false });
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      expect(trimToggle().disabled).toBe(true);
+      expect(trimToggle().parentElement!.getAttribute('title')).toBe('Audio deleted');
+      set({ hasRaw: null });
+      expect(trimToggle().disabled).toBe(false);
+    });
+
+    it('disabled while a re-analysis runs; enabled in No notes found', () => {
+      const { create, set } = open({ reanalysis: { progress: 0.2 } });
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      expect(trimToggle().disabled).toBe(true);
+      expect(trimToggle().parentElement!.getAttribute('title')).toBe('Busy re-analysing');
+      set({ reanalysis: null, tab: { ...TAB40, notes: [] } });
+      expect(screen.getByRole('heading', { name: 'No notes found' })).toBeTruthy();
+      expect(trimToggle().disabled).toBe(false);
+    });
+
+    it('Save calls trim; a trim run shows in the strip (the settings toggle disabled); Cancel cancels', () => {
+      const { create, session, set } = open();
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      fireEvent.click(trimToggle());
+      const start = screen.getByRole('slider', { name: 'Trim start' });
+      fireEvent.keyDown(start, { key: 'ArrowRight', shiftKey: true });
+      fireEvent.click(screen.getByRole('button', { name: strings['tab.trimSave'] }));
+      expect(session.trim).toHaveBeenCalledWith(100, 4000);
+      set({ reanalysis: { progress: 0.3, trim: true } });
+      expect(strip()).toBeTruthy();
+      expect(settingsPanel()).toBeNull();
+      expect(screen.getByTestId('trim-progress')).toBeTruthy();
+      expect(toolbarButton('Analysis settings').disabled).toBe(true);
+      expect(toolbarButton('Analysis settings').parentElement!.getAttribute('title')).toBe(
+        'Busy trimming',
+      );
+      expect(trimToggle().parentElement!.getAttribute('title')).toBe('Busy trimming');
+      fireEvent.click(screen.getByRole('button', { name: strings['tab.cancel'] }));
+      expect(session.cancelReanalysis).toHaveBeenCalledTimes(1);
+    });
+
+    it('a shown locked note: Save asks first with "Trim and re-analyse"', () => {
+      const locked = {
+        ...TAB40,
+        notes: TAB40.notes.map((n, i) => (i === 3 ? { ...n, locked: true } : n)),
+      };
+      const { create, session } = open({ tab: locked });
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      fireEvent.click(trimToggle());
+      fireEvent.keyDown(screen.getByRole('slider', { name: 'Trim start' }), { key: 'End' });
+      fireEvent.click(screen.getByRole('button', { name: strings['tab.trimSave'] }));
+      expect(session.trim).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: strings['tab.trimConfirm'] }));
+      expect(session.trim).toHaveBeenCalledWith(3500, 4000);
+    });
+
+    it('a locked note hidden by the trim does not ask; Reset trim calls resetTrim', () => {
+      // Note 3 (1125 ms) is locked but before the 2 s trim start.
+      const locked = {
+        ...TAB40,
+        notes: TAB40.notes.map((n, i) => (i === 3 ? { ...n, locked: true } : n)),
+      };
+      const { create, session } = open({ tab: locked, take: { ...TAKE, trimStartMs: 2000 } });
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      fireEvent.click(trimToggle());
+      fireEvent.keyDown(screen.getByRole('slider', { name: 'Trim start' }), { key: 'Home' });
+      fireEvent.click(screen.getByRole('button', { name: strings['tab.trimSave'] }));
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(session.trim).toHaveBeenCalledWith(0, 4000);
+      fireEvent.click(screen.getByRole('button', { name: strings['tab.trimReset'] }));
+      expect(session.resetTrim).toHaveBeenCalledTimes(1);
+    });
+
+    it('Esc in the strip closes it and returns focus to the toggle', () => {
+      const { create } = open();
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      fireEvent.click(trimToggle());
+      const start = screen.getByRole('slider', { name: 'Trim start' });
+      act(() => start.focus());
+      fireEvent.keyDown(start, { key: 'Escape' });
+      expect(strip()).toBeNull();
+      expect(document.activeElement).toBe(trimToggle());
+    });
+
+    it('hidden notes are not rendered, counted or listed', () => {
+      // Notes at 0, 375, … ms: a trim of 1000..3000 leaves 3 (1125) to 7 (2625) and the 12th
+      // note (4250) out too.
+      const { create } = open({ take: { ...TAKE, trimStartMs: 1000, trimEndMs: 3000 } });
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      const shown = [...document.querySelectorAll('[data-note-id]')].map((b) =>
+        b.getAttribute('data-note-id'),
+      );
+      expect(shown).toEqual(['n3', 'n4', 'n5', 'n6', 'n7']);
+      expect(screen.getByTestId('tab-status-line').textContent).toContain('5 notes');
+    });
+
+    it('every note hidden: No notes found', () => {
+      const { create } = open({ take: { ...TAKE, trimStartMs: 20_000 } });
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      expect(screen.getByRole('heading', { name: 'No notes found' })).toBeTruthy();
+    });
+
+    it('the Analysis settings panel: a locked note hidden by the trim asks no Confirm', () => {
+      // Note 3 (1125 ms) is the only locked note, before the 2 s trim start.
+      const locked = {
+        ...TAB40,
+        notes: TAB40.notes.map((n, i) => (i === 3 ? { ...n, locked: true } : n)),
+      };
+      const { create, session } = open({ tab: locked, take: { ...TAKE, trimStartMs: 2000 } });
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      fireEvent.click(toolbarButton('Analysis settings'));
+      fireEvent.click(screen.getByRole('button', { name: 'Re-analyse' }));
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(session.reanalyse).toHaveBeenCalledTimes(1);
+    });
+
+    it('Every note uncertain counts the visible notes only', () => {
+      // Every note from 2 s on is flagged; the hidden earlier ones are not.
+      const tab = {
+        ...TAB40,
+        notes: TAB40.notes.map((n) => ({ ...n, lowConfidence: n.startMs >= 2000 })),
+      };
+      const { create, set } = open({ tab, take: { ...TAKE, trimStartMs: 2000 } });
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      expect(screen.getByText(strings['tab.allUncertain'])).toBeTruthy();
+      set({ take: TAKE });
+      expect(screen.queryByText(strings['tab.allUncertain'])).toBeNull();
+    });
+
+    it('a trim cancelled or failed is announced as a trim', () => {
+      const { create, edit } = open();
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      edit({ kind: 'reanalyseCancelled', trim: true });
+      edit({ kind: 'reanalyseFailed', code: 'analysis-failed', trim: true });
+      edit({ kind: 'reanalyseFailed', code: 'audio-missing', trim: true });
+      expect(vi.mocked(announce).mock.calls).toEqual([
+        ['Trim cancelled', 'polite'],
+        ['Trim failed — try again', 'assertive'],
+        [strings['tab.noAudioToAnalyse'], 'assertive'],
+      ]);
+    });
+
+    it('announces a trim and a reset; Undo names the trim', () => {
+      const { create, edit } = open({ undoLabel: { kind: 'trim' } });
+      render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+      expect(toolbarButton('Undo').parentElement!.getAttribute('title')).toBe('Undo trim');
+      edit({ kind: 'trimmed', reset: false, notes: 12 });
+      edit({ kind: 'trimmed', reset: true, notes: 1 });
+      edit({ kind: 'undo', label: { kind: 'resetTrim' } });
+      expect(vi.mocked(announce).mock.calls).toEqual([
+        ['Trimmed: 12 notes', 'polite'],
+        ['Trim reset: 1 note', 'polite'],
+        ['Undid Reset trim', 'polite'],
+      ]);
     });
   });
 
