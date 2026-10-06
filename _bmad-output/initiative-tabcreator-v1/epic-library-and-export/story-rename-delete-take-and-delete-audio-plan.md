@@ -3,7 +3,7 @@ title: 'Rename, delete take and delete audio'
 type: 'feature'
 ticket: '2'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: 'f2790ef4ea07029ef668b8c12b81e34aa8203092'
 route: 'full'
 route_source: 'auto'
