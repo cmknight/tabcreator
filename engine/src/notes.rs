@@ -903,6 +903,43 @@ mod tests {
         }
     }
 
+    /// An unpicked (`PitchChange`, not `legato`) candidate at `start_ms`, 200 ms long.
+    fn unpicked(start_ms: i64, midi: i32) -> Candidate {
+        Candidate {
+            source: OnsetSource::PitchChange,
+            ..n(start_ms, midi, 0.9)
+        }
+    }
+
+    fn ring_over_starts(candidates: Vec<Candidate>) -> Vec<i64> {
+        ring_over(candidates)
+            .iter()
+            .map(|cand| cand.start_ms as i64)
+            .collect()
+    }
+
+    #[test]
+    fn ring_over_window_ends_at_exactly_the_max_gap() {
+        // A ends at 200 ms; B is picked in between.
+        let gap = RING_OVER_MAX_GAP_MS as i64;
+        let at_max = vec![n(0, 60, 0.9), n(250, 64, 0.9), unpicked(200 + gap, 60)];
+        assert_eq!(ring_over_starts(at_max), vec![0, 250]);
+        let one_past = vec![n(0, 60, 0.9), n(250, 64, 0.9), unpicked(200 + gap + 1, 60)];
+        assert_eq!(ring_over_starts(one_past), vec![0, 250, 200 + gap + 1]);
+    }
+
+    #[test]
+    fn ring_over_drops_each_repeat_while_the_middle_note_stays() {
+        // A B A′ A″: after A′ is dropped, B is still the note before and A the one two back.
+        let notes = vec![
+            n(0, 60, 0.9),
+            n(250, 64, 0.9),
+            unpicked(500, 60),
+            unpicked(600, 60),
+        ];
+        assert_eq!(ring_over_starts(notes), vec![0, 250]);
+    }
+
     fn midis(notes: &[DetectedNote]) -> Vec<i32> {
         notes.iter().map(|note| note.midi).collect()
     }

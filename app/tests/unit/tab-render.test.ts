@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTabLayouter, layoutTab, toText, type TabLayout } from '../../src/model/tab-render';
+import { layoutTab, toText, type TabLayout } from '../../src/model/tab-render';
 import type { Note, StringNo, Take } from '../../src/model/types';
 
 let nextId = 0;
@@ -431,11 +431,10 @@ describe('layoutTab with a previous layout (story "500-note edit latency")', () 
     }
   });
 
-  it('createTabLayouter remembers its last layout', () => {
-    const layout = createTabLayouter();
+  it('with the last layout as previous, every unchanged system keeps its identity', () => {
     const before = notes();
-    const first = layout(before, 40);
-    const second = layout([...before], 40);
+    const first = layoutTab(before, 40);
+    const second = layoutTab([...before], 40, undefined, first);
     second.systems.forEach((system, i) => expect(system).toBe(first.systems[i]));
   });
 });

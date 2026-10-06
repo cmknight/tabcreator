@@ -21,6 +21,7 @@ deferred:
       `merge` may set `legato` on a picked note on another string, which would stop ring-over firing where it is needed.
     evidence: |-
       Unverified: ring-over fires on no synth fixture before or after 8.9. Settle by asserting that ringing_overlap's middle onsets come out with legato == false, or with a real recording of a ringing open string.
+      Refactor sweep (2026-10-05): engine/tests/onset_fixtures.rs `ringing_overlap_middle_onsets_are_not_legato` passes on the current engine (all 11 notes after the first have an onset, none legato), so the synth fixture does not show the risk. A real recording of a ringing open string remains for the engine owner.
     location: >-
       engine/src/onset.rs merge; engine/src/notes.rs ring_over
     severity: medium (unverified)

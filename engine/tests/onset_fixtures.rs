@@ -452,3 +452,40 @@ fn onset_fixtures() {
         failures.join("\n")
     );
 }
+
+/// SM5 (8.9 deferral): every note of `ringing_overlap` is picked on another string than the note
+/// before it, so every note with a note before it must have an onset that comes out with
+/// `legato == false`; a legato onset there would switch ring-over off exactly where strings ring
+/// on. Each such note must have an onset, so the check is never vacuous. The 30 ms match
+/// tolerance is the one the other picked-note rows use (`repeated_notes`, `legato_slurs`, `trill`):
+/// notes are 400 ms apart, so no onset can match a neighbour's note.
+#[test]
+fn ringing_overlap_middle_onsets_are_not_legato() {
+    let r = Row::new("ringing_overlap", 30.0);
+    let after_first = 1..r.truth.len();
+    assert!(
+        !after_first.is_empty(),
+        "ringing_overlap: fewer than 2 notes"
+    );
+    let missed: Vec<f64> = after_first
+        .clone()
+        .filter(|&t| r.matches[t].is_none())
+        .map(|t| r.truth[t])
+        .collect();
+    assert!(
+        missed.is_empty(),
+        "ringing_overlap: notes with no onset: {missed:?}\n{HEADER}\n{}",
+        r.line()
+    );
+    let legato: Vec<String> = after_first
+        .filter_map(|t| r.matches[t].map(|d| (t, d)))
+        .filter(|&(_, d)| r.detected.onsets[d].legato)
+        .map(|(t, d)| format!("{:.0} ms ({:?})", r.truth[t], r.detected.onsets[d].source))
+        .collect();
+    assert!(
+        legato.is_empty(),
+        "ringing_overlap: onsets marked legato: {}\n{HEADER}\n{}",
+        legato.join(", "),
+        r.line()
+    );
+}

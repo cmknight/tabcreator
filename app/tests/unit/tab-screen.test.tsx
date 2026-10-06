@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CommandLabel } from '../../src/model/edit-history';
+import type { CommandLabel, EditLabel } from '../../src/model/edit-history';
 import type { AppErrorCode } from '../../src/model/errors';
 import type { Note, Tab as TabRecord, Take } from '../../src/model/types';
 import { layoutTab } from '../../src/model/tab-render';
@@ -11,7 +11,14 @@ import {
   type TakeSnapshot,
 } from '../../src/session/take-session';
 import { activePlayback } from '../../src/session/playback';
-import { noteLabels, TabArea } from '../../src/ui/components/TabArea';
+import {
+  noteLabels,
+  sameSystemView,
+  SYSTEM_VIEW_COMPARE,
+  TabArea,
+  type SystemViewProps,
+} from '../../src/ui/components/TabArea';
+import styles from '../../src/ui/components/TabArea.module.css';
 import { REFIT_FADE_MS, REFIT_HOLD_MS, Tab } from '../../src/ui/screens/Tab';
 import { announce } from '../../src/ui/a11y/announcer';
 import { reloadOrExplain } from '../../src/ui/reload-or-explain';
@@ -484,7 +491,7 @@ describe('Tab screen analysis states', () => {
       updatedAt: TAKE.updatedAt,
       deletedStartMs: [],
     };
-    const moved = (refingered: string[], label: CommandLabel = { kind: 'setFret', fret: 5 }) =>
+    const moved = (refingered: string[], label: EditLabel = { kind: 'setFret', fret: 5 }) =>
       ({ kind: 'edit', label, string: 3, fret: 5, refingered }) as const;
     const refitted = () =>
       [...document.querySelectorAll('[data-refit]')].map((el) => [
@@ -1990,6 +1997,86 @@ describe('Tab screen tab area, header and selection', () => {
       expect(latest.onNoteClick).toHaveBeenCalledWith(target);
       expect(first.onSelect).not.toHaveBeenCalled();
       expect(first.onNoteClick).not.toHaveBeenCalled();
+    });
+
+    it("sameSystemView compares every per-note prop on the system's notes only", () => {
+      const layout = layoutTab(notes, 50, TAKE.countInBpm);
+      expect(layout.systems.length, 'a note outside system 1').toBeGreaterThanOrEqual(2);
+      const system = layout.systems[0]!;
+      const inside = system.cells[0]!.noteId;
+      const outside = layout.systems.at(-1)!.cells[0]!.noteId;
+      const base: SystemViewProps = {
+        system,
+        index: 0,
+        count: layout.systems.length,
+        metrics: { charWidth: 9.6, lineHeight: 21.6, widthChars: 50 },
+        labelById: new Map(noteLabels(notes).map((l) => [l.id, l.label])),
+        flagged: new Set(),
+        selectedNoteId: null,
+        tabStop: null,
+        playingNoteId: null,
+        refitIds: new Set(),
+        refitFading: false,
+        handlers: {} as SystemViewProps['handlers'],
+      };
+      const changes = (id: string): Partial<SystemViewProps>[] => [
+        { labelById: new Map([...base.labelById, [id, 'other']]) },
+        { flagged: new Set([id]) },
+        { selectedNoteId: id },
+        { tabStop: id },
+        { playingNoteId: id },
+        { refitIds: new Set([id]) },
+      ];
+      expect(sameSystemView(base, { ...base })).toBe(true);
+      for (const change of changes(inside)) {
+        expect(sameSystemView(base, { ...base, ...change })).toBe(false);
+      }
+      for (const change of changes(outside)) {
+        expect(sameSystemView(base, { ...base, ...change })).toBe(true);
+      }
+      // The fade matters only for a note with the outline.
+      const refit = { ...base, refitIds: new Set([inside]) };
+      expect(sameSystemView(refit, { ...refit, refitFading: true })).toBe(false);
+      expect(sameSystemView(base, { ...base, refitFading: true })).toBe(true);
+      for (const key of ['system', 'index', 'count', 'metrics', 'handlers'] as const) {
+        expect(sameSystemView(base, { ...base, [key]: {} })).toBe(false);
+      }
+      // Every prop has a comparison (the type requires it; this keeps the list honest at runtime).
+      expect(Object.keys(SYSTEM_VIEW_COMPARE).sort()).toEqual(Object.keys(base).sort());
+    });
+
+    it('the re-fit outline and data-refit are on exactly the refitIds notes, with flag and selection', () => {
+      const ns = notes
+        .slice(0, 6)
+        .map((n) => ({ ...n, lowConfidence: n.id === 'n1' || n.id === 'n4' }));
+      const labels = noteLabels(ns);
+      const area = (refitFading: boolean) => (
+        <TabArea
+          notes={ns}
+          labels={labels}
+          selectedNoteId="n1"
+          onSelect={vi.fn()}
+          refitIds={new Set(['n1', 'n2'])}
+          refitFading={refitFading}
+        />
+      );
+      const classes = (id: string) => noteButton(id).className.split(' ');
+      const view = render(area(false));
+      const check = (fading: boolean) => {
+        for (const n of ns) {
+          const refit = n.id === 'n1' || n.id === 'n2';
+          const el = noteButton(n.id);
+          expect(el.getAttribute('data-refit')).toBe(refit ? (fading ? 'fading' : 'true') : null);
+          expect(classes(n.id).includes(styles.refit!)).toBe(refit);
+          expect(classes(n.id).includes(styles.refitFading!)).toBe(refit && fading);
+          expect(classes(n.id).includes(styles.check!)).toBe(n.lowConfidence);
+          expect(classes(n.id).includes(styles.note!)).toBe(true);
+          expect(el.getAttribute('aria-pressed')).toBe(String(n.id === 'n1'));
+        }
+      };
+      check(false);
+      view.rerender(area(true));
+      check(true);
     });
   });
 });

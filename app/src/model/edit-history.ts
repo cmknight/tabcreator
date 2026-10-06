@@ -96,21 +96,24 @@ export type EngineResult = readonly (FretPositionResult | null)[];
  * What a command did, for announcements and (story 8.4) the Undo/Redo tooltips. Structured, not
  * text: the UI words it through `ui/strings.ts` (spine AD-12).
  */
-export type CommandLabel =
+export type CommandLabel = EditLabel | SnapshotLabel;
+
+/** The label an edit command (and its `edit` event) carries. */
+export type EditLabel =
   | { kind: 'setFret'; fret: number }
   | { kind: 'moveString'; string: StringNo; fret: number }
   | { kind: 'delete' }
   | { kind: 'insert' }
-  | { kind: 'confirm' }
-  | { kind: 'reanalyse' }
-  | { kind: 'trim' }
-  | { kind: 'resetTrim' };
+  | { kind: 'confirm' };
+
+/** The label of a snapshot step (a re-analysis, a trim or a trim reset): never an edit command. */
+export type SnapshotLabel = { kind: 'reanalyse' } | { kind: 'trim' } | { kind: 'resetTrim' };
 
 export interface EditCommand {
   /** The note the command edits; the selection follows it on undo and redo. */
   readonly target: string;
   /** The label of this command applied to `state`. */
-  label(state: EditState): CommandLabel;
+  label(state: EditState): EditLabel;
   plan(state: EditState): EngineRequest[];
   /** The next state; returns `state`'s own arrays where nothing changed. */
   reduce(state: EditState, results: readonly EngineResult[]): EditState;
@@ -196,7 +199,7 @@ interface Edited {
  */
 function refitting(
   target: string,
-  label: (state: EditState) => CommandLabel,
+  label: (state: EditState) => EditLabel,
   edit: (state: EditState) => Edited | null,
   selectAfter?: EditCommand['selectAfter'],
 ): EditCommand {

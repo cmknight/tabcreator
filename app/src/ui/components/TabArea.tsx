@@ -34,9 +34,11 @@
 // with `refitFading` it fades out. The screen owns the set and its timer.
 //
 // Story "500-note edit latency" (CAP-14, AD-17): the layout keeps the systems whose notes did not
-// change (`createTabLayouter`), and each system renders as a memoised `SystemView` that renders
-// again only when its system, the metrics, or one of its notes' label, flag, selection, tab
-// stop, playing or re-fit state changed. Its event handlers are stable and read the latest props.
+// change (`layoutTab`'s `previous`: the last committed layout), and each system renders as a
+// memoised `SystemView` that renders again only when its system, the metrics, or one of its
+// notes' label, flag, selection, tab stop, playing or re-fit state changed
+// (`SYSTEM_VIEW_COMPARE` lists how each prop is compared). Its event handlers are stable and
+// read the latest props.
 
 import {
   memo,
@@ -48,7 +50,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { midiName, playedOrder } from '../../model/notes';
-import { createTabLayouter, type TabSystem } from '../../model/tab-render';
+import { layoutTab, type TabLayout, type TabSystem } from '../../model/tab-render';
 import type { Note } from '../../model/types';
 import { isOverlayOpen, subscribeOverlay } from '../a11y/overlays';
 import { TEXT_FIELD } from '../a11y/selectors';
@@ -93,8 +95,17 @@ export function noteLabels(notes: readonly Note[]): NoteLabel[] {
   });
 }
 
+/** A note's re-fit outline: shown, or fading out. */
+type RefitState = 'shown' | 'fading';
+
+/**
+ * A re-fit state's `data-refit` value. `'true'` and `'fading'` are a fixed contract: the unit
+ * and e2e tests select on them, so renaming `RefitState` must not change them.
+ */
+const REFIT_ATTR: Record<RefitState, string> = { shown: 'true', fading: 'fading' };
+
 /** A note button's classes: the check style when flagged, the re-fit outline (and its fade). */
-function noteClass(flagged: boolean, refit: 'true' | 'fading' | null): string {
+function noteClass(flagged: boolean, refit: RefitState | null): string {
   return [
     styles.note,
     flagged && styles.check,
@@ -215,11 +226,22 @@ export function TabArea({
     };
   }, []);
 
-  const [layouter] = useState(createTabLayouter);
+  // The last committed layout, kept after each commit (not during render) and passed to
+  // `layoutTab` as `previous`, so the systems whose notes did not change keep their identity.
+  // Reading it during render is safe: `previous` changes only which system objects the layout
+  // reuses, never what it lays out, and a discarded render never becomes `previous`.
+  const committedLayout = useRef<TabLayout | null>(null);
   const layout = useMemo(
-    () => (metrics ? layouter(notes, metrics.widthChars, countInBpm) : null),
-    [layouter, notes, metrics, countInBpm],
+    () =>
+      metrics
+        ? // eslint-disable-next-line react-hooks/refs
+          layoutTab(notes, metrics.widthChars, countInBpm, committedLayout.current)
+        : null,
+    [notes, metrics, countInBpm],
   );
+  useLayoutEffect(() => {
+    if (layout) committedLayout.current = layout;
+  }, [layout]);
   const labelById = useMemo(() => new Map(labels.map((l) => [l.id, l.label])), [labels]);
   const flagged = useMemo(
     () => new Set(notes.filter((n) => n.lowConfidence).map((n) => n.id)),
@@ -393,7 +415,7 @@ interface NoteHandlers {
   doubleClick(noteId: string, el: HTMLButtonElement): void;
 }
 
-interface SystemViewProps {
+export interface SystemViewProps {
   system: TabSystem;
   index: number;
   count: number;
@@ -408,39 +430,52 @@ interface SystemViewProps {
   handlers: NoteHandlers;
 }
 
-/** A note's re-fit outline state: shown, fading, or none (null). */
+/** A note's re-fit outline state, or null when it has none. */
 function refitState(
   noteId: string,
   refitIds: ReadonlySet<string>,
   refitFading: boolean,
-): 'true' | 'fading' | null {
-  return refitIds.has(noteId) ? (refitFading ? 'fading' : 'true') : null;
+): RefitState | null {
+  return refitIds.has(noteId) ? (refitFading ? 'fading' : 'shown') : null;
 }
 
 /**
- * Whether a system renders the same for `a` and `b`: the same system, place, metrics and
- * handlers, and the same label, flag, selection, tab stop, playing and re-fit state for each of
- * its notes (the set-wide props may change for notes elsewhere).
+ * How `sameSystemView` compares each prop: `'whole'` by identity, or a function giving what a
+ * note's button shows from it (compared per note of the system, so a set-wide prop may change
+ * for notes elsewhere). Every prop must be listed: a new one fails the type check until it is.
  */
-function sameSystemView(a: SystemViewProps, b: SystemViewProps): boolean {
-  if (
-    a.system !== b.system ||
-    a.index !== b.index ||
-    a.count !== b.count ||
-    a.metrics !== b.metrics ||
-    a.handlers !== b.handlers
-  ) {
-    return false;
-  }
-  return a.system.cells.every(
-    ({ noteId: id }) =>
-      a.labelById.get(id) === b.labelById.get(id) &&
-      a.flagged.has(id) === b.flagged.has(id) &&
-      (id === a.selectedNoteId) === (id === b.selectedNoteId) &&
-      (id === a.tabStop) === (id === b.tabStop) &&
-      (id === a.playingNoteId) === (id === b.playingNoteId) &&
-      refitState(id, a.refitIds, a.refitFading) === refitState(id, b.refitIds, b.refitFading),
-  );
+export const SYSTEM_VIEW_COMPARE: {
+  readonly [K in keyof SystemViewProps]-?: 'whole' | ((p: SystemViewProps, id: string) => unknown);
+} = {
+  system: 'whole',
+  index: 'whole',
+  count: 'whole',
+  metrics: 'whole',
+  handlers: 'whole',
+  labelById: (p, id) => p.labelById.get(id),
+  flagged: (p, id) => p.flagged.has(id),
+  selectedNoteId: (p, id) => id === p.selectedNoteId,
+  tabStop: (p, id) => id === p.tabStop,
+  playingNoteId: (p, id) => id === p.playingNoteId,
+  refitIds: (p, id) => refitState(id, p.refitIds, p.refitFading),
+  refitFading: (p, id) => refitState(id, p.refitIds, p.refitFading),
+};
+
+const COMPARED = Object.entries(SYSTEM_VIEW_COMPARE) as [
+  keyof SystemViewProps,
+  (typeof SYSTEM_VIEW_COMPARE)[keyof SystemViewProps],
+][];
+const WHOLE_PROPS = COMPARED.filter(([, how]) => how === 'whole').map(([key]) => key);
+const PER_NOTE = COMPARED.flatMap(([, how]) => (how === 'whole' ? [] : [how]));
+
+/**
+ * Whether a system renders the same for `a` and `b`: every prop as `SYSTEM_VIEW_COMPARE` says
+ * (the same system, place, metrics and handlers, and the same label, flag, selection, tab stop,
+ * playing and re-fit state for each of its notes).
+ */
+export function sameSystemView(a: SystemViewProps, b: SystemViewProps): boolean {
+  if (WHOLE_PROPS.some((key) => a[key] !== b[key])) return false;
+  return a.system.cells.every(({ noteId: id }) => PER_NOTE.every((f) => f(a, id) === f(b, id)));
 }
 
 /** One system: its six lines and a note button over each note's characters. */
@@ -478,7 +513,7 @@ const SystemView = memo(function SystemView({
               className={noteClass(flagged.has(cell.noteId), refit)}
               data-note-id={cell.noteId}
               data-playing={cell.noteId === playingNoteId ? 'true' : undefined}
-              data-refit={refit ?? undefined}
+              data-refit={refit ? REFIT_ATTR[refit] : undefined}
               aria-label={labelById.get(cell.noteId)}
               aria-pressed={cell.noteId === selectedNoteId}
               tabIndex={cell.noteId === tabStop ? 0 : -1}

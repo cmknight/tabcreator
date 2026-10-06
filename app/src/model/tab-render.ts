@@ -206,22 +206,6 @@ export function layoutTab(
   };
 }
 
-/**
- * A layout function that remembers its last layout and passes it as `layoutTab`'s `previous`,
- * so systems whose notes did not change keep their identity from one call to the next.
- */
-export function createTabLayouter(): (
-  notes: readonly Note[],
-  widthChars: number,
-  countInBpm?: number,
-) => TabLayout {
-  let last: TabLayout | null = null;
-  return (notes, widthChars, countInBpm) => {
-    last = layoutTab(notes, widthChars, countInBpm, last);
-    return last;
-  };
-}
-
 function pad2(n: number): string {
   return String(n).padStart(2, '0');
 }

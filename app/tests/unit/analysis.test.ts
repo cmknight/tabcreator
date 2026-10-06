@@ -901,6 +901,45 @@ describe('reanalyse', () => {
     expect(h.hasStorageListener()).toBe(false);
   });
 
+  it('the take deleted with a re-analysis and a queued run both live: both cancelled, listener released', async () => {
+    const h = harness();
+    const analysis = createAnalysis(h.deps);
+    const rerun = analysis.reanalyse(ANALYSED);
+    const queued = analysis.ensureAnalysed(TAKE);
+    await settle();
+    expect(analysis.isAnalysing()).toBe(true);
+    h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    await expect(rerun).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    await expect(queued).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    expect(analysis.isAnalysing()).toBe(false);
+    expect(analysis.pendingCommit('t1')).toBe(false);
+    expect(h.hasStorageListener()).toBe(false);
+    expect(h.deps.db.commitAnalysis).not.toHaveBeenCalled();
+  });
+
+  it('the take deleted with a re-analysis live and a storage-full result held: both dropped', async () => {
+    let n = 0;
+    const h = harness({
+      commit: () =>
+        n++ === 0
+          ? Promise.reject(new AppError('storage-full', 'quota'))
+          : Promise.reject(new AppError('storage-failed', 'unexpected second commit')),
+    });
+    const analysis = createAnalysis(h.deps);
+    const first = analysis.ensureAnalysed(TAKE);
+    await settle();
+    h.finishAnalyze();
+    await expect(first).rejects.toMatchObject({ code: 'storage-full' });
+    expect(analysis.pendingCommit('t1')).toBe(true);
+    const rerun = analysis.reanalyse(ANALYSED);
+    await settle();
+    h.emit({ type: 'take-deleted', takeId: 't1', writer: 'library-session' });
+    await expect(rerun).rejects.toMatchObject({ code: 'analysis-cancelled' });
+    expect(analysis.pendingCommit('t1')).toBe(false);
+    expect(analysis.isAnalysing()).toBe(false);
+    expect(h.hasStorageListener()).toBe(false);
+  });
+
   it('an engine failure rejects with its code', async () => {
     const h = harness({ take: ANALYSED });
     const done = createAnalysis(h.deps).reanalyse(ANALYSED);

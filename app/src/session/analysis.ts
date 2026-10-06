@@ -185,16 +185,24 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
 
   let unsubscribeStorage: (() => void) | null = null;
 
-  /** Cancels `takeId`'s run unless it is committing; returns whether it did. */
+  /** Cancels `takeId`'s run: its re-analysis if one runs, else its queued run. */
   function cancelRun(takeId: string, reason: string): boolean {
+    return cancelRerun(takeId, reason) || cancelQueued(takeId, reason);
+  }
+
+  /** Cancels `takeId`'s re-analysis, if one runs; returns whether it did. */
+  function cancelRerun(takeId: string, reason: string): boolean {
     const rerun = reruns.get(takeId);
-    if (rerun && !rerun.cancelled) {
-      rerun.cancelled = true;
-      reruns.delete(takeId);
-      deps.engine.cancel(takeId);
-      rerun.abort(new AppError('analysis-cancelled', reason));
-      return true;
-    }
+    if (!rerun || rerun.cancelled) return false;
+    rerun.cancelled = true;
+    reruns.delete(takeId);
+    deps.engine.cancel(takeId);
+    rerun.abort(new AppError('analysis-cancelled', reason));
+    return true;
+  }
+
+  /** Cancels `takeId`'s queued run unless it is committing; returns whether it did. */
+  function cancelQueued(takeId: string, reason: string): boolean {
     const run = runs.get(takeId);
     if (!run || run.state.cancelled || run.state.committing) return false;
     run.state.cancelled = true;
@@ -212,9 +220,12 @@ export function createAnalysis(deps: AnalysisDeps): Analysis {
   const onStorage: StorageListener = (event) => {
     if (event.type !== 'take-deleted') return;
     if (runs.has(event.takeId)) deleted.add(event.takeId);
-    cancelRun(event.takeId, `take ${event.takeId} was deleted`); // a re-analysis first
+    // Both may be live: the re-analysis is cancelled first, then the queued run, and the
+    // pending commit is dropped.
+    const reason = `take ${event.takeId} was deleted`;
+    cancelRerun(event.takeId, reason);
+    cancelQueued(event.takeId, reason);
     pending.delete(event.takeId);
-    cancelRun(event.takeId, `take ${event.takeId} was deleted`);
     releaseStorage();
   };
 

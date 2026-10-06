@@ -90,9 +90,11 @@ import {
   undoStep,
   type CommandLabel,
   type EditCommand,
+  type EditLabel,
   type EngineResult,
   type History,
   type MapFretsRequest,
+  type SnapshotLabel,
 } from '../model/edit-history';
 import { devWarn } from '../model/log';
 import { playedOrder, visibleNotes, type TrimRange } from '../model/notes';
@@ -176,7 +178,7 @@ export function hasAudio(snapshot: Pick<TakeSnapshot, 'take' | 'hasRaw'>): boole
 export type EditEvent =
   | {
       kind: 'edit';
-      label: CommandLabel;
+      label: EditLabel;
       string: StringNo;
       fret: number;
       /**
@@ -1108,7 +1110,7 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
 
   /** What a queued re-analysis run does: a plain re-analysis, a trim or a trim reset. */
   interface RunKind {
-    label: Extract<CommandLabel, { kind: 'reanalyse' | 'trim' | 'resetTrim' }>;
+    label: SnapshotLabel;
     /** The trim range to analyse and commit; absent: the take's own. */
     trim?: TrimRange;
   }

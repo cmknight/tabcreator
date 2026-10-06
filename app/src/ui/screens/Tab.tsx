@@ -312,12 +312,6 @@ function editText(event: Extract<EditEvent, { kind: 'edit' }>): string {
       return strings['tab.editInserted'](event.string, event.fret);
     case 'confirm':
       return strings['tab.editConfirmed'];
-    case 'reanalyse': // not an edit: a re-analysis is announced as `reanalysed`
-      return strings['tab.commandReanalyse'];
-    case 'trim': // not an edit: a trim is announced as `trimmed`
-      return strings['tab.commandTrim'];
-    case 'resetTrim':
-      return strings['tab.commandResetTrim'];
   }
 }
 
