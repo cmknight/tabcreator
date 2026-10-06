@@ -3,8 +3,10 @@
 // every tab and every compressed file size, then kept live by storage events while it has
 // listeners. It reads only storage (AD-3). Story 6.2 adds its writes, as the `library-session`
 // writer (AD-14): rename, delete a take, delete a take's audio. Story 6.5 adds the backup (one
-// at a time, its progress in the snapshot). Stories 6.3 (search), 6.6 (restore) and 6.7 (storage
-// states) build on this snapshot.
+// at a time, its progress in the snapshot). Story 6.6 adds restore (read and check a backup file,
+// then import the takes not already present: audio first, then the records, the audio removed
+// again if the import fails); a backup and a restore never run at the same time. Stories 6.3
+// (search) and 6.7 (storage states) build on this snapshot.
 
 import { libraryRow, pickSize, sortRows, withTitle, type LibraryRow } from '../model/library';
 import { isAppError, type AppErrorCode } from '../model/errors';
@@ -13,7 +15,8 @@ import { renamedTitle } from '../model/title';
 import type { Tab, Take, TakeWriter } from '../model/types';
 import { audioStore, type CompressedFile } from '../storage/audio-store';
 import { createBackup, type BackupResult } from '../storage/backup';
-import { db } from '../storage/db';
+import { db, type ImportRecord } from '../storage/db';
+import { readBackup, type ValidBackup } from '../storage/restore';
 import {
   subscribe as subscribeStorage,
   type StorageEvent,
@@ -31,9 +34,26 @@ export interface LibrarySnapshot {
   error: AppErrorCode | null;
   /** A backup is running, with its progress (0..1); null when none is. */
   backup: { progress: number } | null;
+  /** A restore is reading a backup file or importing it. */
+  restoring: boolean;
 }
 
 export type { BackupResult } from '../storage/backup';
+
+/** A backup file read and checked, with what restoring it would do now. */
+export interface RestorePlan {
+  backup: ValidBackup;
+  /** Takes in the file not yet in the library. */
+  toImport: number;
+  /** Takes in the file already in the library (skipped). */
+  toSkip: number;
+}
+
+export interface RestoreResult {
+  imported: number;
+  /** Takes in the file that were already in the library. */
+  skipped: number;
+}
 
 export interface LibrarySession {
   /**
@@ -68,6 +88,20 @@ export interface LibrarySession {
    * rejects (logged).
    */
   backUp(): Promise<BackupResult | null>;
+  /**
+   * Reads and checks a backup file (storage/restore.ts; nothing is written) and counts its takes
+   * against the library. `restoring` is set meanwhile. Resolves to null when a backup or restore
+   * is running. An invalid file rejects with `backup-invalid` (logged).
+   */
+  readBackup(file: Blob): Promise<RestorePlan | null>;
+  /**
+   * Imports a checked backup's takes not already present: their audio is written first, then
+   * their records (`importTakes`, which skips ids present by then); a failed write removes the
+   * audio written so far and writes no record. Existing takes are never touched. `restoring` is
+   * set meanwhile. Resolves to null when a backup or restore is running. A failure rejects
+   * (logged) with the write's AppError.
+   */
+  restore(backup: ValidBackup): Promise<RestoreResult | null>;
 }
 
 export interface LibraryDeps {
@@ -91,6 +125,12 @@ export interface LibraryDeps {
   deleteRaw(takeId: string): Promise<void>;
   /** Builds the backup zip, reporting progress (0..1). */
   createBackup(onProgress: (progress: number) => void): Promise<BackupResult>;
+  /** Unzips and checks a backup file (the backup worker's `read`). */
+  readBackup(file: Blob): Promise<ValidBackup>;
+  /** Writes a take's compressed audio (its extension from `blob.type`). */
+  writeCompressed(takeId: string, blob: Blob): Promise<void>;
+  /** Writes whole records, skipping ids present; resolves to the number written. */
+  importTakes(records: readonly ImportRecord[]): Promise<number>;
 }
 
 const WRITER = 'library-session';
@@ -98,7 +138,13 @@ const WRITER = 'library-session';
 const errorCode = (err: unknown): AppErrorCode => (isAppError(err) ? err.code : 'storage-failed');
 
 export function createLibrarySession(deps: LibraryDeps): LibrarySession {
-  let snapshot: LibrarySnapshot = { loading: true, rows: [], error: null, backup: null };
+  let snapshot: LibrarySnapshot = {
+    loading: true,
+    rows: [],
+    error: null,
+    backup: null,
+    restoring: false,
+  };
   const listeners = new Set<() => void>();
   let unsubscribeStorage: (() => void) | null = null;
   /** Bumped by every full read and every detach; a read whose generation is stale is dropped. */
@@ -319,7 +365,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
   let lastBackupRun = 0;
 
   async function backUp(): Promise<BackupResult | null> {
-    if (backupRun !== 0) return null;
+    if (backupRun !== 0 || restoreRunning) return null;
     const run = ++lastBackupRun;
     backupRun = run;
     publish({ ...snapshot, backup: { progress: 0 } });
@@ -337,11 +383,72 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     }
   }
 
+  /** A restore (its read or its import) is running. */
+  let restoreRunning = false;
+
+  /** Runs `job` as the one restore step, with `restoring` set; null when another job runs. */
+  async function asRestore<T>(job: () => Promise<T>, failure: string): Promise<T | null> {
+    if (backupRun !== 0 || restoreRunning) return null;
+    restoreRunning = true;
+    publish({ ...snapshot, restoring: true });
+    try {
+      return await job();
+    } catch (err) {
+      devWarn(failure, err);
+      throw err;
+    } finally {
+      restoreRunning = false;
+      publish({ ...snapshot, restoring: false });
+    }
+  }
+
+  function readBackupFile(file: Blob): Promise<RestorePlan | null> {
+    return asRestore(async () => {
+      const backup = await deps.readBackup(file);
+      const existing = new Set((await deps.listTakes()).map((t) => t.id));
+      const toSkip = backup.takes.filter((t) => existing.has(t.id)).length;
+      return { backup, toImport: backup.takes.length - toSkip, toSkip };
+    }, 'Library: reading a backup failed');
+  }
+
+  function restore(backup: ValidBackup): Promise<RestoreResult | null> {
+    return asRestore(async () => {
+      const existing = new Set((await deps.listTakes()).map((t) => t.id));
+      const fresh = backup.takes.filter((t) => !existing.has(t.id));
+      const tabs = new Map(backup.tabs.map((t) => [t.takeId, t]));
+      const written: string[] = [];
+      let imported: number;
+      try {
+        // Audio first: a record never points at audio that is not there yet.
+        for (const take of fresh) {
+          const audio = backup.audio.get(take.id);
+          if (!audio) continue;
+          written.push(take.id);
+          await deps.writeCompressed(take.id, audio);
+        }
+        imported = await deps.importTakes(
+          fresh.map((take) => ({ take, tab: tabs.get(take.id) ?? null })),
+        );
+      } catch (err) {
+        // Nothing was imported (one transaction): the new takes' audio goes again.
+        for (const id of written) {
+          await deps.deleteAudio(id).catch((cleanup: unknown) => {
+            devWarn(`Library: removing restored audio of take ${id} failed`, cleanup);
+          });
+        }
+        throw err;
+      }
+      return { imported, skipped: backup.takes.length - imported };
+    }, 'Library: restoring failed');
+  }
+
   return {
     rename,
     deleteTake,
     deleteAudio,
     backUp,
+    readBackup: readBackupFile,
+    restore,
     subscribe(listener) {
       listeners.add(listener);
       if (listeners.size === 1 && !unsubscribeStorage) attach();
@@ -368,4 +475,7 @@ export const librarySession: LibrarySession = createLibrarySession({
   deleteRaw: (id) => audioStore.deleteRaw(id),
   createBackup: (onProgress) =>
     createBackup({ listTakes: () => db.listTakes(), listTabs: () => db.listTabs() }, onProgress),
+  readBackup: (file) => readBackup(file),
+  writeCompressed: (id, blob) => audioStore.writeCompressed(id, blob),
+  importTakes: (records) => db.importTakes(records),
 });

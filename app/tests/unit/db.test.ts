@@ -358,6 +358,44 @@ describe('importTakes', () => {
     expect(await db.getTab('a')).toEqual(tab);
     expect(events).toEqual([{ type: 'library-restored', count: 2, writer: 'restore' }]);
   });
+
+  it('skips a take id already stored: its record and tab stay; returns and emits the count written', async () => {
+    const mine = makeTake('a', { title: 'Mine', updatedAt: '2025-03-01T00:00:00.000Z' });
+    const myTab = { ...makeTab('a'), updatedAt: '2025-03-01T00:00:00.000Z', deletedStartMs: [7] };
+    await db.importTakes([{ take: mine, tab: myTab }]);
+    events = [];
+    const other = makeTake('a', { title: 'From backup' });
+    const fresh = makeTake('b');
+    expect(
+      await db.importTakes([
+        { take: other, tab: makeTab('a') },
+        { take: fresh, tab: makeTab('b') },
+      ]),
+    ).toBe(1);
+    expect(await db.getTake('a')).toEqual(mine);
+    expect(await db.getTab('a')).toEqual(myTab);
+    expect(await db.getTake('b')).toEqual(fresh);
+    expect(events).toEqual([{ type: 'library-restored', count: 1, writer: 'restore' }]);
+  });
+
+  it('nothing new: writes nothing and still emits library-restored with 0', async () => {
+    await db.importTakes([{ take: makeTake('a'), tab: null }]);
+    events = [];
+    expect(await db.importTakes([{ take: makeTake('a', { title: 'X' }), tab: null }])).toBe(0);
+    expect((await db.getTake('a'))?.title).toBe(makeTake('a').title);
+    expect(events).toEqual([{ type: 'library-restored', count: 0, writer: 'restore' }]);
+  });
+
+  it('the same id twice in one import: the first is written', async () => {
+    const first = makeTake('a', { title: 'First' });
+    expect(
+      await db.importTakes([
+        { take: first, tab: null },
+        { take: makeTake('a', { title: 'Second' }), tab: null },
+      ]),
+    ).toBe(1);
+    expect(await db.getTake('a')).toEqual(first);
+  });
 });
 
 describe('old tabs', () => {

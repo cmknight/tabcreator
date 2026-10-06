@@ -3,16 +3,17 @@ title: 'Restore from a backup'
 type: 'feature'
 ticket: '6'
 created: '2026-10-06'
-status: 'draft'
+status: 'built'
 route: 'full'
 route_source: 'auto'
-review: ''
-review_source: ''
-lenses_ran: []
+review: 'thorough'
+review_source: 'auto'
+lenses_ran: ['blind-hunter', 'edge-case-hunter', 'verification-gap', 'intent-alignment']
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
 warnings: ['oversized']
+baseline_revision: 'c7fd66f60f505a81b935e712a6e4e78103b08638'
 deferred: []
 ---
 
@@ -98,13 +99,13 @@ deferred: []
 ## Tasks & Acceptance
 
 **Execution:**
-- [ ] `app/src/storage/backup-worker.ts`, `backup.ts` -- add the `read` request and reply types and the unzip -- keeps fflate in its one chunk.
-- [ ] `app/src/storage/restore.ts` (new) -- `validateBackup(manifestText, entries)` → `{takes, tabs, audio: Map<takeId, Blob>}` or throw `backup-invalid`, per the matrix; `readBackup(file)` runs the worker and then validates -- one checked object before any write.
-- [ ] `app/src/storage/db.ts` -- `importTakes` skips existing ids in-transaction and returns the imported count -- no overwrite even if an id appears between the check and the write.
-- [ ] `app/src/session/library-session.ts` (+ README) -- `readBackup(file)` (validated backup plus `{toImport, toSkip}` counts against existing ids) and `restore(backup)` (after Confirm); the `restoring` flag; mutual exclusion with backup; the audio-then-records order with rollback; returns `{imported, skipped}` -- the flow in one unit.
-- [ ] `app/src/ui/screens/Library.tsx`, `.module.css`, `RowMenu.tsx`, `strings.ts`, `icons.tsx` -- the Restore from backup button (always enabled, except while a backup or restore runs), the picker, the Confirm dialog ("Restore <n> takes from <file name>?", body "Takes already in your library are skipped; nothing is overwritten.", Cancel / Restore), the error banner (shown until the next restore attempt or leaving the Library), and the summary toast plus a polite announcement -- the UX for Flow 4.
-- [ ] Unit tests -- every matrix row: validation cases, the skip-existing merge, rollback on a failed write, mutual exclusion, cancel paths, and the banner and toast.
-- [ ] `app/tests/e2e/restore.dev.spec.ts` (new) -- the epic's Verify; see the AC below.
+- [x] `app/src/storage/backup-worker.ts`, `backup.ts` -- add the `read` request and reply types and the unzip -- keeps fflate in its one chunk.
+- [x] `app/src/storage/restore.ts` (new) -- `validateBackup(manifestText, entries)` → `{takes, tabs, audio: Map<takeId, Blob>}` or throw `backup-invalid`, per the matrix; `readBackup(file)` runs the worker and then validates -- one checked object before any write.
+- [x] `app/src/storage/db.ts` -- `importTakes` skips existing ids in-transaction and returns the imported count -- no overwrite even if an id appears between the check and the write.
+- [x] `app/src/session/library-session.ts` (+ README) -- `readBackup(file)` (validated backup plus `{toImport, toSkip}` counts against existing ids) and `restore(backup)` (after Confirm); the `restoring` flag; mutual exclusion with backup; the audio-then-records order with rollback; returns `{imported, skipped}` -- the flow in one unit.
+- [x] `app/src/ui/screens/Library.tsx`, `.module.css`, `RowMenu.tsx`, `strings.ts`, `icons.tsx` -- the Restore from backup button (always enabled, except while a backup or restore runs), the picker, the Confirm dialog ("Restore <n> takes from <file name>?", body "Takes already in your library are skipped; nothing is overwritten.", Cancel / Restore), the error banner (shown until the next restore attempt or leaving the Library), and the summary toast plus a polite announcement -- the UX for Flow 4.
+- [x] Unit tests -- every matrix row: validation cases, the skip-existing merge, rollback on a failed write, mutual exclusion, cancel paths, and the banner and toast.
+- [x] `app/tests/e2e/restore.dev.spec.ts` (new) -- the epic's Verify; see the AC below.
 
 **Acceptance Criteria:**
 - Given three takes recorded and backed up (including one with its audio deleted, if the helpers allow), when the zip is restored into a fresh browser context, then every take record, tab and OPFS audio file equals the original byte-for-byte (records compared as JSON), and the toast reads "Imported 3 takes".
@@ -114,9 +115,44 @@ deferred: []
 
 ## Implementation Notes
 
+- Worker protocol: `ToBackupWorker` is now a union, `{type:'backup', manifest, files}` | `{type:'read', file}`; `FromBackupWorker` gains `{type:'read', manifest: string|null, entries: {name, blob}[]}` and `error` may carry `backup-invalid`. `backup-worker.ts` routes through `createRequestHandler`; `readBackupZip` unzips with `unzipSync`, decodes the manifest as strict UTF-8 (`TextDecoder` `fatal`) and replies `backup-invalid` on any failure (unreadable file, not a zip, truncated). `defaultWorker` is exported as `defaultBackupWorker` for restore. fflate is still only in `backup-worker-*.js` (checked after build).
+- `restore.ts` `readBackup` maps a worker crash, unreadable reply or failed start to `storage-failed` (not the file's fault); the screen shows the "Restore didn't finish" banner for every code but `backup-invalid`.
+- Validation extras beyond the matrix: a take id must be usable as an OPFS file stem (non-empty, no `/` or `\`, not `.`/`..`); two tabs for one take is invalid; `deletedStartMs` may be absent (older tabs, defaulted on read); `exportedAt` must be a string. Any entry other than `audio/{id}.{ext}`, including a bare `audio/` directory entry, is invalid (strict reading of the matrix). An audio entry whose extension differs from the take's `audioMime` is accepted and written under its own extension (6.5 backs up a file found under another format).
+- Session: `readBackup(file)` → `{backup, toImport, toSkip}` and `restore(backup)` → `{imported, skipped}`; both set `restoring` and both return null while a backup or another restore step runs (and `backUp` returns null while `restoring`). Between the read and the Confirm, `restoring` is false (the modal dialog blocks the header). `skipped` = takes in the file − `importTakes`' count.
+- Confirm dialog title counts the takes to import (`toImport`); the body names how many are already in the library and skipped when there are any. With nothing new (`toImport` 0) there is no dialog: the restore runs at once (writing nothing) and the toast reads "Imported 0 takes, skipped m already in your library".
+- The worker's `read` drops directory entries (names ending `/`) and `__MACOSX/` entries, which OS re-zips add, and reports a RangeError (out of memory on a file too large to unzip) as `storage-failed`, not `backup-invalid`.
+- The error banner is not a live region (as other banners, AD-18); its text is announced assertively. It clears when Restore from backup is clicked again or the screen unmounts.
+- `RowMenu.tsx` needed no change: `disabledReason` was already a free string; `Library.tsx` now passes `pausedBy` ("Backing up…" or "Restoring…") instead of `backingUp`.
+- `importTakes` uses `add` after an in-transaction `getKey` check; a duplicate id within one import writes the first record only.
+
 ## Plan Change Log
 
 ## Review Triage Log
+
+### 2026-10-06 — Review pass
+- verdicts: 29 findings — high 0, medium 1, low 24, false 0, maybe-false 4
+- findings:
+  - `[low]` `[patch]` (verification-gap) No gaps found — nothing to do.
+  - `[maybe-false]` `[reject]` (intent) "Every listed audio file present" is read as entry-side (A2/A3), not "every take with audioMime has a file" — the plan's recorded assumption: a 6.5 backup can legitimately lack audio, and A1 would make it unrestorable; left for the user's review.
+  - `[low]` `[reject]` (intent) The first toast omits ", skipped 0…" — Flow 4's climax reads "Imported 23 takes"; the skipped clause appears when m > 0.
+  - `[low]` `[reject]` (intent) The error is a banner, not a toast — EXPERIENCE "Restore failed" is an error banner, and toasts are never the only place an error appears.
+  - `[medium]` `[patch]` (intent, blind, edge) The Confirm dialog counts every take in the file and ignores `toImport`/`toSkip`, so a second restore asks "Restore 3 takes?" and imports 0 — the title now counts the takes to import and the body names those already present; when nothing is new the dialog is skipped and the summary toast shows directly.
+  - `[low]` `[reject]` (intent) Failed-import rollback is tested with fakes only — the real `deleteAudio` is tested in the audio-store suite; an OPFS failure injection in e2e is out of proportion.
+  - `[maybe-false]` `[reject]` (intent, blind, edge) The id check precedes the audio writes, so an id appearing in between would have its audio overwritten — the instance lock gives one tab the database and row edits are paused during a restore; the plan's Design Notes accept it.
+  - `[low]` `[reject]` (blind, edge) A take with audioMime but no entry comes back pointing at missing audio — the record is restored as stored, as in the source library (the plan's assumption above); the Tab screen's `audio-missing` handling covers it.
+  - `[low]` `[reject]` (blind) The summary doesn't mention takes restored without audio — follows from the decision above; their backup already reported them.
+  - `[low]` `[patch]` (blind, edge) No size limit on reading: a backup too large for memory fails as "not a backup" — a RangeError or other out-of-memory failure from reading or unzipping replies `storage-failed` ("Restore didn't finish"), not `backup-invalid`; unit test.
+  - `[low]` `[patch]` (blind, edge) A backup re-zipped by an OS tool (directory entries, `__MACOSX/`) is rejected — the worker drops names ending in `/` and `__MACOSX/` entries; unit test.
+  - `[low]` `[reject]` (blind) A failure after leaving the Library is only logged — the banner belongs to the Library; reaching it means navigating away mid-restore of a file just confirmed.
+  - `[low]` `[reject]` (blind, edge) A null result (another job running) gives no feedback — both buttons are aria-disabled and ignore clicks while a job runs, so the screen cannot reach it in use.
+  - `[low]` `[reject]` (blind, edge) Dates, trim range and note fields are only type-checked — a backup this app wrote always has valid values; adding range guards for hand-edited files isn't worth the branches.
+  - `[low]` `[reject]` (edge) Duplicate note ids within a tab are accepted — same reasoning.
+  - `[low]` `[reject]` (blind) `library-restored` is emitted for a count of 0 — one extra refresh after a no-op restore; the plan keeps the event unconditional.
+  - `[low]` `[reject]` (blind) Restore reuses the Back up button's class — the two buttons are meant to look alike.
+  - `[low]` `[reject]` (blind) Test gaps (null result, unmount, e2e write failure, other-format removal) — paths rejected above, or covered at the unit level.
+  - `[maybe-false]` `[reject]` (edge) A take delete in flight when a restore starts is counted existing and then vanishes — would need a delete and a confirmed restore within the same write; row edits and restore are exclusive once the restore starts.
+  - `[maybe-false]` `[reject]` (edge) An orphan tab under a fresh id would be kept — `deleteTake` removes take and tab in one transaction, so no orphan tab arises.
+  - `[low]` `[reject]` (remaining duplicate rows across lenses) — same verdicts as above.
 
 ## Design Notes
 
@@ -132,3 +168,38 @@ deferred: []
 - `cd app && npx -y -p node@24.21.0 -p pnpm@12.6.0 -- pnpm stylelint` -- expected: clean.
 - `cd app && npx -y pnpm@12.6.0 build && cd .. && grep -rlE 'invalid zip data|date not in range 1980-2099' app/dist` -- expected: only `app/dist/assets/backup-worker-*.js`.
 - `cd app && export PATH="$HOME/.cargo/bin:$PATH" && npx -y pnpm@12.6.0 exec playwright test --project=dev tests/e2e/restore.dev.spec.ts tests/e2e/backup.dev.spec.ts tests/e2e/library.dev.spec.ts` -- expected: pass.
+
+## Auto Run Result
+
+**Status:** built, 2026-10-06.
+
+**Summary:** "Restore from backup" on the Library header, enabled even when the library is empty.
+- **Reading the file:** picks a .zip; the backup worker unzips it (fflate stays in that one chunk); `storage/restore.ts` validates the manifest and every entry before any write.
+- **Confirm and import:** the Confirm dialog counts the takes to import and those skipped (it is skipped when nothing is new). New takes' audio is written first, then their records through `db.importTakes`, which now skips existing ids in-transaction. The audio is removed again if a write fails.
+- **Results:** the summary toast, plus a polite announcement. Error banners: "That file isn't a TabCreator backup — nothing was changed." and "Restore didn't finish — nothing was changed."
+- **Exclusivity:** backup and restore exclude each other, and row edits are paused while either runs.
+
+**Files:**
+- `storage/restore.ts` (new);
+- `storage/backup-worker.ts`, `backup.ts` (the `read` request);
+- `storage/db.ts` (skip-existing `importTakes`);
+- `session/library-session.ts` (`readBackup`, `restore`, `restoring`);
+- `ui/screens/Library.tsx`, `.module.css`, `strings.ts`, `icons.tsx`;
+- READMEs;
+- tests: `restore.test.ts` (new), `backup`, `db`, `library-session`, `library-screen`, and the new e2e `restore.dev.spec.ts`.
+
+**Review:** thorough, 29 findings. 1 medium and 2 low were patched (the dialog counts, out-of-memory reported as `storage-failed`, OS re-zip entries dropped). The rest were rejected with reasons in the triage log.
+
+**Open assumption for the user:** a take whose audio is absent from the zip is restored as stored, with no audio. The stricter reading would reject the whole file.
+
+**Follow-up review: not recommended.** One medium was patched; no high.
+
+**Verification:**
+- lint, typecheck, format:check, stylelint and unit tests pass (1726).
+- In the build, fflate appears only in `backup-worker-*.js`.
+- The full Playwright suite passes (208, perf included).
+
+**Residual risks:**
+- `unzipSync` holds roughly twice the file size in memory.
+- The check-then-write id race is accepted under the instance lock.
+

@@ -8,10 +8,22 @@
 // progress by bytes zipped, then one `done` (the Blob and the takes whose file was missing) or
 // `error`, and closes. The handler is an exported factory so tests can drive it with fake
 // directories and no OPFS.
+//
+// Restore (story 6.6) is its second request type, `read`: it unzips the picked file in memory
+// (`unzipSync`; a file that is not a zip, or is cut short, fails) and replies with the manifest's
+// text (strict UTF-8) and every other entry as a Blob (directory and `__MACOSX/` entries dropped),
+// or `error` `backup-invalid` (`storage-failed` when it runs out of memory). It writes
+// nothing; restore.ts validates what comes back.
 
-import { strToU8, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
+import { strToU8, unzipSync, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
 import { AUDIO_DIR, MANIFEST_NAME } from './backup';
-import type { BackupFile, FromBackupWorker, ToBackupWorker } from './backup';
+import type {
+  BackupEntry,
+  BackupRequest,
+  FromBackupWorker,
+  BackupFile,
+  ToBackupWorker,
+} from './backup';
 
 /** Audio is read and zipped in slices of this many bytes. */
 const SLICE_BYTES = 4 * 1024 * 1024;
@@ -103,7 +115,7 @@ export function createBackupHandler(
     maxBytes = ZIP_MAX_BYTES,
     maxEntries = ZIP_MAX_ENTRIES,
   }: BackupHandlerOptions = {},
-): (request: ToBackupWorker) => Promise<void> {
+): (request: BackupRequest) => Promise<void> {
   return async ({ manifest, files }) => {
     const parts: Blob[] = [];
     let zipError: Error | null = null;
@@ -203,6 +215,45 @@ export function createBackupHandler(
   };
 }
 
+/**
+ * Reads a backup zip (restore's `read` request): posts `read` with the manifest's text (null when
+ * there is no `manifest.json`) and every other entry but directory and `__MACOSX/` ones, or
+ * `error` `backup-invalid` when the file cannot be read, is not a zip (or is truncated), or its
+ * manifest is not UTF-8 text; `storage-failed` when it is too large to unzip in memory
+ * (RangeError).
+ */
+export async function readBackupZip(file: Blob, post: PostBackup): Promise<void> {
+  try {
+    const files = unzipSync(new Uint8Array(await file.arrayBuffer()));
+    let manifest: string | null = null;
+    const entries: BackupEntry[] = [];
+    for (const [name, bytes] of Object.entries(files)) {
+      // What an OS re-zip adds: directory entries and macOS resource forks.
+      if (name.endsWith('/') || name.startsWith('__MACOSX/')) continue;
+      if (name === MANIFEST_NAME) {
+        manifest = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      } else {
+        entries.push({ name, blob: new Blob([bytes]) });
+      }
+    }
+    post({ type: 'read', manifest, entries });
+  } catch (err) {
+    // Out of memory (a file too large to unzip here) is not the file being invalid.
+    const code = errorName(err) === 'RangeError' ? 'storage-failed' : 'backup-invalid';
+    post({ type: 'error', code, message: `Read backup: ${errorMessage(err)}` });
+  }
+}
+
+/** Handles one request of either type. */
+export function createRequestHandler(
+  getRoot: () => Promise<BackupRoot>,
+  post: PostBackup,
+): (request: ToBackupWorker) => Promise<void> {
+  const backup = createBackupHandler(getRoot, post);
+  return (request) =>
+    request.type === 'read' ? readBackupZip(request.file, post) : backup(request);
+}
+
 /** The subset of `DedicatedWorkerGlobalScope` used here. */
 interface WorkerScope {
   postMessage(message: FromBackupWorker): void;
@@ -215,11 +266,11 @@ const isWorkerScope =
 
 if (isWorkerScope) {
   const scope = globalThis as unknown as WorkerScope;
-  const handle = createBackupHandler(
+  const handle = createRequestHandler(
     () => navigator.storage.getDirectory() as unknown as Promise<BackupRoot>,
     (m) => scope.postMessage(m),
   );
-  // One backup per worker: it closes once it has replied.
+  // One request per worker: it closes once it has replied.
   scope.onmessage = (event) => {
     scope.onmessage = null;
     void handle(event.data).finally(() => scope.close());

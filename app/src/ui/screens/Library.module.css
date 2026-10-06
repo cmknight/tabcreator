@@ -286,3 +286,8 @@ a.main:focus-visible {
   font: var(--font-numeric);
   text-align: end;
 }
+
+/* Story 6.6: the restore error banner (DESIGN.md banner-error) under the header. */
+.restoreBanner {
+  margin-block-start: var(--space-4);
+}

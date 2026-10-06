@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../src/model/errors';
 import type { Note, Tab, Take } from '../../src/model/types';
 import type { BackupResult } from '../../src/storage/backup';
+import type { ImportRecord } from '../../src/storage/db';
+import type { ValidBackup } from '../../src/storage/restore';
 import { createLibrarySession, type LibraryDeps } from '../../src/session/library-session';
 import type { StorageEvent, StorageListener } from '../../src/storage/events';
 import { deferred, flush } from './helpers';
@@ -45,6 +47,8 @@ function fakeLibrary() {
   const takes = new Map<string, Take>();
   const tabs = new Map<string, Tab>();
   const sizes = new Map<string, number>();
+  /** Compressed audio written by a restore, by take id. */
+  const audio = new Map<string, Blob>();
   /** Takes with a raw file. */
   const raw = new Set<string>();
   const listeners = new Set<StorageListener>();
@@ -83,6 +87,7 @@ function fakeLibrary() {
     }),
     deleteAudio: vi.fn(async (id: string) => {
       sizes.delete(id);
+      audio.delete(id);
     }),
     deleteRaw: vi.fn(async (id: string) => {
       raw.delete(id);
@@ -97,6 +102,25 @@ function fakeLibrary() {
         missingAudio: 0,
         unsupportedAudio: 0,
       };
+    }),
+    readBackup: vi.fn(async (): Promise<ValidBackup> => {
+      throw new AppError('backup-invalid', 'no backup given');
+    }),
+    // Audio by take id, as audio-store keeps one compressed file per take.
+    writeCompressed: vi.fn(async (id: string, blob: Blob) => {
+      audio.set(id, blob);
+      sizes.set(id, blob.size);
+    }),
+    importTakes: vi.fn(async (records: readonly ImportRecord[]) => {
+      let n = 0;
+      for (const { take, tab } of records) {
+        if (takes.has(take.id)) continue;
+        takes.set(take.id, take);
+        if (tab) tabs.set(take.id, tab);
+        n++;
+      }
+      emit({ type: 'library-restored', count: n, writer: 'restore' });
+      return n;
     }),
   };
   const add = (take: Take, noteCount: number | null, size: number | null) => {
@@ -114,7 +138,7 @@ function fakeLibrary() {
   function emit(event: StorageEvent) {
     for (const l of [...listeners]) l(event);
   }
-  return { takes, tabs, sizes, raw, deps, add, emit, listeners };
+  return { takes, tabs, sizes, audio, raw, deps, add, emit, listeners };
 }
 
 const T1 = '2026-09-27T10:00:00.000Z';
@@ -127,7 +151,13 @@ describe('library session', () => {
     lib.add(makeTake('a', T1), 38, 210_000);
     lib.add(makeTake('b', T2, { status: 'recorded', analysisVersion: null }), null, 2_900_000);
     const session = createLibrarySession(lib.deps);
-    expect(session.getSnapshot()).toEqual({ loading: true, rows: [], error: null, backup: null });
+    expect(session.getSnapshot()).toEqual({
+      loading: true,
+      rows: [],
+      error: null,
+      backup: null,
+      restoring: false,
+    });
     expect(lib.deps.listTakes).not.toHaveBeenCalled();
 
     const listener = vi.fn();
@@ -151,7 +181,13 @@ describe('library session', () => {
     const session = createLibrarySession(lib.deps);
     session.subscribe(() => {});
     await flush();
-    expect(session.getSnapshot()).toEqual({ loading: false, rows: [], error: null, backup: null });
+    expect(session.getSnapshot()).toEqual({
+      loading: false,
+      rows: [],
+      error: null,
+      backup: null,
+      restoring: false,
+    });
   });
 
   it('a failed read is an error code, not a throw; a missing size list still shows rows', async () => {
@@ -166,6 +202,7 @@ describe('library session', () => {
       rows: [],
       error: 'storage-failed',
       backup: null,
+      restoring: false,
     });
 
     const lib2 = fakeLibrary();
@@ -739,5 +776,177 @@ describe('library session backUp', () => {
     report(0.7);
     expect(session.getSnapshot().backup).toBeNull();
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+// Story "Restore from a backup" (6.6): read and check a file, then import the takes not present,
+// audio first, rolled back on a failed write; never alongside a backup.
+describe('library session restore', () => {
+  const tabOf = (takeId: string): Tab => ({
+    takeId,
+    notes: notes(2),
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    deletedStartMs: [],
+  });
+  /** A checked backup of takes a, b, c (c without audio), each with a tab. */
+  function backupOf(): ValidBackup {
+    return {
+      takes: [makeTake('a', T1), makeTake('b', T2), makeTake('c', T3)],
+      tabs: [tabOf('a'), tabOf('b'), tabOf('c')],
+      audio: new Map([
+        ['a', new Blob(['aaa'], { type: 'audio/webm;codecs=opus' })],
+        ['b', new Blob(['bbbb'], { type: 'audio/wav' })],
+      ]),
+    };
+  }
+
+  it('readBackup counts the takes to import and skip, writes nothing, sets restoring meanwhile', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('b', T2, { title: 'Mine' }), 1, 9);
+    const backup = backupOf();
+    const read = deferred<ValidBackup>();
+    vi.mocked(lib.deps.readBackup).mockImplementationOnce(() => read.promise);
+    const session = createLibrarySession(lib.deps);
+    const file = new Blob(['zip']);
+    const plan = session.readBackup(file);
+    expect(session.getSnapshot().restoring).toBe(true);
+    // A backup waits for it.
+    await expect(session.backUp()).resolves.toBeNull();
+    read.resolve(backup);
+    await expect(plan).resolves.toEqual({ backup, toImport: 2, toSkip: 1 });
+    expect(lib.deps.readBackup).toHaveBeenCalledWith(file);
+    expect(session.getSnapshot().restoring).toBe(false);
+    expect(lib.deps.writeCompressed).not.toHaveBeenCalled();
+    expect(lib.deps.importTakes).not.toHaveBeenCalled();
+  });
+
+  it('an invalid file rejects backup-invalid (logged), writes nothing, clears restoring', async () => {
+    const lib = fakeLibrary();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const session = createLibrarySession(lib.deps);
+    await expect(session.readBackup(new Blob([]))).rejects.toMatchObject({
+      code: 'backup-invalid',
+    });
+    expect(session.getSnapshot().restoring).toBe(false);
+    expect(lib.deps.writeCompressed).not.toHaveBeenCalled();
+    expect(lib.deps.importTakes).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('a fresh library: every take imported with its tab and audio, audio before records; the list refreshes', async () => {
+    const lib = fakeLibrary();
+    const order: string[] = [];
+    vi.mocked(lib.deps.writeCompressed).mockImplementation(async (id, blob) => {
+      order.push(`audio ${id}`);
+      lib.audio.set(id, blob);
+    });
+    const importTakes = lib.deps.importTakes;
+    const realImport = vi.mocked(importTakes).getMockImplementation()!;
+    vi.mocked(importTakes).mockImplementation(async (records) => {
+      order.push('records');
+      return realImport(records);
+    });
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    const backup = backupOf();
+    await expect(session.restore(backup)).resolves.toEqual({ imported: 3, skipped: 0 });
+    expect(order).toEqual(['audio a', 'audio b', 'records']);
+    expect(lib.takes.get('a')).toBe(backup.takes[0]);
+    expect(lib.tabs.get('c')).toBe(backup.tabs[2]);
+    expect(lib.audio.get('a')).toBe(backup.audio.get('a'));
+    expect(lib.audio.has('c')).toBe(false);
+    await flush();
+    expect(session.getSnapshot().rows.map((r) => r.id)).toEqual(['c', 'b', 'a']);
+    expect(session.getSnapshot().restoring).toBe(false);
+  });
+
+  it('partial overlap: the existing take keeps its record, tab and audio; the rest import', async () => {
+    const lib = fakeLibrary();
+    const mine = makeTake('b', T2, { title: 'Mine' });
+    lib.add(mine, 5, 9);
+    const myTab = lib.tabs.get('b');
+    const myAudio = new Blob(['mine']);
+    lib.audio.set('b', myAudio);
+    const session = createLibrarySession(lib.deps);
+    await expect(session.restore(backupOf())).resolves.toEqual({ imported: 2, skipped: 1 });
+    expect(lib.takes.get('b')).toBe(mine);
+    expect(lib.tabs.get('b')).toBe(myTab);
+    expect(lib.audio.get('b')).toBe(myAudio);
+    expect(vi.mocked(lib.deps.writeCompressed).mock.calls.map(([id]) => id)).toEqual(['a']);
+    expect(vi.mocked(lib.deps.importTakes).mock.calls[0]![0].map((r) => r.take.id)).toEqual([
+      'a',
+      'c',
+    ]);
+  });
+
+  it('restoring the same backup twice imports nothing and writes no audio the second time', async () => {
+    const lib = fakeLibrary();
+    const session = createLibrarySession(lib.deps);
+    await session.restore(backupOf());
+    vi.mocked(lib.deps.writeCompressed).mockClear();
+    await expect(session.restore(backupOf())).resolves.toEqual({ imported: 0, skipped: 3 });
+    expect(lib.deps.writeCompressed).not.toHaveBeenCalled();
+  });
+
+  it('a failed audio write removes the audio already written and writes no record', async () => {
+    const lib = fakeLibrary();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(lib.deps.writeCompressed)
+      .mockImplementationOnce(async (id, blob) => {
+        lib.audio.set(id, blob);
+      })
+      .mockRejectedValueOnce(new AppError('storage-full', 'quota'));
+    const session = createLibrarySession(lib.deps);
+    await expect(session.restore(backupOf())).rejects.toMatchObject({ code: 'storage-full' });
+    expect(lib.audio.size).toBe(0);
+    expect(vi.mocked(lib.deps.deleteAudio).mock.calls.map(([id]) => id)).toEqual(['a', 'b']);
+    expect(lib.deps.importTakes).not.toHaveBeenCalled();
+    expect(lib.takes.size).toBe(0);
+    expect(session.getSnapshot().restoring).toBe(false);
+    warn.mockRestore();
+  });
+
+  it('a failed import removes every audio file it wrote', async () => {
+    const lib = fakeLibrary();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(lib.deps.importTakes).mockRejectedValueOnce(new AppError('storage-failed', 'idb'));
+    const session = createLibrarySession(lib.deps);
+    await expect(session.restore(backupOf())).rejects.toMatchObject({ code: 'storage-failed' });
+    expect(lib.audio.size).toBe(0);
+    expect(lib.takes.size).toBe(0);
+    warn.mockRestore();
+  });
+
+  it('never runs alongside a backup, nor two at once', async () => {
+    const lib = fakeLibrary();
+    const run = deferred<BackupResult>();
+    vi.mocked(lib.deps.createBackup).mockImplementationOnce(() => run.promise);
+    const session = createLibrarySession(lib.deps);
+    const backingUp = session.backUp();
+    await expect(session.readBackup(new Blob([]))).resolves.toBeNull();
+    await expect(session.restore(backupOf())).resolves.toBeNull();
+    expect(lib.deps.readBackup).not.toHaveBeenCalled();
+    expect(lib.deps.importTakes).not.toHaveBeenCalled();
+    run.resolve({
+      blob: new Blob([]),
+      fileName: 'x',
+      takes: 0,
+      missingAudio: 0,
+      unsupportedAudio: 0,
+    });
+    await backingUp;
+
+    const write = deferred<void>();
+    vi.mocked(lib.deps.writeCompressed).mockImplementationOnce(() => write.promise);
+    const restoring = session.restore(backupOf());
+    await flush();
+    expect(session.getSnapshot().restoring).toBe(true);
+    await expect(session.restore(backupOf())).resolves.toBeNull();
+    await expect(session.backUp()).resolves.toBeNull();
+    expect(lib.deps.createBackup).toHaveBeenCalledTimes(1);
+    write.resolve();
+    await expect(restoring).resolves.toEqual({ imported: 3, skipped: 0 });
+    expect(session.getSnapshot().restoring).toBe(false);
   });
 });

@@ -1,1 +1,3 @@
 # storage/ — sole owner of IndexedDB, OPFS, navigator.storage and localStorage (prefs.ts) (spine AD-2); imports model/ only (AD-1).
+
+db.ts `importTakes` (story "Restore from a backup", 6.6) writes whole records as given (writer `restore`, no `updatedAt` stamp) in one transaction, skipping any take id already stored (its record and tab are never overwritten), resolves to the number written and always emits one `library-restored` with that count. restore.ts reads a backup zip through the backup worker's `read` request (backup-worker.ts stays the only importer of fflate) and `validateBackup` checks the manifest and every audio entry in full before anything is written; any unreadable or invalid file is `backup-invalid`.

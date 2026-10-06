@@ -27,6 +27,18 @@
 // Rename and deletes are disabled ("Backing up…"). The start and the takes backed up are
 // announced politely; missing or unsupported audio and a failure are toasts, the failure also
 // announced assertively.
+//
+// Story "Restore from a backup" (US-7.3, Flow 4; EXPERIENCE.md :85, :115, :117, mockup
+// library.html (f·2)): Restore from backup, after Back up library, is enabled even with an empty
+// library. It picks a .zip (ui/platform.ts), has library-session read and check it in full
+// (nothing written), then a Confirm dialog ("Restore 3 takes from <file>?", counting the takes
+// not already present, Cancel first) imports them; with none new there is no dialog, just the
+// summary. Meanwhile the button reads "Restoring…" and is
+// aria-disabled, Back up library too, and the row menus' writes are paused ("Restoring…"). The
+// summary ("Imported 2 takes, skipped 1 already in your library") is a toast and a polite
+// announcement; the list refreshes through `library-restored`. An invalid file, or a failed
+// write, shows an error banner (announced assertively) until the next restore attempt or leaving
+// the Library; nothing was changed. Cancelling the picker or the dialog changes nothing.
 
 import {
   useCallback,
@@ -41,11 +53,13 @@ import {
 } from 'react';
 import { capTitle } from '../../model/title';
 import { filterRows, formatMegabytes } from '../../model/library';
+import { isAppError } from '../../model/errors';
 import {
   librarySession,
   type LibraryRow,
   type LibrarySession,
   type LibraryStatus,
+  type RestorePlan,
 } from '../../session/library-session';
 import { announce } from '../a11y/announcer';
 import buttons from '../components/buttons.module.css';
@@ -58,14 +72,16 @@ import {
   MoreIcon,
   MuteIcon,
   PencilIcon,
+  RestoreIcon,
   SearchIcon,
 } from '../components/icons';
 import { RowMenu, type RowMenuItem } from '../components/RowMenu';
 import { formatElapsed, formatTakeDate } from '../format';
-import { downloadBlob } from '../platform';
+import { downloadBlob, pickFile } from '../platform';
 import { routeToHash } from '../router';
 import { strings } from '../strings';
 import { showToast } from '../toast';
+import banner from '../components/banner.module.css';
 import libraryStyles from './Library.module.css';
 import styles from './Screen.module.css';
 
@@ -217,7 +233,7 @@ function Row({
   size,
   gapPx,
   actions,
-  backingUp,
+  pausedBy,
   onRowGone,
   onBusy,
 }: {
@@ -228,8 +244,8 @@ function Row({
   /** The virtual list's space before the row, for the unrendered rows above it (0: none). */
   gapPx: number;
   actions: RowActions;
-  /** A backup is running: the menu's writes are disabled until it ends. */
-  backingUp: boolean;
+  /** A backup or restore is running (what it shows, "Backing up…"): the writes wait. */
+  pausedBy: string | null;
   /** The row is going while focus is inside it (its take was deleted). */
   onRowGone(): void;
   /** The row's menu, a dialog or its rename opened (true) or closed (false): keep it rendered. */
@@ -302,9 +318,10 @@ function Row({
     danger: true,
     separated: true,
   });
-  // No write while a backup reads the library (the zip would not match what the player sees).
-  if (backingUp) {
-    for (const item of items) item.disabledReason = strings['library.backingUp'];
+  // No write while a backup reads the library (the zip would not match what the player sees) or
+  // a restore writes it.
+  if (pausedBy !== null) {
+    for (const item of items) item.disabledReason = pausedBy;
   }
 
   function choose(id: string) {
@@ -428,12 +445,12 @@ export const ANNOUNCE_AFTER_MS = 500;
 function RowList({
   rows,
   actions,
-  backingUp,
+  pausedBy,
   onRowGone,
 }: {
   rows: readonly LibraryRow[];
   actions: RowActions;
-  backingUp: boolean;
+  pausedBy: string | null;
   onRowGone(): void;
 }) {
   const n = rows.length;
@@ -556,7 +573,7 @@ function RowList({
             size={n}
             gapPx={virtual ? before * rowPx : 0}
             actions={actions}
-            backingUp={backingUp}
+            pausedBy={pausedBy}
             onRowGone={onRowGone}
             onBusy={onBusy}
           />
@@ -571,10 +588,17 @@ export function Library({
 }: {
   session?: Pick<
     LibrarySession,
-    'subscribe' | 'getSnapshot' | 'rename' | 'deleteTake' | 'deleteAudio' | 'backUp'
+    | 'subscribe'
+    | 'getSnapshot'
+    | 'rename'
+    | 'deleteTake'
+    | 'deleteAudio'
+    | 'backUp'
+    | 'readBackup'
+    | 'restore'
   >;
 } = {}) {
-  const { loading, rows, error, backup } = useSyncExternalStore(
+  const { loading, rows, error, backup, restoring } = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
   );
@@ -629,7 +653,7 @@ export function Library({
   // Only takes that are not still recording are backed up.
   const canBackUp = rows.some((r) => r.status !== 'recording');
   const backUp = () => {
-    if (!canBackUp || backup) return;
+    if (!canBackUp || backup || restoring) return;
     announce(strings['library.backingUp']);
     session.backUp().then(
       (result) => {
@@ -651,6 +675,55 @@ export function Library({
       },
     );
   };
+  // Restore: pick, read and check, confirm, import.
+  const restoreButton = useRef<HTMLButtonElement>(null);
+  /** A checked backup waiting for the Confirm dialog, with its file's name. */
+  const [confirmRestore, setConfirmRestore] = useState<{
+    plan: RestorePlan;
+    fileName: string;
+  } | null>(null);
+  /** The error banner's text: the last restore attempt failed. */
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  /** A picker is open: a second click does nothing. */
+  const picking = useRef(false);
+  const restoreFailed = (err: unknown) => {
+    // The session logged it; nothing was written.
+    const text =
+      isAppError(err) && err.code === 'backup-invalid'
+        ? strings['library.restoreInvalid']
+        : strings['library.restoreFailed'];
+    setRestoreError(text);
+    announce(text, 'assertive');
+  };
+  const startRestore = async () => {
+    if (backup || restoring || picking.current) return;
+    setRestoreError(null);
+    picking.current = true;
+    let file: File | null;
+    try {
+      file = await pickFile('.zip,application/zip');
+    } finally {
+      picking.current = false;
+    }
+    if (!file) return;
+    const fileName = file.name;
+    announce(strings['library.restoring']);
+    session.readBackup(file).then((plan) => {
+      if (!plan) return;
+      // Nothing new to import: no question to ask, just the summary.
+      if (plan.toImport === 0) runRestore(plan);
+      else setConfirmRestore({ plan, fileName });
+    }, restoreFailed);
+  };
+  const runRestore = (plan: RestorePlan) => {
+    session.restore(plan.backup).then((result) => {
+      if (!result) return;
+      const summary = strings['library.restored'](result.imported, result.skipped);
+      showToast({ message: summary });
+      announce(summary);
+    }, restoreFailed);
+  };
+
   const backupPercent =
     backup && strings['library.backupPercent'](Math.floor(backup.progress * 100 + 1e-9));
 
@@ -660,7 +733,9 @@ export function Library({
       <RowList
         rows={shown}
         actions={session}
-        backingUp={backup !== null}
+        pausedBy={
+          backup ? strings['library.backingUp'] : restoring ? strings['library.restoring'] : null
+        }
         onRowGone={focusHeading}
       />
     );
@@ -723,13 +798,50 @@ export function Library({
           type="button"
           className={`${buttons.secondary} ${libraryStyles.backup}`}
           disabled={!canBackUp}
-          aria-disabled={backup !== null || undefined}
+          aria-disabled={backup !== null || restoring || undefined}
           onClick={backUp}
         >
           <BackupIcon className={buttons.icon} />
           {strings['library.backUp']}
         </button>
+        {/* Enabled even with no takes (a fresh profile is when it is needed); aria-disabled while
+            a backup or restore runs. */}
+        <button
+          ref={restoreButton}
+          type="button"
+          className={`${buttons.secondary} ${libraryStyles.backup}`}
+          aria-disabled={backup !== null || restoring || undefined}
+          onClick={() => void startRestore()}
+        >
+          <RestoreIcon className={buttons.icon} />
+          {restoring ? strings['library.restoring'] : strings['library.restore']}
+        </button>
       </div>
+      {restoreError && (
+        <div
+          className={`${banner.banner} ${banner.error} ${libraryStyles.restoreBanner}`}
+          data-testid="restore-error"
+        >
+          <ErrorIcon className={banner.icon} />
+          <p className={banner.text}>{restoreError}</p>
+        </div>
+      )}
+      {confirmRestore && (
+        <ConfirmDialog
+          title={strings['library.restoreTitle'](
+            confirmRestore.plan.toImport,
+            confirmRestore.fileName,
+          )}
+          body={strings['library.restoreBody'](confirmRestore.plan.toSkip)}
+          confirmLabel={strings['library.restoreConfirm']}
+          opener={() => restoreButton.current}
+          onCancel={() => setConfirmRestore(null)}
+          onConfirm={() => {
+            setConfirmRestore(null);
+            runRestore(confirmRestore.plan);
+          }}
+        />
+      )}
       {backup && (
         <div className={libraryStyles.progressPanel} data-testid="backup-progress">
           <label className={libraryStyles.progressLabel} htmlFor="library-backup-progress">

@@ -4,7 +4,8 @@
 // and are never included. The zip is built by `backup-worker.ts`, which alone imports fflate and
 // reads the audio straight from OPFS, so no audio bytes cross the main thread until the finished
 // Blob comes back. `buildManifest` and `backupFileName` are pure (restore, story 6.6, validates
-// against the same shape). Rejects only with AppError.
+// against the same shape; its unzip is the same worker's `read` request, see restore.ts).
+// Rejects only with AppError.
 
 import { extensionFor, preferredExtensions } from '../model/audio-format';
 import { AppError, type AppErrorCode } from '../model/errors';
@@ -33,19 +34,40 @@ export interface BackupFile {
   fileNames: string[];
 }
 
-/** The request to the backup worker: one per worker (it is terminated after its reply). */
-export interface ToBackupWorker {
+/** A backup request: build the zip of `manifest` and `files`. */
+export interface BackupRequest {
+  type: 'backup';
   manifest: BackupManifest;
   files: BackupFile[];
 }
 
-/** The backup worker's messages: progress (by bytes) as it goes, then one `done` or `error`. */
+/** A restore request (story 6.6): unzip `file` and hand back its manifest text and entries. */
+export interface ReadRequest {
+  type: 'read';
+  file: Blob;
+}
+
+/** The request to the backup worker: one per worker (it is terminated after its reply). */
+export type ToBackupWorker = BackupRequest | ReadRequest;
+
+/** One zip entry other than the manifest, as read by a `read` request. */
+export interface BackupEntry {
+  name: string;
+  blob: Blob;
+}
+
+/**
+ * The backup worker's messages. A backup: progress (by bytes) as it goes, then one `done` or
+ * `error`. A read: one `read` (the manifest's text, null when the zip has none, and every other
+ * entry) or `error` `backup-invalid`.
+ */
 export type FromBackupWorker =
   | { type: 'progress'; progress: number }
   | { type: 'done'; blob: Blob; missing: string[] }
+  | { type: 'read'; manifest: string | null; entries: BackupEntry[] }
   | {
       type: 'error';
-      code: Extract<AppErrorCode, 'storage-failed' | 'audio-missing'>;
+      code: Extract<AppErrorCode, 'storage-failed' | 'audio-missing' | 'backup-invalid'>;
       message: string;
     };
 
@@ -137,7 +159,8 @@ export function backupFiles(manifest: BackupManifest): {
   return { files, unsupported };
 }
 
-function defaultWorker(): BackupWorker {
+/** A new module worker running `backup-worker.ts` (backup and restore each start their own). */
+export function defaultBackupWorker(): BackupWorker {
   return new Worker(new URL('./backup-worker.ts', import.meta.url), {
     type: 'module',
   }) as unknown as BackupWorker;
@@ -166,7 +189,7 @@ export async function createBackup(
 
   let worker: BackupWorker;
   try {
-    worker = (deps.createWorker ?? defaultWorker)();
+    worker = (deps.createWorker ?? defaultBackupWorker)();
   } catch (err) {
     throw new AppError('storage-failed', 'Backup worker failed to start', { cause: err });
   }
@@ -183,8 +206,10 @@ export async function createBackup(
           }
         } else if (data.type === 'done') {
           resolve({ blob: data.blob, missing: data.missing });
-        } else {
+        } else if (data.type === 'error') {
           reject(new AppError(data.code, data.message));
+        } else {
+          reject(new AppError('storage-failed', `Backup worker: unexpected reply ${data.type}`));
         }
       };
       worker.onerror = (event) => {
@@ -200,7 +225,7 @@ export async function createBackup(
         reject(new AppError('storage-failed', 'Backup worker: a reply could not be read'));
       };
       try {
-        worker.postMessage({ manifest, files });
+        worker.postMessage({ type: 'backup', manifest, files });
       } catch (err) {
         reject(new AppError('storage-failed', 'Backup worker: posting failed', { cause: err }));
       }

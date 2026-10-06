@@ -50,7 +50,11 @@ export interface TakeDb {
   putTab(tab: Tab, writer: TakeWriter): Promise<Tab>;
   /** Writes the Tab and the Take patch in one transaction (writer `take-session`). */
   commitAnalysis(takeId: string, tab: Tab, takePatch: TakePatch): Promise<{ take: Take; tab: Tab }>;
-  /** Writes whole records as given (writer `restore`, no `updatedAt` stamp). */
+  /**
+   * Writes whole records as given (writer `restore`, no `updatedAt` stamp) in one transaction,
+   * skipping every record whose take id already exists (its take and tab stay untouched; story
+   * 6.6). Resolves to the number written and always emits one `library-restored` with it.
+   */
   importTakes(records: readonly ImportRecord[]): Promise<number>;
   /** Removes the Take and Tab in one transaction, then its audio and raw files best-effort. */
   deleteTake(id: string, writer: TakeWriter): Promise<void>;
@@ -287,19 +291,21 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     },
 
     async importTakes(records) {
-      await write('Import takes', ['takes', 'tabs'], async (tx) => {
+      const count = await write('Import takes', ['takes', 'tabs'], async (tx) => {
+        const takes = tx.objectStore('takes');
+        let written = 0;
         for (const { take, tab } of records) {
-          await tx.objectStore('takes').put(take);
+          // An existing take is never overwritten: not its record, not its tab (story 6.6).
+          if ((await takes.getKey(take.id)) !== undefined) continue;
+          await takes.add(take);
           if (tab) await tx.objectStore('tabs').put({ ...tab, takeId: take.id });
+          written++;
         }
+        return written;
       });
-      const event: StorageEvent = {
-        type: 'library-restored',
-        count: records.length,
-        writer: 'restore',
-      };
+      const event: StorageEvent = { type: 'library-restored', count, writer: 'restore' };
       emit(event);
-      return records.length;
+      return count;
     },
 
     async deleteTake(id, writer) {

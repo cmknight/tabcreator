@@ -1,4 +1,4 @@
-import { strFromU8, unzipSync } from 'fflate';
+import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { describe, expect, it, vi } from 'vitest';
 import type { Tab, Take } from '../../src/model/types';
 import {
@@ -7,12 +7,15 @@ import {
   buildManifest,
   createBackup,
   type BackupManifest,
+  type BackupRequest,
   type BackupWorker,
   type FromBackupWorker,
   type ToBackupWorker,
 } from '../../src/storage/backup';
 import {
   createBackupHandler,
+  createRequestHandler,
+  readBackupZip,
   type BackupDirectory,
   type BackupHandlerOptions,
   type BackupRoot,
@@ -20,7 +23,7 @@ import {
 
 // Story "Back up the library" (6.5, US-7.3): the manifest, the file name, createBackup with a
 // fake worker, and the worker's handler with in-memory OPFS fakes (the real worker and OPFS run
-// in tests/e2e/backup.dev.spec.ts).
+// in tests/e2e/backup.dev.spec.ts). Story 6.6 adds the worker's `read` request (restore's unzip).
 
 function makeTake(id: string, createdAt: string, overrides: Partial<Take> = {}): Take {
   return {
@@ -143,13 +146,13 @@ describe('backupFiles', () => {
 
 /** A fake worker that replies through `script` once posted to. */
 function fakeWorker(script: (w: BackupWorker, request: ToBackupWorker) => void) {
-  const posted: ToBackupWorker[] = [];
+  const posted: BackupRequest[] = [];
   const worker: BackupWorker = {
     onmessage: null,
     onerror: null,
     onmessageerror: null,
     postMessage: vi.fn((request: ToBackupWorker) => {
-      posted.push(request);
+      posted.push(request as BackupRequest);
       queueMicrotask(() => script(worker, request));
     }),
     terminate: vi.fn(),
@@ -189,6 +192,7 @@ describe('createBackup', () => {
     });
     expect(progress).toEqual([0, 0.25, 1]);
     expect(posted).toHaveLength(1);
+    expect(posted[0]!.type).toBe('backup');
     expect(posted[0]!.manifest.takes.map((t) => t.id)).toEqual(['wav', 'webm', 'gone', 'rec']);
     expect(posted[0]!.manifest.exportedAt).toBe(new Date(2026, 9, 6, 9, 30).toISOString());
     expect(posted[0]!.files.map((f) => f.fileNames[0])).toEqual([
@@ -293,13 +297,17 @@ function fakeRoot(files: Record<string, Uint8Array<ArrayBuffer>> | null): Backup
 const bytes = (n: number, seed: number) =>
   Uint8Array.from({ length: n }, (_, i) => (i * 31 + seed) & 0xff);
 
-async function run(root: BackupRoot, request: ToBackupWorker, options?: BackupHandlerOptions) {
+async function run(
+  root: BackupRoot,
+  request: Omit<BackupRequest, 'type'>,
+  options?: BackupHandlerOptions,
+) {
   const messages: FromBackupWorker[] = [];
   await createBackupHandler(
     async () => root,
     (m) => messages.push(m),
     options,
-  )(request);
+  )({ type: 'backup', ...request });
   return messages;
 }
 
@@ -460,5 +468,115 @@ describe('backup worker handler', () => {
     };
     const messages = await run(root, { manifest, files });
     expect(messages.at(-1)).toMatchObject({ type: 'error', code: 'audio-missing' });
+  });
+});
+
+// Story "Restore from a backup" (6.6): the worker's second request type, `read`.
+describe('backup worker read', () => {
+  async function read(file: Blob) {
+    const messages: FromBackupWorker[] = [];
+    await readBackupZip(file, (m) => messages.push(m));
+    return messages;
+  }
+  const zipOf = (files: Record<string, Uint8Array>) =>
+    new Blob([zipSync(files, { level: 0 }) as Uint8Array<ArrayBuffer>]);
+
+  it('replies with the manifest text and every other entry, bytes as they are', async () => {
+    const audio = bytes(3000, 5);
+    const messages = await read(
+      zipOf({ 'manifest.json': strToU8('{"format":1,"é":true}'), 'audio/a.webm': audio }),
+    );
+    expect(messages).toHaveLength(1);
+    const reply = messages[0]!;
+    if (reply.type !== 'read') throw new Error(`unexpected ${reply.type}`);
+    expect(reply.manifest).toBe('{"format":1,"é":true}');
+    expect(reply.entries.map((e) => e.name)).toEqual(['audio/a.webm']);
+    expect(new Uint8Array(await reply.entries[0]!.blob.arrayBuffer())).toEqual(audio);
+  });
+
+  it('round-trips a zip the backup handler built', async () => {
+    const lib = library();
+    const manifest = buildManifest(lib.takes, lib.tabs, T1);
+    const { files } = backupFiles(manifest);
+    const wav = bytes(500, 1);
+    const built = await run(fakeRoot({ 'wav.wav': wav }), { manifest, files });
+    const done = built.at(-1)!;
+    if (done.type !== 'done') throw new Error('no zip');
+    const [reply] = await read(done.blob);
+    if (reply?.type !== 'read') throw new Error('no read');
+    expect(JSON.parse(reply.manifest!)).toEqual(manifest);
+    expect(reply.entries.map((e) => e.name)).toEqual(['audio/wav.wav']);
+    expect(new Uint8Array(await reply.entries[0]!.blob.arrayBuffer())).toEqual(wav);
+  });
+
+  it('no manifest: manifest null (restore rejects it)', async () => {
+    const [reply] = await read(zipOf({ 'audio/a.webm': bytes(10, 1) }));
+    expect(reply).toMatchObject({ type: 'read', manifest: null });
+  });
+
+  it('random bytes, a truncated zip or a non-UTF-8 manifest reply backup-invalid', async () => {
+    const good = zipSync(
+      { 'manifest.json': strToU8('{}'), 'audio/a.webm': bytes(4000, 2) },
+      { level: 0 },
+    );
+    const cases = [
+      new Blob([bytes(1000, 9)]),
+      new Blob([good.slice(0, good.length - 30) as Uint8Array<ArrayBuffer>]),
+      new Blob([good.slice(0, 2000) as Uint8Array<ArrayBuffer>]),
+      zipOf({ 'manifest.json': new Uint8Array([0xff, 0xfe, 0x00]) }),
+      new Blob([]),
+    ];
+    for (const file of cases) {
+      const messages = await read(file);
+      expect(messages).toEqual([
+        { type: 'error', code: 'backup-invalid', message: expect.any(String) },
+      ]);
+    }
+  });
+
+  it('directory entries and __MACOSX/ entries (an OS re-zip) are dropped', async () => {
+    const [reply] = await read(
+      zipOf({
+        'manifest.json': strToU8('{}'),
+        'audio/': new Uint8Array(0),
+        'audio/a.webm': bytes(10, 1),
+        '__MACOSX/': new Uint8Array(0),
+        '__MACOSX/audio/._a.webm': bytes(5, 2),
+      }),
+    );
+    if (reply?.type !== 'read') throw new Error('no read');
+    expect(reply.manifest).toBe('{}');
+    expect(reply.entries.map((e) => e.name)).toEqual(['audio/a.webm']);
+  });
+
+  it('a file too large to hold in memory (RangeError) replies storage-failed', async () => {
+    const file = {
+      arrayBuffer: () => Promise.reject(new RangeError('Array buffer allocation failed')),
+    } as unknown as Blob;
+    expect(await read(file)).toMatchObject([{ type: 'error', code: 'storage-failed' }]);
+  });
+
+  it('a file that cannot be read replies backup-invalid', async () => {
+    const file = {
+      arrayBuffer: () =>
+        Promise.reject(Object.assign(new Error('gone'), { name: 'NotReadableError' })),
+    } as unknown as Blob;
+    expect(await read(file)).toMatchObject([{ type: 'error', code: 'backup-invalid' }]);
+  });
+
+  it('the request handler routes read and backup requests', async () => {
+    const messages: FromBackupWorker[] = [];
+    const handle = createRequestHandler(
+      async () => fakeRoot({}),
+      (m) => messages.push(m),
+    );
+    await handle({ type: 'read', file: zipOf({ 'manifest.json': strToU8('{}') }) });
+    expect(messages.at(-1)!.type).toBe('read');
+    await handle({
+      type: 'backup',
+      manifest: buildManifest([], [], T1),
+      files: [],
+    });
+    expect(messages.at(-1)!.type).toBe('done');
   });
 });

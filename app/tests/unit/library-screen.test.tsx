@@ -1,9 +1,16 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { searchKey, type LibraryRow } from '../../src/model/library';
 import { announce } from '../../src/ui/a11y/announcer';
-import type { BackupResult, LibrarySnapshot } from '../../src/session/library-session';
-import { downloadBlob } from '../../src/ui/platform';
+import type {
+  BackupResult,
+  LibrarySnapshot,
+  RestorePlan,
+  RestoreResult,
+} from '../../src/session/library-session';
+import type { ValidBackup } from '../../src/storage/restore';
+import { AppError } from '../../src/model/errors';
+import { downloadBlob, pickFile } from '../../src/ui/platform';
 import { Library } from '../../src/ui/screens/Library';
 import { dismissToast, getToast } from '../../src/ui/toast';
 
@@ -15,6 +22,7 @@ afterEach(cleanup);
 vi.mock('../../src/ui/platform', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/ui/platform')>()),
   downloadBlob: vi.fn(),
+  pickFile: vi.fn(),
 }));
 
 vi.mock('../../src/ui/a11y/announcer', async (importOriginal) => ({
@@ -22,9 +30,14 @@ vi.mock('../../src/ui/a11y/announcer', async (importOriginal) => ({
   announce: vi.fn(),
 }));
 
-/** A session with a fixed snapshot (`backup` null unless given) and spies for its writes. */
-function fakeSession(given: Omit<LibrarySnapshot, 'backup'> & Partial<LibrarySnapshot>) {
-  const snapshot: LibrarySnapshot = { backup: null, ...given };
+/**
+ * A session with a fixed snapshot (`backup` null and `restoring` false unless given) and spies
+ * for its writes.
+ */
+function fakeSession(
+  given: Omit<LibrarySnapshot, 'backup' | 'restoring'> & Partial<LibrarySnapshot>,
+) {
+  const snapshot: LibrarySnapshot = { backup: null, restoring: false, ...given };
   return {
     subscribe: () => () => {},
     getSnapshot: () => snapshot,
@@ -32,6 +45,8 @@ function fakeSession(given: Omit<LibrarySnapshot, 'backup'> & Partial<LibrarySna
     deleteTake: vi.fn(async () => {}),
     deleteAudio: vi.fn(async () => {}),
     backUp: vi.fn(async (): Promise<BackupResult | null> => null),
+    readBackup: vi.fn<(file: Blob) => Promise<RestorePlan | null>>(async () => null),
+    restore: vi.fn<(backup: ValidBackup) => Promise<RestoreResult | null>>(async () => null),
   };
 }
 
@@ -402,7 +417,13 @@ describe('search', () => {
 
   /** A session whose snapshot can change, notifying the screen like library-session. */
   function liveSession(rows: LibraryRow[]) {
-    let snapshot: LibrarySnapshot = { loading: false, rows, error: null, backup: null };
+    let snapshot: LibrarySnapshot = {
+      loading: false,
+      rows,
+      error: null,
+      backup: null,
+      restoring: false,
+    };
     const listeners = new Set<() => void>();
     const session = {
       ...fakeSession(snapshot),
@@ -814,5 +835,175 @@ describe('Back up library', () => {
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(screen.getByRole('menu')).toBeTruthy();
     expect(session.rename).not.toHaveBeenCalled();
+  });
+});
+
+// Story "Restore from a backup" (6.6): the button, the picker, the Confirm dialog, the summary
+// toast and the error banner.
+describe('Restore from backup', () => {
+  afterEach(() => {
+    dismissToast();
+    vi.mocked(pickFile).mockReset();
+    vi.mocked(announce).mockClear();
+  });
+
+  const button = () => screen.getByRole('button', { name: /^(Restore from backup|Restoring…)$/ });
+  const zip = () => new File(['zip'], 'tabcreator-backup-20261006.zip');
+  const backup: ValidBackup = { takes: [], tabs: [], audio: new Map() };
+  const planOf = (n: number, toSkip = 0): RestorePlan => ({
+    backup: {
+      ...backup,
+      takes: Array.from({ length: n }, (_, i) => ({ id: `t${i}` }) as ValidBackup['takes'][0]),
+    },
+    toImport: n - toSkip,
+    toSkip,
+  });
+  const empty = () => fakeSession({ loading: false, rows: [], error: null });
+
+  it('is enabled with an empty library, while Back up library is disabled', () => {
+    render(<Library session={empty()} />);
+    expect(button().textContent).toBe('Restore from backup');
+    expect((button() as HTMLButtonElement).disabled).toBe(false);
+    expect(button().getAttribute('aria-disabled')).toBeNull();
+    expect(
+      (screen.getByRole('button', { name: 'Back up library' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it('picks a .zip, reads it, confirms, then restores: a toast and a polite announcement', async () => {
+    const session = empty();
+    const plan = planOf(3);
+    vi.mocked(pickFile).mockResolvedValueOnce(zip());
+    session.readBackup.mockResolvedValueOnce(plan);
+    session.restore.mockResolvedValueOnce({ imported: 3, skipped: 0 });
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    expect(pickFile).toHaveBeenCalledWith('.zip,application/zip');
+    expect(session.readBackup).toHaveBeenCalledTimes(1);
+    const dialog = screen.getByRole('alertdialog');
+    expect(dialog.textContent).toContain('Restore 3 takes from tabcreator-backup-20261006.zip?');
+    expect(dialog.textContent).toContain(
+      'Takes already in your library are skipped; nothing is overwritten.',
+    );
+    // Cancel first; nothing restored before Restore.
+    const buttons = within(dialog).getAllByRole('button');
+    expect(buttons.map((b) => b.textContent)).toEqual(['Cancel', 'Restore']);
+    expect(session.restore).not.toHaveBeenCalled();
+    await act(async () => fireEvent.click(buttons[1]!));
+    expect(session.restore).toHaveBeenCalledWith(plan.backup);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(getToast()?.message).toBe('Imported 3 takes');
+    expect(announce).toHaveBeenCalledWith('Imported 3 takes');
+  });
+
+  it('some already present: the dialog counts the new takes and names the skipped ones', async () => {
+    const session = empty();
+    vi.mocked(pickFile).mockResolvedValueOnce(zip());
+    session.readBackup.mockResolvedValueOnce(planOf(3, 1));
+    session.restore.mockResolvedValueOnce({ imported: 2, skipped: 1 });
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    const dialog = screen.getByRole('alertdialog');
+    expect(dialog.textContent).toContain('Restore 2 takes from tabcreator-backup-20261006.zip?');
+    expect(dialog.textContent).toContain(
+      '1 take already in your library is skipped; nothing is overwritten.',
+    );
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Restore' })));
+    expect(getToast()?.message).toBe('Imported 2 takes, skipped 1 already in your library');
+  });
+
+  it('nothing new: no dialog, the restore runs at once and the summary names the skipped takes', async () => {
+    const session = empty();
+    const plan = planOf(3, 3);
+    vi.mocked(pickFile).mockResolvedValueOnce(zip());
+    session.readBackup.mockResolvedValueOnce(plan);
+    session.restore.mockResolvedValueOnce({ imported: 0, skipped: 3 });
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(session.restore).toHaveBeenCalledWith(plan.backup);
+    expect(getToast()?.message).toBe('Imported 0 takes, skipped 3 already in your library');
+  });
+
+  it('cancelling the picker or the dialog changes nothing and shows no banner', async () => {
+    const session = empty();
+    vi.mocked(pickFile).mockResolvedValueOnce(null);
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    expect(session.readBackup).not.toHaveBeenCalled();
+    vi.mocked(pickFile).mockResolvedValueOnce(zip());
+    session.readBackup.mockResolvedValueOnce(planOf(2));
+    await act(async () => fireEvent.click(button()));
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Cancel' })));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(session.restore).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('restore-error')).toBeNull();
+    expect(getToast()).toBeNull();
+  });
+
+  it('an invalid file: the error banner (announced assertively), no dialog; cleared by the next attempt', async () => {
+    const session = empty();
+    vi.mocked(pickFile).mockResolvedValueOnce(zip());
+    session.readBackup.mockRejectedValueOnce(new AppError('backup-invalid', 'bad'));
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    const text = "That file isn't a TabCreator backup — nothing was changed.";
+    expect(screen.getByTestId('restore-error').textContent).toBe(text);
+    expect(announce).toHaveBeenCalledWith(text, 'assertive');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(session.restore).not.toHaveBeenCalled();
+    vi.mocked(pickFile).mockResolvedValueOnce(null);
+    await act(async () => fireEvent.click(button()));
+    expect(screen.queryByTestId('restore-error')).toBeNull();
+  });
+
+  it('a failed write: the "didn\'t finish" banner, no toast', async () => {
+    const session = empty();
+    vi.mocked(pickFile).mockResolvedValueOnce(zip());
+    session.readBackup.mockResolvedValueOnce(planOf(1));
+    session.restore.mockRejectedValueOnce(new AppError('storage-full', 'quota'));
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    expect(screen.getByRole('alertdialog').textContent).toContain('Restore 1 take from');
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Restore' })));
+    expect(screen.getByTestId('restore-error').textContent).toBe(
+      "Restore didn't finish — nothing was changed.",
+    );
+    expect(getToast()).toBeNull();
+  });
+
+  it('while a restore runs: "Restoring…", aria-disabled, Back up disabled, row writes paused', () => {
+    const analysed: LibraryRow = { ...recorded, id: 'a', status: 'analyzed', noteCount: 3 };
+    const session = fakeSession({ loading: false, rows: [analysed], error: null, restoring: true });
+    render(<Library session={session} />);
+    expect(button().textContent).toBe('Restoring…');
+    expect(button().getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(button());
+    expect(pickFile).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole('button', { name: 'Back up library' }).getAttribute('aria-disabled'),
+    ).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Back up library' }));
+    expect(session.backUp).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: `More actions for ${analysed.title}` }));
+    for (const item of screen.getAllByRole('menuitem')) {
+      expect(item.getAttribute('aria-disabled')).toBe('true');
+      expect(document.getElementById(item.getAttribute('aria-describedby')!)?.textContent).toBe(
+        'Restoring…',
+      );
+    }
+  });
+
+  it('while a backup runs, Restore from backup is aria-disabled and does nothing', () => {
+    const session = fakeSession({
+      loading: false,
+      rows: [recorded],
+      error: null,
+      backup: { progress: 0.2 },
+    });
+    render(<Library session={session} />);
+    expect(button().getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(button());
+    expect(pickFile).not.toHaveBeenCalled();
   });
 });

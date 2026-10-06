@@ -524,6 +524,27 @@ export const strings = {
   /** A toast when the backup downloaded but some takes' audio files were missing. */
   'library.backupMissing': (n: number) =>
     `Backed up — ${n} ${n === 1 ? 'recording was' : 'recordings were'} missing`,
+  /** Restore from backup (story 6.6; EXPERIENCE.md :85, :117, mockup library.html (f·2)). */
+  'library.restore': 'Restore from backup',
+  /** The Restore button's label while a restore reads or imports a file. */
+  'library.restoring': 'Restoring…',
+  /** The Restore dialog: the takes it will import, and the file's name. */
+  'library.restoreTitle': (n: number, fileName: string) =>
+    `Restore ${n} ${n === 1 ? 'take' : 'takes'} from ${fileName}?`,
+  /** The Restore dialog's body; `skipped` takes in the file are already in the library. */
+  'library.restoreBody': (skipped: number) =>
+    skipped > 0
+      ? `${skipped} ${skipped === 1 ? 'take' : 'takes'} already in your library ${skipped === 1 ? 'is' : 'are'} skipped; nothing is overwritten.`
+      : 'Takes already in your library are skipped; nothing is overwritten.',
+  'library.restoreConfirm': 'Restore',
+  /** The summary toast (and polite announcement) once a restore finished. */
+  'library.restored': (imported: number, skipped: number) =>
+    `Imported ${imported} ${imported === 1 ? 'take' : 'takes'}` +
+    (skipped > 0 ? `, skipped ${skipped} already in your library` : ''),
+  /** The error banner when the picked file is not a valid backup (`backup-invalid`). */
+  'library.restoreInvalid': "That file isn't a TabCreator backup — nothing was changed.",
+  /** The error banner when a restore's write failed (storage full or failed). */
+  'library.restoreFailed': "Restore didn't finish — nothing was changed.",
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */
   'tuner.stringLetter': (string: StringNo) =>
