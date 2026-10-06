@@ -3,7 +3,7 @@ title: 'Storage protection and Library states'
 type: 'feature'
 ticket: '7'
 created: '2026-10-06'
-status: built
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
@@ -22,8 +22,6 @@ deferred:
     location: >-
       app/src/storage/persistence.ts
     severity: medium (unverified)
-blocked_at: ""
-blocked_reason: ""
 ---
 
 <intent-contract>
