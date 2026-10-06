@@ -3,7 +3,7 @@ title: 'Copy and Download on the Tab screen'
 type: 'feature'
 ticket: '4'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: 'b45d558992a1ca4331388f4bcbc4611691082fb3'
 route: 'full'
 route_source: 'auto'
