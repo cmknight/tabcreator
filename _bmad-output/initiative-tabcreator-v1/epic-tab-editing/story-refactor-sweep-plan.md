@@ -3,7 +3,7 @@ title: 'Refactor sweep (epic Tab editing)'
 type: 'refactor'
 ticket: '8'
 created: '2026-10-05'
-status: 'built'
+status: done
 baseline_revision: 'b07c10d5cf94e7c74f497f7d966d56a0a235e604'
 route: 'full'
 route_source: 'auto'
