@@ -174,6 +174,9 @@ test('changed settings persist: leaving and reopening the take shows them', asyn
 
   await page.getByRole('link', { name: 'Library' }).click();
   await expect(page).toHaveURL(/#\/library$/);
+  // Wait for the Library screen itself: the goto below only changes the hash, and two quick hash
+  // changes can render only the second, leaving this Tab screen (with its panel open) mounted.
+  await expect(page.getByRole('heading', { level: 1, name: 'Library' })).toBeVisible();
   await page.goto(`./?fakeMic=${NOISY}#/tab/${encodeURIComponent(id)}`);
   await expect(tabArea(page)).toBeVisible({ timeout: 15_000 });
   await toggle(page).click();
