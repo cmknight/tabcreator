@@ -2,11 +2,10 @@
 // download's file name from the take's title, and the line endings the download uses. The text
 // itself is `toText` (model/tab-render.ts); the clipboard and the download are ui/platform.ts.
 
+import { foldLatin } from './fold';
+
 /** The longest slug, in characters. */
 export const MAX_SLUG_LENGTH = 60;
-
-/** Letters NFD does not split, folded to ASCII (lowercase; the title is lowercased first). */
-const FOLD: Record<string, string> = { ß: 'ss', ø: 'o', æ: 'ae', œ: 'oe', ł: 'l', đ: 'd' };
 
 /** Windows reserved device names: a file named `con.txt` cannot be saved there. */
 const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
@@ -19,11 +18,7 @@ const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
  * A Windows reserved name (con, prn, aux, nul, com1–9, lpt1–9) gets a `-tab` suffix.
  */
 export function slugify(title: string): string {
-  const slug = title
-    .normalize('NFD')
-    .replace(/\p{M}+/gu, '')
-    .toLowerCase()
-    .replace(/[ßøæœłđ]/g, (c) => FOLD[c]!)
+  const slug = foldLatin(title)
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
   return notReserved(truncate(slug));

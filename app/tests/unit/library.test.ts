@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  filterRows,
   formatMegabytes,
   libraryRow,
   notePreview,
   pickSize,
+  searchKey,
   sortRows,
+  withTitle,
   type LibraryRow,
 } from '../../src/model/library';
 import type { Note, StringNo, Tab, Take } from '../../src/model/types';
@@ -56,6 +59,7 @@ describe('libraryRow', () => {
     expect(row).toEqual<LibraryRow>({
       id: 't1',
       title: 'Take 2026-09-27 21:14',
+      searchKey: 'take 2026-09-27 21:14',
       createdAt: '2026-09-27T21:14:00.000Z',
       status: 'analyzed',
       durationMs: 13_400,
@@ -168,5 +172,75 @@ describe('formatMegabytes', () => {
     expect(formatMegabytes(41_000_000)).toBe('41.0');
     expect(formatMegabytes(12_000)).toBe('0.1');
     expect(formatMegabytes(0)).toBe('0.0');
+  });
+});
+
+// Story "Search 500 takes" (EXPERIENCE.md Search): titles match ignoring case and accents.
+describe('searchKey', () => {
+  it('folds case and strips accents (NFD, combining marks removed)', () => {
+    expect(searchKey('Café Blues 017')).toBe('cafe blues 017');
+    expect(searchKey('BLUES')).toBe('blues');
+    expect(searchKey('Ångström Señor Über')).toBe('angstrom senor uber');
+    // Already-decomposed input folds the same way.
+    expect(searchKey('Cafe\u0301')).toBe('cafe');
+    // Letters NFD does not split fold as the export slug does.
+    expect(searchKey('Øresund Straße Æther Œuvre Łódź Đak')).toBe(
+      'oresund strasse aether oeuvre lodz dak',
+    );
+  });
+
+  it('ignores the locale: a Turkish locale still folds "I" to "i"', () => {
+    const lower = vi.spyOn(String.prototype, 'toLocaleLowerCase').mockImplementation(function (
+      this: string,
+    ) {
+      // What tr-TR does: dotless ı for I.
+      return this.replace(/I/g, 'ı').toLowerCase();
+    });
+    try {
+      expect(searchKey('INTRO RIFF')).toBe('intro riff');
+    } finally {
+      lower.mockRestore();
+    }
+  });
+
+  it('is set on the row from its title', () => {
+    expect(libraryRow(makeTake({ title: 'Crème Brûlée' }), null, null).searchKey).toBe(
+      'creme brulee',
+    );
+  });
+});
+
+describe('withTitle', () => {
+  it('recomputes the search key with the title; an unchanged title keeps the row', () => {
+    const row = libraryRow(makeTake({ title: 'Riff' }), null, null);
+    expect(withTitle(row, 'Riff')).toBe(row);
+    expect(withTitle(row, 'Élan')).toMatchObject({ title: 'Élan', searchKey: 'elan' });
+    expect(row.title).toBe('Riff');
+  });
+});
+
+describe('filterRows', () => {
+  const rows = ['Café Blues', 'blues lick', 'Riff', 'Øresund', 'Riff Blues'].map((title, i) =>
+    libraryRow(makeTake({ id: `t${i}`, title }), null, null),
+  );
+  const titles = (q: string) => filterRows(rows, q).map((r) => r.title);
+
+  it('matches titles containing the query, ignoring case and accents, in order', () => {
+    expect(titles('cafe')).toEqual(['Café Blues']);
+    expect(titles('CAFÉ')).toEqual(['Café Blues']);
+    expect(titles('BLUES')).toEqual(['Café Blues', 'blues lick', 'Riff Blues']);
+    expect(titles('oresund')).toEqual(['Øresund']);
+    expect(titles('lues l')).toEqual(['blues lick']);
+    expect(titles('zzz')).toEqual([]);
+  });
+
+  it('trims the query: "blues " finds "Riff Blues"', () => {
+    expect(titles('blues ')).toContain('Riff Blues');
+    expect(titles('  riff blues  ')).toEqual(['Riff Blues']);
+  });
+
+  it('an empty or whitespace-only query keeps every row (the same array)', () => {
+    expect(filterRows(rows, '')).toBe(rows);
+    expect(filterRows(rows, '   ')).toBe(rows);
   });
 });

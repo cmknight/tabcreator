@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { LibraryRow } from '../../src/model/library';
+import { searchKey, type LibraryRow } from '../../src/model/library';
+import { announce } from '../../src/ui/a11y/announcer';
 import type { LibrarySnapshot } from '../../src/session/library-session';
 import { Library } from '../../src/ui/screens/Library';
 import { dismissToast, getToast } from '../../src/ui/toast';
@@ -9,6 +10,11 @@ import { dismissToast, getToast } from '../../src/ui/toast';
 // library-session replaced by a fixed snapshot.
 
 afterEach(cleanup);
+
+vi.mock('../../src/ui/a11y/announcer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/ui/a11y/announcer')>()),
+  announce: vi.fn(),
+}));
 
 function fakeSession(snapshot: LibrarySnapshot) {
   return {
@@ -23,6 +29,7 @@ function fakeSession(snapshot: LibrarySnapshot) {
 const recorded: LibraryRow = {
   id: 't1',
   title: 'Take 2026-09-28 10:52',
+  searchKey: 'take 2026-09-28 10:52',
   createdAt: '2026-09-28T10:52:00.000Z',
   status: 'recorded',
   durationMs: 182_000,
@@ -90,6 +97,7 @@ describe('row actions', () => {
     ...recorded,
     id: 't2',
     title: 'Blues lick in A',
+    searchKey: 'blues lick in a',
     status: 'analyzed',
     noteCount: 64,
     preview: 'G|5 G|7',
@@ -369,5 +377,292 @@ describe('row actions', () => {
     await act(async () => {});
     expect(getToast()?.message).toBe("Couldn't delete the audio");
     dismissToast();
+  });
+});
+
+// Story "Search 500 takes" (6.3): the search field, no match, Clear search, the announced count,
+// live updates during a search and the virtualised list.
+describe('search', () => {
+  const mk = (i: number, title: string): LibraryRow => ({
+    ...recorded,
+    id: `s${i}`,
+    title,
+    searchKey: searchKey(title),
+    createdAt: new Date(Date.UTC(2026, 8, 1) - i * 60_000).toISOString(),
+  });
+
+  /** A session whose snapshot can change, notifying the screen like library-session. */
+  function liveSession(rows: LibraryRow[]) {
+    let snapshot: LibrarySnapshot = { loading: false, rows, error: null };
+    const listeners = new Set<() => void>();
+    const session = {
+      ...fakeSession(snapshot),
+      subscribe: (l: () => void) => {
+        listeners.add(l);
+        return () => listeners.delete(l);
+      },
+      getSnapshot: () => snapshot,
+    };
+    const set = (next: LibraryRow[]) =>
+      act(() => {
+        snapshot = { ...snapshot, rows: next };
+        for (const l of listeners) l();
+      });
+    return { session, set };
+  }
+
+  const field = () => screen.getByRole('searchbox', { name: 'Search takes' }) as HTMLInputElement;
+  const type = (q: string) => fireEvent.change(field(), { target: { value: q } });
+  const listed = () =>
+    screen.queryAllByRole('listitem').map((li) => li.querySelector('[id$="-title"]')?.textContent);
+
+  const cafe = mk(1, 'Café Blues');
+  const riff = mk(2, 'Riff');
+  const lick = mk(3, 'blues lick');
+
+  it('the field: type search, named and placeholdered "Search takes", above the list', () => {
+    render(<Library session={fakeSession({ loading: false, rows: [cafe], error: null })} />);
+    expect(field().type).toBe('search');
+    expect(field().placeholder).toBe('Search takes');
+    expect(field().disabled).toBe(false);
+    expect(
+      field().compareDocumentPosition(screen.getByRole('list')) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('accents and case: "cafe" lists only Café Blues; "BLUES" matches blues lick too', () => {
+    render(
+      <Library session={fakeSession({ loading: false, rows: [cafe, riff, lick], error: null })} />,
+    );
+    type('cafe');
+    expect(listed()).toEqual(['Café Blues']);
+    type('BLUES');
+    expect(listed()).toEqual(['Café Blues', 'blues lick']);
+    type('   ');
+    expect(listed()).toEqual(['Café Blues', 'Riff', 'blues lick']);
+  });
+
+  it('no match: the sentence and Clear search, which empties and focuses the field', () => {
+    render(<Library session={fakeSession({ loading: false, rows: [cafe, riff], error: null })} />);
+    type('zzz');
+    expect(screen.queryByRole('list')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'No takes match "zzz"' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+    expect(field().value).toBe('');
+    expect(document.activeElement).toBe(field());
+    expect(listed()).toEqual(['Café Blues', 'Riff']);
+  });
+
+  it('clearing by deleting the query brings every row back', () => {
+    render(<Library session={fakeSession({ loading: false, rows: [cafe, riff], error: null })} />);
+    type('riff');
+    expect(listed()).toEqual(['Riff']);
+    type('');
+    expect(listed()).toEqual(['Café Blues', 'Riff']);
+  });
+
+  it('an empty library disables the field', () => {
+    render(<Library session={fakeSession({ loading: false, rows: [], error: null })} />);
+    expect(field().disabled).toBe(true);
+  });
+
+  it('live updates keep the query: a matching new take appears; a row renamed out disappears', () => {
+    const { session, set } = liveSession([cafe, riff]);
+    render(<Library session={session} />);
+    type('blues');
+    expect(listed()).toEqual(['Café Blues']);
+    set([lick, cafe, riff]);
+    expect(listed()).toEqual(['blues lick', 'Café Blues']);
+    set([{ ...cafe, title: 'Jazz', searchKey: 'jazz' }, lick, riff]);
+    expect(listed()).toEqual(['blues lick']);
+    expect(field().value).toBe('blues');
+  });
+
+  it('the count is announced once typing settles: "2 takes", "1 take", the no-match sentence', () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(announce).mockClear();
+      const { session, set } = liveSession([cafe, riff, lick]);
+      render(<Library session={session} />);
+      set([cafe, riff]); // a live update alone announces nothing
+      act(() => vi.advanceTimersByTime(1000));
+      expect(announce).not.toHaveBeenCalled();
+      set([cafe, riff, lick]);
+      type('b');
+      act(() => vi.advanceTimersByTime(200));
+      type('bl');
+      act(() => vi.advanceTimersByTime(499));
+      expect(announce).not.toHaveBeenCalled();
+      act(() => vi.advanceTimersByTime(1));
+      expect(vi.mocked(announce).mock.calls).toEqual([['2 takes']]);
+      type('riff');
+      act(() => vi.advanceTimersByTime(500));
+      type('zzz');
+      act(() => vi.advanceTimersByTime(500));
+      expect(vi.mocked(announce).mock.calls.slice(1)).toEqual([
+        ['1 take'],
+        ['No takes match "zzz"'],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the library emptying clears the query, moves focus from the field to the heading and announces nothing', () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(announce).mockClear();
+      const { session, set } = liveSession([cafe, riff]);
+      render(<Library session={session} />);
+      act(() => field().focus());
+      type('riff');
+      set([]);
+      expect(field().value).toBe('');
+      expect(field().disabled).toBe(true);
+      expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Library' }));
+      act(() => vi.advanceTimersByTime(1000));
+      expect(announce).not.toHaveBeenCalled();
+      set([cafe]);
+      expect(listed()).toEqual(['Café Blues']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a row title carries its full text as a tooltip (it may be cut with an ellipsis)', () => {
+    render(<Library session={fakeSession({ loading: false, rows: [cafe], error: null })} />);
+    expect(screen.getByText('Café Blues').getAttribute('title')).toBe('Café Blues');
+  });
+
+  describe('virtualised list', () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => mk(i, `Take ${i}`));
+
+    it('80 takes: every row rendered, positions and set size on each', () => {
+      render(<Library session={fakeSession({ loading: false, rows: many(80), error: null })} />);
+      const items = screen.getAllByRole('listitem');
+      expect(items).toHaveLength(80);
+      expect(screen.getByRole('list').getAttribute('role')).toBe('list');
+      expect(items[0]!.getAttribute('aria-posinset')).toBe('1');
+      expect(items[79]!.getAttribute('aria-posinset')).toBe('80');
+      expect(items[79]!.getAttribute('aria-setsize')).toBe('80');
+    });
+
+    it('500 takes: only the rows near the viewport, the rest held by the list height', () => {
+      render(<Library session={fakeSession({ loading: false, rows: many(500), error: null })} />);
+      const items = screen.getAllByRole('listitem');
+      expect(items.length).toBeGreaterThan(0);
+      expect(items.length).toBeLessThanOrEqual(40);
+      expect(items[0]!.getAttribute('aria-posinset')).toBe('1');
+      expect(items[0]!.getAttribute('aria-setsize')).toBe('500');
+      const list = screen.getByRole('list') as HTMLElement;
+      // The unrendered rows after the last rendered one are its bottom padding.
+      expect(parseFloat(list.style.paddingBlockEnd)).toBeGreaterThan(0);
+    });
+
+    it('scrolling renders the rows at the new position', () => {
+      render(<Library session={fakeSession({ loading: false, rows: many(500), error: null })} />);
+      const list = screen.getByRole('list');
+      // The list's top 20 000 px above the viewport (rows 80 px tall before measuring): row 250.
+      const rect = vi.spyOn(list, 'getBoundingClientRect').mockReturnValue({
+        top: -20_000,
+      } as DOMRect);
+      act(() => {
+        window.dispatchEvent(new Event('scroll'));
+      });
+      const pos = screen
+        .getAllByRole('listitem')
+        .map((li) => Number(li.getAttribute('aria-posinset')));
+      expect(pos[0]).toBe(241);
+      expect(pos).toContain(260);
+      expect(pos.length).toBeLessThanOrEqual(40);
+      // Its first row's top margin stands for the 240 rows above it.
+      expect(screen.getAllByRole('listitem')[0]!.style.marginBlockStart).toBe(`${240 * 80}px`);
+      rect.mockRestore();
+    });
+
+    it('a row with its menu open stays rendered when scrolled away', () => {
+      render(<Library session={fakeSession({ loading: false, rows: many(500), error: null })} />);
+      fireEvent.click(screen.getByRole('button', { name: 'More actions for Take 0' }));
+      expect(screen.getByRole('menu', { name: 'Actions for Take 0' })).toBeTruthy();
+      const list = screen.getByRole('list');
+      vi.spyOn(list, 'getBoundingClientRect').mockReturnValue({ top: -20_000 } as DOMRect);
+      act(() => {
+        window.dispatchEvent(new Event('scroll'));
+      });
+      // The scroll closes the menu; focus goes back to the row's "⋯" button, which keeps it.
+      expect(screen.queryByRole('menu')).toBeNull();
+      const kebab = screen.getByRole('button', { name: 'More actions for Take 0' });
+      expect(document.activeElement).toBe(kebab);
+      expect(kebab.getAttribute('aria-expanded')).toBe('false');
+      expect(positions()).toEqual([1, ...range(241, positions().length - 1)]);
+    });
+
+    const positions = () =>
+      screen.getAllByRole('listitem').map((li) => Number(li.getAttribute('aria-posinset')));
+    const range = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => from + i);
+    function scrollAway() {
+      vi.spyOn(screen.getByRole('list'), 'getBoundingClientRect').mockReturnValue({
+        top: -20_000,
+      } as DOMRect);
+      act(() => {
+        window.dispatchEvent(new Event('scroll'));
+      });
+    }
+
+    it('a focused row stays rendered when scrolled away; once focus leaves, it goes', () => {
+      render(<Library session={fakeSession({ loading: false, rows: many(500), error: null })} />);
+      const link = screen.getByRole('link', { name: 'Take 2' });
+      act(() => link.focus());
+      scrollAway();
+      expect(positions()[0]).toBe(3);
+      expect(document.activeElement).toBe(link);
+      expect(positions().slice(1)).toEqual(range(241, positions().length - 1));
+      act(() => screen.getByRole('searchbox').focus());
+      expect(positions()[0]).toBe(241);
+    });
+
+    it('a focused row stays rendered when the window loses focus', () => {
+      render(<Library session={fakeSession({ loading: false, rows: many(500), error: null })} />);
+      const link = screen.getByRole('link', { name: 'Take 2' });
+      act(() => link.focus());
+      const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+      fireEvent.focusOut(link, { relatedTarget: null });
+      scrollAway();
+      expect(positions()[0]).toBe(3);
+      hasFocus.mockRestore();
+    });
+
+    it('a row with its Confirm dialog open stays rendered when scrolled away', () => {
+      const session = fakeSession({ loading: false, rows: many(500), error: null });
+      render(<Library session={session} />);
+      fireEvent.click(screen.getByRole('button', { name: 'More actions for Take 4' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Delete take' }));
+      const dialog = screen.getByRole('alertdialog', { name: 'Delete "Take 4"?' });
+      scrollAway();
+      expect(positions()[0]).toBe(5);
+      expect(screen.getByRole('alertdialog')).toBe(dialog);
+      fireEvent.click(screen.getAllByRole('button', { name: 'Delete take' }).at(-1)!);
+      expect(session.deleteTake).toHaveBeenCalledWith('s4');
+    });
+
+    it('a row being renamed stays rendered when scrolled away', () => {
+      const { session } = {
+        session: fakeSession({ loading: false, rows: many(500), error: null }),
+      };
+      render(<Library session={session} />);
+      fireEvent.click(screen.getByRole('button', { name: 'More actions for Take 3' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+      const input = screen.getByRole('textbox', { name: 'Take title' });
+      const list = screen.getByRole('list');
+      vi.spyOn(list, 'getBoundingClientRect').mockReturnValue({ top: -20_000 } as DOMRect);
+      act(() => {
+        window.dispatchEvent(new Event('scroll'));
+      });
+      expect(screen.getByRole('textbox', { name: 'Take title' })).toBe(input);
+      fireEvent.change(input, { target: { value: 'Renamed' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(session.rename).toHaveBeenCalledWith('s3', 'Renamed');
+    });
   });
 });

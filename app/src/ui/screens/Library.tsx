@@ -9,24 +9,36 @@
 // Delete take, each delete behind a Confirm dialog (Cancel first and focused). The writes go
 // through library-session. Focus returns to the row's "⋯" button after the menu, a dialog or a
 // rename; when the row itself goes (deleted), it moves to the screen's heading.
+//
+// Story "Search 500 takes" (EXPERIENCE.md Search, mockup library.html "libtools"): the Search
+// takes field filters the rows by title as you type, ignoring case and accents (model/library
+// `filterRows`); no match shows "No takes match …" and Clear search; the result count is announced
+// once typing settles. Above `VIRTUAL_ABOVE` rows the list is virtualised: only the rows in and
+// near the viewport (plus any row with focus, its menu, a dialog or its rename open) are rendered,
+// the gaps held by margins and padding, so scrolling reaches every row (CAP-17). Unrendered rows
+// are not in the DOM, so find-in-page and a screen reader's virtual cursor do not reach them:
+// the search field is the way to find a take in a long library.
 
 import {
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
 import { capTitle } from '../../model/title';
-import { formatMegabytes } from '../../model/library';
+import { filterRows, formatMegabytes } from '../../model/library';
 import {
   librarySession,
   type LibraryRow,
   type LibrarySession,
   type LibraryStatus,
 } from '../../session/library-session';
+import { announce } from '../a11y/announcer';
 import buttons from '../components/buttons.module.css';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import {
@@ -36,6 +48,7 @@ import {
   MoreIcon,
   MuteIcon,
   PencilIcon,
+  SearchIcon,
 } from '../components/icons';
 import { RowMenu, type RowMenuItem } from '../components/RowMenu';
 import { formatElapsed, formatTakeDate } from '../format';
@@ -100,7 +113,7 @@ function RowBody({ row, ids, title }: { row: LibraryRow; ids: RowIds; title?: Re
     <>
       <div className={libraryStyles.titleLine}>
         {title ?? (
-          <span id={ids.title} className={libraryStyles.title}>
+          <span id={ids.title} className={libraryStyles.title} title={row.title}>
             {row.title}
           </span>
         )}
@@ -189,13 +202,24 @@ type Confirming = 'delete-take' | 'delete-audio' | null;
 
 function Row({
   row,
+  pos,
+  size,
+  gapPx,
   actions,
   onRowGone,
+  onBusy,
 }: {
   row: LibraryRow;
+  /** The row's position in the shown list (from 1) and the list's length (`aria-posinset`/`setsize`). */
+  pos: number;
+  size: number;
+  /** The virtual list's space before the row, for the unrendered rows above it (0: none). */
+  gapPx: number;
   actions: RowActions;
   /** The row is going while focus is inside it (its take was deleted). */
   onRowGone(): void;
+  /** The row's menu, a dialog or its rename opened (true) or closed (false): keep it rendered. */
+  onBusy(id: string, busy: boolean): void;
 }) {
   const base = useId();
   const ids: RowIds = {
@@ -212,6 +236,13 @@ function Row({
   const [confirming, setConfirming] = useState<Confirming>(null);
   /** Whether focus goes back to the "⋯" button once the rename field is gone. */
   const refocus = useRef(false);
+
+  const busy = menuAnchor !== null || editing || confirming !== null;
+  useEffect(() => {
+    if (!busy) return;
+    onBusy(row.id, true);
+    return () => onBusy(row.id, false);
+  }, [busy, row.id, onBusy]);
 
   useEffect(() => {
     if (editing || !refocus.current) return;
@@ -277,7 +308,14 @@ function Row({
   ) : undefined;
 
   return (
-    <li ref={li} className={libraryStyles.row} data-take-id={row.id}>
+    <li
+      ref={li}
+      className={libraryStyles.row}
+      data-take-id={row.id}
+      aria-posinset={pos}
+      aria-setsize={size}
+      style={gapPx > 0 ? { marginBlockStart: gapPx } : undefined}
+    >
       {row.opens && !editing ? (
         // Named by the title alone; the badge, metadata and preview describe it.
         <a
@@ -353,6 +391,160 @@ function Row({
   );
 }
 
+/** Lists longer than this are virtualised (only rows in and near the viewport are rendered). */
+export const VIRTUAL_ABOVE = 100;
+/** Rows rendered beyond each edge of the viewport in a virtualised list. */
+export const OVERSCAN = 10;
+/** A row's height before one has been measured (and where layout gives none, as in jsdom). */
+const ROW_PX_GUESS = 80;
+/** How long typing must pause before the result count is announced. */
+export const ANNOUNCE_AFTER_MS = 500;
+
+/**
+ * The take list. Up to `VIRTUAL_ABOVE` rows: every row. Above: the rows from just above to just
+ * below the viewport (`OVERSCAN` each side), plus any row holding focus or busy (menu, dialog,
+ * rename) wherever it is; each rendered row's top margin stands for the unrendered rows before
+ * it and the list's bottom padding for those after the last, so the list keeps its full height.
+ * Every row has the same height (one-line title, metadata and preview), measured once rendered.
+ */
+function RowList({
+  rows,
+  actions,
+  onRowGone,
+}: {
+  rows: readonly LibraryRow[];
+  actions: RowActions;
+  onRowGone(): void;
+}) {
+  const n = rows.length;
+  const virtual = n > VIRTUAL_ABOVE;
+  const list = useRef<HTMLUListElement>(null);
+  const [rowPx, setRowPx] = useState(ROW_PX_GUESS);
+  /** The rows in and near the viewport: [start, end). */
+  const [range, setRange] = useState<readonly [number, number]>([0, 0]);
+  /** Rows to keep rendered: busy ones and the one with focus. */
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+
+  const onBusy = useCallback((id: string, busy: boolean) => {
+    setBusyIds((prev) => {
+      if (prev.has(id) === busy) return prev;
+      const next = new Set(prev);
+      if (busy) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const updateRange = useCallback(() => {
+    const ul = list.current;
+    if (!ul) return;
+    const top = ul.getBoundingClientRect().top;
+    const first = Math.floor(-top / rowPx) - OVERSCAN;
+    const last = Math.ceil((window.innerHeight - top) / rowPx) + OVERSCAN;
+    const start = Math.min(n, Math.max(0, first));
+    const end = Math.min(n, Math.max(start, last));
+    setRange((r) => (r[0] === start && r[1] === end ? r : [start, end]));
+  }, [n, rowPx]);
+
+  /**
+   * Measures a row (any but the first, which has no top border; the smallest of a few), with
+   * fractional pixels.
+   */
+  const measureRow = useCallback(() => {
+    const ul = list.current;
+    if (!ul) return;
+    let px = Infinity;
+    for (const li of Array.from(ul.children).slice(1, 6)) {
+      const h = li.getBoundingClientRect().height;
+      if (h > 0) px = Math.min(px, h);
+    }
+    if (px !== Infinity) setRowPx((old) => (Math.abs(px - old) >= 0.5 ? px : old));
+  }, []);
+
+  // The range follows scrolling, the window's size and any layout change that resizes the list
+  // or moves it (a banner above it, a narrower window).
+  useLayoutEffect(() => {
+    if (!virtual) return;
+    updateRange();
+    window.addEventListener('scroll', updateRange, { passive: true });
+    window.addEventListener('resize', updateRange);
+    const resized =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => {
+            measureRow();
+            updateRange();
+          });
+    if (list.current) resized?.observe(list.current);
+    resized?.observe(document.body);
+    return () => {
+      window.removeEventListener('scroll', updateRange);
+      window.removeEventListener('resize', updateRange);
+      resized?.disconnect();
+    };
+  }, [virtual, updateRange, measureRow]);
+
+  // Measures once rendered, and again when the rendered rows change.
+  useLayoutEffect(() => {
+    if (virtual) measureRow();
+  }, [virtual, measureRow, n, range]);
+
+  let indices: number[];
+  if (virtual) {
+    const start = Math.min(range[0], n);
+    const end = Math.min(range[1], n);
+    const keep = new Set<number>();
+    for (let i = start; i < end; i++) keep.add(i);
+    for (const id of focusedId === null ? busyIds : [...busyIds, focusedId]) {
+      const i = rows.findIndex((r) => r.id === id);
+      if (i >= 0) keep.add(i);
+    }
+    indices = [...keep].sort((a, b) => a - b);
+  } else {
+    indices = rows.map((_, i) => i);
+  }
+  const lastIndex = indices.length > 0 ? indices[indices.length - 1]! : -1;
+
+  return (
+    // `role="list"`: a list styled without markers keeps its list semantics in every browser.
+    <ul
+      ref={list}
+      role="list"
+      className={libraryStyles.list}
+      aria-label={strings['library.listLabel']}
+      style={virtual ? { paddingBlockEnd: (n - 1 - lastIndex) * rowPx } : undefined}
+      onFocus={(e) => {
+        const li = (e.target as Element).closest<HTMLElement>('li[data-take-id]');
+        setFocusedId(li?.dataset.takeId ?? null);
+      }}
+      onBlur={(e) => {
+        // The window losing focus (another app, a devtools click) keeps the row: focus comes
+        // back to it.
+        if (e.relatedTarget === null && !document.hasFocus()) return;
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocusedId(null);
+      }}
+    >
+      {indices.map((i, k) => {
+        const row = rows[i]!;
+        const before = k === 0 ? i : i - indices[k - 1]! - 1;
+        return (
+          <Row
+            key={row.id}
+            row={row}
+            pos={i + 1}
+            size={n}
+            gapPx={virtual ? before * rowPx : 0}
+            actions={actions}
+            onRowGone={onRowGone}
+            onBusy={onBusy}
+          />
+        );
+      })}
+    </ul>
+  );
+}
+
 export function Library({
   session = librarySession,
 }: {
@@ -363,16 +555,71 @@ export function Library({
 } = {}) {
   const { loading, rows, error } = useSyncExternalStore(session.subscribe, session.getSnapshot);
   const heading = useRef<HTMLHeadingElement>(null);
-  const focusHeading = () => heading.current?.focus();
+  const focusHeading = useCallback(() => heading.current?.focus(), []);
+  const search = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState('');
+  const shown = useMemo(() => filterRows(rows, query), [rows, query]);
+
+  // The result count, announced once typing (or Clear search) settles; not for live updates.
+  const latest = useRef({ shown, query });
+  useLayoutEffect(() => {
+    latest.current = { shown, query };
+  });
+  const typed = useRef(false);
+  const announceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dropAnnouncement = () => {
+    if (announceTimer.current !== null) clearTimeout(announceTimer.current);
+    announceTimer.current = null;
+  };
+  useEffect(() => {
+    if (!typed.current) return;
+    announceTimer.current = setTimeout(() => {
+      announceTimer.current = null;
+      const { shown: now, query: q } = latest.current;
+      announce(
+        now.length === 0
+          ? strings['library.noMatch'](q)
+          : strings['library.matchCount'](now.length),
+      );
+    }, ANNOUNCE_AFTER_MS);
+    return dropAnnouncement;
+  }, [query]);
+  const changeQuery = (q: string) => {
+    typed.current = true;
+    setQuery(q);
+  };
+
+  // The library emptied (the last take deleted): the search goes with it. Its field is disabled,
+  // so focus in it moves to the heading, and a count still pending is not announced.
+  // (The query is cleared during render; this layout effect runs before the query effect, so
+  // that clearing announces nothing either.)
+  const empty = rows.length === 0;
+  if (empty && query !== '') setQuery('');
+  useLayoutEffect(() => {
+    if (!empty) return;
+    if (search.current && document.activeElement === search.current) focusHeading();
+    typed.current = false;
+    dropAnnouncement();
+  }, [empty, focusHeading]);
 
   let body: ReactNode = null;
-  if (rows.length > 0) {
+  if (shown.length > 0) {
+    body = <RowList rows={shown} actions={session} onRowGone={focusHeading} />;
+  } else if (rows.length > 0) {
     body = (
-      <ul className={libraryStyles.list} aria-label={strings['library.listLabel']}>
-        {rows.map((row) => (
-          <Row key={row.id} row={row} actions={session} onRowGone={focusHeading} />
-        ))}
-      </ul>
+      <div className={libraryStyles.empty}>
+        <h2 className={libraryStyles.emptyTitle}>{strings['library.noMatch'](query)}</h2>
+        <button
+          type="button"
+          className={buttons.secondary}
+          onClick={() => {
+            changeQuery('');
+            search.current?.focus();
+          }}
+        >
+          {strings['library.clearSearch']}
+        </button>
+      </div>
     );
   } else if (loading) {
     body = (
@@ -396,6 +643,21 @@ export function Library({
       <h1 ref={heading} className={styles.title} tabIndex={-1}>
         {strings['library.title']}
       </h1>
+      <div className={libraryStyles.tools}>
+        <div className={libraryStyles.search} role="search">
+          <SearchIcon className={libraryStyles.searchIcon} />
+          <input
+            ref={search}
+            type="search"
+            className={libraryStyles.searchInput}
+            aria-label={strings['library.search']}
+            placeholder={strings['library.search']}
+            value={query}
+            disabled={rows.length === 0}
+            onChange={(e) => changeQuery(e.currentTarget.value)}
+          />
+        </div>
+      </div>
       {error && (
         <p className={libraryStyles.error} role="alert">
           <ErrorIcon className={libraryStyles.errorIcon} />

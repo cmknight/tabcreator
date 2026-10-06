@@ -385,6 +385,8 @@ describe('library session writes', () => {
     const { lib, session } = await loaded();
     const done = session.rename('a', '  Blues  ');
     expect(titleOf(session, 'a')).toBe('Blues');
+    // The search key follows the title (story 6.3).
+    expect(session.getSnapshot().rows.find((r) => r.id === 'a')?.searchKey).toBe('blues');
     await done;
     await flush();
     expect(lib.deps.patchTake).toHaveBeenCalledWith('a', { title: 'Blues' }, 'library-session');
@@ -486,6 +488,7 @@ describe('library session writes', () => {
     lib.emit({ type: 'tab-put', takeId: 'a', writer: 'take-session' }); // re-reads "Old"
     await flush();
     expect(titleOf(session, 'a')).toBe('Blues');
+    expect(session.getSnapshot().rows.find((r) => r.id === 'a')?.searchKey).toBe('blues');
     lib.takes.set('a', { ...lib.takes.get('a')!, title: 'Blues' });
     write.resolve(lib.takes.get('a')!);
     await done;

@@ -2,6 +2,7 @@
 // library-session builds one row per take from the take, its Tab and its compressed file size;
 // the Library screen words and lays it out. Stories 6.2, 6.3, 6.5–6.7 build on `LibraryRow`.
 
+import { foldLatin } from './fold';
 import { playedOrder, visibleNotes } from './notes';
 import { STRING_LETTERS } from './tab-render';
 import { preferredExtensions, type AudioExtension } from './audio-format';
@@ -19,6 +20,8 @@ export const PREVIEW_NOTES = 12;
 export interface LibraryRow {
   id: string;
   title: string;
+  /** `searchKey(title)`: the title folded for search (story 6.3); set with the title (`withTitle`). */
+  searchKey: string;
   /** ISO 8601, as stored; the sort key (newest first). */
   createdAt: string;
   status: LibraryStatus;
@@ -58,6 +61,7 @@ export function libraryRow(take: Take, tab: Tab | null, sizeBytes: number | null
   return {
     id: take.id,
     title: take.title,
+    searchKey: searchKey(take.title),
     createdAt: take.createdAt,
     status,
     durationMs: take.durationMs,
@@ -67,6 +71,30 @@ export function libraryRow(take: Take, tab: Tab | null, sizeBytes: number | null
     preview: notes ? notePreview(notes) : null,
     opens: !recording,
   };
+}
+
+/**
+ * Text folded for search (story "Search 500 takes", EXPERIENCE.md Search): `foldLatin` (accents
+ * stripped, lowercased without the locale, ß ø æ œ ł đ folded), so "Café" and "CAFE" both give
+ * "cafe" and "Øresund" gives "oresund".
+ */
+export function searchKey(text: string): string {
+  return foldLatin(text);
+}
+
+/** `row` with a new title (and its search key); `row` itself when the title is unchanged. */
+export function withTitle(row: LibraryRow, title: string): LibraryRow {
+  return title === row.title ? row : { ...row, title, searchKey: searchKey(title) };
+}
+
+/**
+ * The rows whose title contains `query` (trimmed), ignoring case and accents (`searchKey` on both
+ * sides), in their order; every row (the same array) for an empty or whitespace-only query.
+ */
+export function filterRows(rows: readonly LibraryRow[], query: string): readonly LibraryRow[] {
+  const key = searchKey(query.trim());
+  if (key === '') return rows;
+  return rows.filter((r) => r.searchKey.includes(key));
 }
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);

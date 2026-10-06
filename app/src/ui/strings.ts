@@ -501,6 +501,13 @@ export const strings = {
   'library.renameFailed': "Couldn't rename the take",
   'library.deleteTakeFailed': "Couldn't delete the take",
   'library.deleteAudioFailed': "Couldn't delete the audio",
+  /** The search field (story 6.3; EXPERIENCE.md Search): its name and placeholder. */
+  'library.search': 'Search takes',
+  /** No search matches (EXPERIENCE.md :116). */
+  'library.noMatch': (query: string) => `No takes match "${query}"`,
+  'library.clearSearch': 'Clear search',
+  /** The search result count, announced once typing settles: "3 takes", "1 take". */
+  'library.matchCount': (n: number) => `${n} ${n === 1 ? 'take' : 'takes'}`,
   'tuner.title': 'Tuner',
   /** The string name in display type; both E strings show "E". */
   'tuner.stringLetter': (string: StringNo) =>

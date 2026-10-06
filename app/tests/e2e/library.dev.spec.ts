@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { LIBRARY500_COUNT, library500Title } from '../../src/dev/library500';
 import { formatMegabytes, libraryRow } from '../../src/model/library';
 import type { Tab, Take } from '../../src/model/types';
 import { formatElapsed, formatTakeDate } from '../../src/ui/format';
@@ -189,6 +190,8 @@ test('an empty library shows "No takes yet" and a Record button', async ({ page 
   const empty = page.getByRole('heading', { level: 2, name: 'No takes yet' });
   await expect(empty).toBeVisible();
   await expect(list(page)).toHaveCount(0);
+  // Nothing to search (story 6.3).
+  await expect(page.getByRole('searchbox', { name: 'Search takes' })).toBeDisabled();
   await expectNoSeriousAxe(page);
   await empty.locator('..').getByRole('link', { name: 'Record', exact: true }).click();
   await expect(page).toHaveURL(/#\/record$/);
@@ -376,5 +379,125 @@ test('delete audio of an analysed take keeps its tab; delete take removes it and
     .getByRole('button', { name: 'Trim' });
   await expect(trim).toBeDisabled();
   await expect(trim).toHaveAccessibleDescription('Audio deleted');
+  expect(unexpected(errors)).toEqual([]);
+});
+
+// Story "Search 500 takes" (6.3): search on real takes, and the virtualised list of 500.
+
+const searchField = (page: Page): Locator =>
+  page.getByRole('searchbox', { name: strings['library.search'] });
+const titles = (page: Page) => rows(page).locator('[id$="-title"]');
+
+test('search: accents and case ignored; no match and Clear search; live updates keep the query', async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  await page.goto('./#/library');
+  await expect(searchField(page)).toBeDisabled();
+  const riff = await seedTab(page, undefined, 'Riff');
+  const cafe = await seedTab(page, undefined, 'Café Blues');
+  await expect(rows(page)).toHaveCount(2);
+  await expect(searchField(page)).toBeEnabled();
+
+  await searchField(page).fill('cafe');
+  await expect(titles(page)).toHaveText(['Café Blues']);
+  // The count is announced once typing settles.
+  await expect(page.getByRole('status')).toHaveText('1 take');
+
+  await searchField(page).fill('zzz');
+  await expect(list(page)).toHaveCount(0);
+  const noMatch = page.getByRole('heading', { level: 2, name: 'No takes match "zzz"' });
+  await expect(noMatch).toBeVisible();
+  await expect(page.getByRole('status')).toHaveText('No takes match "zzz"');
+  await expectNoSeriousAxe(page);
+  await page.getByRole('button', { name: strings['library.clearSearch'] }).click();
+  await expect(searchField(page)).toHaveValue('');
+  await expect(searchField(page)).toBeFocused();
+  await expect(titles(page)).toHaveText(['Café Blues', 'Riff']);
+
+  // A take saved during a search appears when it matches; one renamed out disappears.
+  await searchField(page).fill('BLUES');
+  await expect(titles(page)).toHaveText(['Café Blues']);
+  const lick = await seedTab(page, undefined, 'blues lick');
+  await expect(titles(page)).toHaveText(['blues lick', 'Café Blues']);
+  await kebab(page, cafe).click();
+  await menu(page).getByRole('menuitem', { name: 'Rename' }).click();
+  await page.keyboard.type('Jazz');
+  await page.keyboard.press('Enter');
+  await expect(titles(page)).toHaveText(['blues lick']);
+  await expect(row(page, lick)).toBeVisible();
+  await expect(searchField(page)).toHaveValue('BLUES');
+  await searchField(page).fill('');
+  await expect(titles(page)).toHaveText(['blues lick', 'Jazz', 'Riff']);
+  await expect(row(page, riff)).toBeVisible();
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('500 takes: a virtualised list; scrolling to the bottom reaches the oldest take, which opens with Enter', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const errors = collectErrors(page);
+  await page.goto('./#/__test/library500');
+  await expect(page).toHaveURL(/#\/library$/, { timeout: 60_000 });
+  await expect(rows(page).first()).toHaveAttribute('aria-setsize', String(LIBRARY500_COUNT), {
+    timeout: 30_000,
+  });
+  // The newest first: take 500.
+  await expect(titles(page).first()).toHaveText(library500Title(LIBRARY500_COUNT));
+  expect(await rows(page).count()).toBeLessThan(50);
+
+  // Half way down: the rendered rows cover the viewport, and the first visible one is the row at
+  // that scroll position.
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight * 0.5));
+  await expect(async () => {
+    const at = await page.evaluate(() => {
+      const ul = document.querySelector('ul[aria-label="Takes, newest first"]')!;
+      const items = Array.from(ul.querySelectorAll<HTMLElement>(':scope > li'));
+      const rects = items.map((li) => li.getBoundingClientRect());
+      const visible = items.filter((_, i) => rects[i]!.bottom > 0 && rects[i]!.top < innerHeight);
+      const pos = visible.map((li) => Number(li.getAttribute('aria-posinset')));
+      const rowPx = rects[rects.length - 1]!.height;
+      return {
+        scrollY,
+        listTop: ul.getBoundingClientRect().top + scrollY,
+        rowPx,
+        first: pos[0] ?? 0,
+        contiguous: pos.every((p, i) => i === 0 || p === pos[i - 1]! + 1),
+        coversTop: Math.min(...rects.map((r) => r.top)) <= 0,
+        coversBottom: Math.max(...rects.map((r) => r.bottom)) >= innerHeight,
+      };
+    });
+    expect(at.scrollY).toBeGreaterThan(1000);
+    expect(at.contiguous).toBe(true);
+    expect(at.coversTop).toBe(true);
+    expect(at.coversBottom).toBe(true);
+    const expected = Math.floor((at.scrollY - at.listTop) / at.rowPx) + 1;
+    expect(Math.abs(at.first - expected)).toBeLessThanOrEqual(1);
+  }).toPass({ timeout: 5_000 });
+  expect(await rows(page).count()).toBeLessThan(50);
+
+  // Scroll to the end: the oldest take, take 1, is rendered at position 500.
+  const oldest = library500Title(1);
+  await expect(async () => {
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect(rows(page).last()).toHaveAttribute('aria-posinset', String(LIBRARY500_COUNT), {
+      timeout: 1_000,
+    });
+  }).toPass({ timeout: 10_000 });
+  expect(await rows(page).count()).toBeLessThan(50);
+  const link = list(page).getByRole('link', { name: oldest, exact: true });
+  await expect(link).toBeInViewport();
+  await link.focus();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/#\/tab\/[^/]+$/);
+  await expect(page.getByRole('heading', { level: 1, name: oldest })).toBeVisible();
+
+  // Search narrows the 500 to the accented titles' 50 ("Café …").
+  await page.goBack();
+  await expect(rows(page).first()).toHaveAttribute('aria-setsize', String(LIBRARY500_COUNT));
+  await searchField(page).fill('CAFE');
+  await expect(rows(page).first()).toHaveAttribute('aria-setsize', '50');
+  await expect(titles(page).first()).toContainText('Café');
   expect(unexpected(errors)).toEqual([]);
 });

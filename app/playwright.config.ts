@@ -9,10 +9,11 @@ const SUBPATH_PORT = 4174;
 /** Specs that need dev-only code (`#/__test/*` pages) run against the dev server only. */
 const DEV_SPECS = /.*\.dev\.spec\.ts/;
 /**
- * The timing spec (story "500-note edit latency"): a dev spec too, but in its own `perf`
- * project, run alone after every other project so parallel workers cannot starve its gate.
+ * The timing specs (stories "500-note edit latency", "Search 500 takes"): dev specs too, but in
+ * their own `perf` project, run alone after every other project so parallel workers cannot
+ * starve their gates.
  */
-const PERF_SPECS = /.*edit-latency\.dev\.spec\.ts/;
+const PERF_SPECS = /.*(edit|search)-latency\.dev\.spec\.ts/;
 /** The sub-path spec runs against the build served under /tabcreator/, as on GitHub Pages. */
 const SUBPATH_SPECS = /.*subpath\.spec\.ts/;
 /** Specs that need a microphone in the production build run in the production-mic lane. */
@@ -96,8 +97,9 @@ export default defineConfig({
       },
     },
     {
-      // Edit-to-paint timing against the dev server, alone: one worker, after the other
-      // projects have finished (`dependencies`), so no parallel test competes for the CPU.
+      // Edit-to-paint and search filter-to-paint timing against the dev server, alone: one
+      // worker, after the other projects have finished (`dependencies`), so no parallel test
+      // competes for the CPU.
       name: 'perf',
       testMatch: PERF_SPECS,
       fullyParallel: false,

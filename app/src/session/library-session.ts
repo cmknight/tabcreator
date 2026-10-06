@@ -5,7 +5,7 @@
 // writer (AD-14): rename, delete a take, delete a take's audio. Stories 6.3 (search), 6.5/6.6
 // (backup, restore) and 6.7 (storage states) build on this snapshot.
 
-import { libraryRow, pickSize, sortRows, type LibraryRow } from '../model/library';
+import { libraryRow, pickSize, sortRows, withTitle, type LibraryRow } from '../model/library';
 import { isAppError, type AppErrorCode } from '../model/errors';
 import { devWarn } from '../model/log';
 import { renamedTitle } from '../model/title';
@@ -99,7 +99,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
   /** `row` with its pending rename's title, if one is being written. */
   function withPending(row: LibraryRow): LibraryRow {
     const title = pendingTitles.get(row.id);
-    return title === undefined || title === row.title ? row : { ...row, title };
+    return title === undefined ? row : withTitle(row, title);
   }
 
   function publish(next: LibrarySnapshot) {
@@ -244,7 +244,10 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
   function showTitle(id: string, title: string) {
     const row = snapshot.rows.find((r) => r.id === id);
     if (!row || row.title === title) return;
-    publish({ ...snapshot, rows: snapshot.rows.map((r) => (r.id === id ? { ...r, title } : r)) });
+    publish({
+      ...snapshot,
+      rows: snapshot.rows.map((r) => (r.id === id ? withTitle(r, title) : r)),
+    });
   }
 
   async function rename(id: string, raw: string) {
