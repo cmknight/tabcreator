@@ -3,7 +3,7 @@ title: 'Recovered take metadata from its compressed copy (DS2)'
 type: 'bugfix'
 ticket: '8'
 created: '2026-10-06'
-status: 'built'
+status: done
 baseline_revision: 'b9213c246d7b87676c4aeb1c8e3993ad06bda158'
 route: 'oneshot'
 route_source: 'auto'
