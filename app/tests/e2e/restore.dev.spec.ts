@@ -300,3 +300,51 @@ test('a re-zipped backup restores every take; a take whose audio is missing show
   await expect(play).toHaveAccessibleDescription('Audio deleted');
   expect(unexpected(errors)).toEqual([]);
 });
+
+// Story "Streaming restore and restore races" (epic 7): the central-directory reader restores
+// zips an OS or another tool makes: the manifest as the last entry, audio stored or deflated.
+test('a zip with its manifest last and deflated audio restores byte-identical', async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  await page.goto('./#/library');
+  await expect(heading(page)).toBeVisible();
+  const stored = backupTake('stored-1', '2026-10-01T10:00:00.000Z');
+  const deflated = backupTake('deflated-1', '2026-10-02T10:00:00.000Z');
+  // Audio-like bytes that deflate well, so the deflated entry is truly compressed.
+  const storedAudio = new Uint8Array(300_000).map((_, i) => (i * 31) % 253);
+  const deflatedAudio = new Uint8Array(400_000).map((_, i) => (i >> 4) % 7);
+  const zip = Buffer.from(
+    zipSync({
+      'audio/stored-1.webm': [storedAudio, { level: 0 }],
+      'audio/deflated-1.webm': [deflatedAudio, { level: 6 }],
+      'manifest.json': [
+        strToU8(
+          JSON.stringify({
+            format: 1,
+            schemaVersion: 3,
+            exportedAt: '2026-10-07T10:00:00.000Z',
+            takes: [stored, deflated],
+            tabs: [backupTab('stored-1'), backupTab('deflated-1')],
+          }),
+        ),
+        { level: 6 },
+      ],
+    }),
+  );
+  // The fixture really is manifest-last with a deflated audio entry.
+  expect(zip.indexOf('manifest.json')).toBeGreaterThan(zip.indexOf('audio/deflated-1.webm'));
+  expect(zip.length).toBeLessThan(storedAudio.length + deflatedAudio.length / 2);
+
+  await restoreFile(page, 'other-tool.zip', zip);
+  await confirmRestore(page, 2, 'other-tool.zip', 'Imported 2 takes');
+  await expect(row(page, 'stored-1')).not.toContainText('Audio deleted');
+  await expect(row(page, 'deflated-1')).not.toContainText('Audio deleted');
+  expect(await opfsFileBase64(page, 'audio/stored-1.webm')).toBe(
+    Buffer.from(storedAudio).toString('base64'),
+  );
+  expect(await opfsFileBase64(page, 'audio/deflated-1.webm')).toBe(
+    Buffer.from(deflatedAudio).toString('base64'),
+  );
+  expect(unexpected(errors)).toEqual([]);
+});

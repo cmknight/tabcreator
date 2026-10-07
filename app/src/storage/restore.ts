@@ -1,11 +1,17 @@
 // Restore from a backup (story "Restore from a backup", 6.6; US-7.3, Flow 4; spine AD-11, AD-17):
-// the main-thread side of reading a backup zip. The unzip is the backup worker's `read` request
-// (`backup-worker.ts`, the only importer of fflate); what comes back is checked in full by
-// `validateBackup`, which is pure, before anything is written: the manifest (format 1, its
+// the main-thread side of reading a backup zip. The zip is read by the backup worker's `read`
+// request (`backup-worker.ts`, the only importer of fflate), which hands back the manifest and
+// each audio entry as a lazy slice of the picked file (story "Streaming restore and restore
+// races": no audio byte is read until restore writes it). `validateBackup`, which is pure, checks
+// what comes back before anything is written: the manifest in full (format 1, its
 // `schemaVersion` — 3 when absent — at most `DB_VERSION`, its records upgraded from it by
 // `migrateRecords`; every take and tab well formed in type and value, no duplicate ids, no take
-// still recording, every tab's take present) and every audio entry (`audio/{takeId}.{ext}` with a
-// known extension, for a take of the manifest that has an audio type, at most one per take).
+// still recording, every tab's take present) and every audio entry's name (`audio/{takeId}.{ext}`
+// with a known extension, for a take of the manifest that has an audio type, at most one per
+// take). The audio bytes themselves are checked (inflate, size) as they stream into OPFS at
+// Confirm (audio-store.ts `restoreCompressed`), where a bad entry is `backup-invalid`. A backup
+// with deflated audio is rejected up front when the browser cannot inflate it
+// (`DecompressionStream('deflate-raw')`).
 // Story "Restore validation and missing audio" (epic 7) adds the value checks, the schema version,
 // and two corrections at the end: a take whose entry's extension differs from its `audioMime`
 // takes the entry's MIME, and a take with an audio type but no entry (the backup reported its
@@ -32,8 +38,17 @@ export interface ValidBackup {
   takes: Take[];
   /** The manifest's tabs, as stored. */
   tabs: Tab[];
-  /** Each take's audio, by take id, typed `mimeForExtension` of its entry's extension. */
+  /**
+   * Each take's audio, by take id, typed `mimeForExtension` of its entry's extension: the entry's
+   * data as stored in the zip (a lazy slice of the picked file, re-typed without a copy), raw
+   * deflate for the ids in `deflated`.
+   */
   audio: Map<string, Blob>;
+  /**
+   * The take ids whose `audio` is raw deflate, inflated as it is written, each with the size it
+   * must inflate to.
+   */
+  deflated: Map<string, number>;
 }
 
 export interface RestoreDeps {
@@ -238,7 +253,8 @@ export function validateBackup(
   }
 
   const audio = new Map<string, Blob>();
-  for (const { name, blob } of entries) {
+  const deflated = new Map<string, number>();
+  for (const { name, blob, inflatedSize } of entries) {
     const parsed = audioEntryName(name);
     if (!parsed) throw invalid(`unexpected entry ${name}`);
     const mime = mimeForExtension(parsed.ext);
@@ -247,8 +263,10 @@ export function validateBackup(
     if (!take) throw invalid(`${name}: no such take`);
     if (take.audioMime === null) throw invalid(`${name}: the take has no audio`);
     if (audio.has(take.id)) throw invalid(`${name}: a second file for the take`);
-    // The bytes as they are, typed by the entry's own extension (writeCompressed names the file).
-    audio.set(take.id, new Blob([blob], { type: mime }));
+    // The bytes as they are, typed by the entry's own extension (the write names the file); a
+    // slice re-types it without a copy.
+    audio.set(take.id, blob.slice(0, blob.size, mime));
+    if (inflatedSize !== undefined) deflated.set(take.id, inflatedSize);
     // The app's own backup may hold a file found under another format than the take's type
     // (backupFiles looks for every extension): the take takes the file's type.
     if (extensionOf(take.audioMime) !== parsed.ext)
@@ -259,6 +277,7 @@ export function validateBackup(
     takes: withoutMissingAudio([...takes.values()], audio),
     tabs: records.tabs as Tab[],
     audio,
+    deflated,
   };
 }
 
@@ -287,8 +306,9 @@ export function withoutMissingAudio(
 }
 
 /**
- * Reads and checks a backup file: a fresh backup worker unzips it (`read`), then
- * `validateBackup` checks the result. Nothing is written. Rejects with `backup-invalid` for a
+ * Reads and checks a backup file: a fresh backup worker reads its zip directory (`read`), then
+ * `validateBackup` checks the result, and a backup with deflated audio needs
+ * `DecompressionStream('deflate-raw')`. Nothing is written. Rejects with `backup-invalid` for a
  * file that is not a valid backup, `storage-failed` when the worker fails; the worker is
  * terminated once it has replied or failed.
  */
@@ -301,5 +321,21 @@ export async function readBackup(file: Blob, deps: RestoreDeps = {}): Promise<Va
     resolve({ manifest: data.manifest, entries: data.entries });
     return true;
   });
-  return validateBackup(manifest, entries);
+  const backup = validateBackup(manifest, entries);
+  // Checked before the Confirm dialog: a deflated entry could not be written mid-restore.
+  if (backup.deflated.size > 0 && !canInflateRaw()) {
+    throw invalid('deflated audio, and this browser cannot inflate it');
+  }
+  return backup;
+}
+
+/** Whether this browser has `DecompressionStream('deflate-raw')`. */
+function canInflateRaw(): boolean {
+  if (typeof DecompressionStream !== 'function') return false;
+  try {
+    new DecompressionStream('deflate-raw');
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -44,6 +44,23 @@ export interface RawWriter {
 
 export interface AudioStore {
   writeCompressed(takeId: string, blob: Blob): Promise<void>;
+  /**
+   * Restore's write (story "Streaming restore and restore races"): writes `blob` (of the audio
+   * type `blob.type`, a backup entry's slice of the picked file) as the take's compressed file,
+   * with the rules of `writeCompressed` (the extension from the MIME table, any file of the take
+   * in another format removed, fenced writes, a failed write leaves no new file). With
+   * `inflatedSize` (not null), `blob` is raw deflate, inflated through
+   * `DecompressionStream('deflate-raw')` as it streams into the file, and must inflate to exactly
+   * that many bytes: a corrupt stream, or one inflating to more or fewer bytes, is aborted and
+   * rejects `backup-invalid`. A source that cannot be read (the picked file changed or is gone)
+   * rejects `storage-failed`.
+   */
+  restoreCompressed(takeId: string, blob: Blob, inflatedSize?: number | null): Promise<void>;
+  /**
+   * Removes the one file `audio/{takeId}.{ext}` (none there is fine): restore's cleanup, which
+   * leaves files of the take in other formats alone.
+   */
+  removeCompressedFile(takeId: string, ext: string): Promise<void>;
   readCompressed(takeId: string): Promise<Blob | null>;
   deleteAudio(takeId: string): Promise<void>;
   openRawWriter(takeId: string): Promise<RawWriter>;
@@ -176,45 +193,98 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
 
   // --- API ----------------------------------------------------------------------------------
 
+  /**
+   * Writes the take's compressed file from `source` (a Blob, written as one; or an inflating
+   * stream, opened only once the write begins, written chunk by chunk, that must yield exactly
+   * `size` bytes, else `backup-invalid`), named by `mime`'s extension, then removes any copy under
+   * another format.
+   */
+  async function writeAudio(
+    takeId: string,
+    mime: string,
+    source: Blob | { open: () => ReadableStream<Uint8Array>; size: number },
+  ): Promise<void> {
+    assertWritable();
+    if (import.meta.env.DEV) assertDevSaveSpace('Write compressed audio');
+    let ext: string;
+    try {
+      ext = extensionFor(mime);
+    } catch (err) {
+      throw new AppError('storage-failed', `Unsupported audio type: ${mime}`, {
+        cause: err,
+      });
+    }
+    const name = `${takeId}.${ext}`;
+    try {
+      const audio = (await dir(AUDIO_DIR, true))!;
+      const existed = (await fileIfPresent(audio, name)) !== null;
+      const handle = await audio.getFileHandle(name, { create: true });
+      const writable = await handle.createWritable();
+      try {
+        if (!('open' in source)) {
+          await writable.write(source);
+        } else {
+          const reader = source.open().getReader();
+          try {
+            let written = 0;
+            for (;;) {
+              const { done, value } = await readInflated(reader);
+              if (done) break;
+              written += value.byteLength;
+              if (written > source.size) throw badEntry('inflates past its size');
+              assertWritable();
+              await writable.write(value as Uint8Array<ArrayBuffer>);
+            }
+            if (written !== source.size) throw badEntry('inflates short of its size');
+          } finally {
+            await reader.cancel().catch(() => {});
+          }
+        }
+        // The fence may have been set while the blob was written (story 5.3): a fenced tab
+        // commits nothing, so the new holder's recovery sees the files as they were.
+        assertWritable();
+        await writable.close();
+      } catch (err) {
+        // The swap file is discarded: an existing file keeps its old contents.
+        await writable.abort().catch(() => {});
+        if (!existed) await removeIfPresent(audio, name).catch(() => {});
+        throw err;
+      }
+      // One compressed file per take: drop any copy saved under another format. No other
+      // format's file is removed once writes are fenced.
+      for (const f of AUDIO_FORMATS) {
+        if (f.ext === ext) continue;
+        assertWritable();
+        await removeIfPresent(audio, `${takeId}.${f.ext}`);
+      }
+    } catch (err) {
+      throw toStorageError(err, 'Write compressed audio');
+    }
+  }
+
   return {
     async writeCompressed(takeId, blob) {
+      await writeAudio(takeId, blob.type, blob);
+    },
+
+    async restoreCompressed(takeId, blob, inflatedSize = null) {
+      const source =
+        inflatedSize === null
+          ? blob
+          : {
+              open: () => blob.stream().pipeThrough(new DecompressionStream('deflate-raw')),
+              size: inflatedSize,
+            };
+      await writeAudio(takeId, blob.type, source);
+    },
+
+    async removeCompressedFile(takeId, ext) {
       assertWritable();
-      if (import.meta.env.DEV) assertDevSaveSpace('Write compressed audio');
-      let ext: string;
       try {
-        ext = extensionFor(blob.type);
+        const audio = await dir(AUDIO_DIR, false);
+        if (audio) await removeIfPresent(audio, `${takeId}.${ext}`);
       } catch (err) {
-        throw new AppError('storage-failed', `Unsupported audio type: ${blob.type}`, {
-          cause: err,
-        });
-      }
-      const name = `${takeId}.${ext}`;
-      try {
-        const audio = (await dir(AUDIO_DIR, true))!;
-        const existed = (await fileIfPresent(audio, name)) !== null;
-        const handle = await audio.getFileHandle(name, { create: true });
-        const writable = await handle.createWritable();
-        try {
-          await writable.write(blob);
-          // The fence may have been set while the blob was written (story 5.3): a fenced tab
-          // commits nothing, so the new holder's recovery sees the files as they were.
-          assertWritable();
-          await writable.close();
-        } catch (err) {
-          // The swap file is discarded: an existing file keeps its old contents.
-          await writable.abort().catch(() => {});
-          if (!existed) await removeIfPresent(audio, name).catch(() => {});
-          throw err;
-        }
-        // One compressed file per take: drop any copy saved under another format. No other
-        // format's file is removed once writes are fenced.
-        for (const f of AUDIO_FORMATS) {
-          if (f.ext === ext) continue;
-          assertWritable();
-          await removeIfPresent(audio, `${takeId}.${f.ext}`);
-        }
-      } catch (err) {
-        throw toStorageError(err, 'Write compressed audio');
+        throw toStorageError(err, 'Delete compressed audio');
       }
     },
 
@@ -386,6 +456,26 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
       }
     },
   };
+}
+
+const badEntry = (why: string) =>
+  new AppError('backup-invalid', `Restore: a deflated audio entry ${why}`);
+
+/**
+ * One read of an inflating stream: a failure reading the picked file itself (it changed or is
+ * gone) passes through, any other (corrupt deflate data) is the entry being invalid.
+ */
+async function readInflated(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  try {
+    return await reader.read();
+  } catch (err) {
+    if (hasErrorName(err, 'NotReadableError') || hasErrorName(err, 'NotFoundError')) throw err;
+    throw new AppError('backup-invalid', 'Restore: a deflated audio entry is corrupt', {
+      cause: err,
+    });
+  }
 }
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;

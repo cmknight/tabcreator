@@ -1,4 +1,4 @@
-import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
+import { deflateSync, inflateSync, strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { describe, expect, it, vi } from 'vitest';
 import type { Tab, Take } from '../../src/model/types';
 import { DB_VERSION } from '../../src/storage/migrations';
@@ -18,6 +18,7 @@ import {
 import {
   createBackupHandler,
   createRequestHandler,
+  MANIFEST_MAX_BYTES,
   readBackupZip,
   type BackupDirectory,
   type BackupHandlerOptions,
@@ -694,18 +695,19 @@ describe('backup worker read', () => {
     expect([...valid.audio.keys()].sort()).toEqual(['rec', 'wav', 'webm']);
   });
 
-  it('a file too large to hold in memory (RangeError) replies storage-failed', async () => {
-    const file = {
-      arrayBuffer: () => Promise.reject(new RangeError('Array buffer allocation failed')),
-    } as unknown as Blob;
+  /** A file whose every read rejects with `err`. */
+  const failingFile = (err: Error) => {
+    const unreadable = { arrayBuffer: () => Promise.reject(err) };
+    return { size: 1000, slice: () => unreadable } as unknown as Blob;
+  };
+
+  it('running out of memory reading it (RangeError) replies storage-failed', async () => {
+    const file = failingFile(new RangeError('Array buffer allocation failed'));
     expect(await read(file)).toMatchObject([{ type: 'error', code: 'storage-failed' }]);
   });
 
   it('a file that cannot be read replies backup-invalid', async () => {
-    const file = {
-      arrayBuffer: () =>
-        Promise.reject(Object.assign(new Error('gone'), { name: 'NotReadableError' })),
-    } as unknown as Blob;
+    const file = failingFile(Object.assign(new Error('gone'), { name: 'NotReadableError' }));
     expect(await read(file)).toMatchObject([{ type: 'error', code: 'backup-invalid' }]);
   });
 
@@ -723,5 +725,357 @@ describe('backup worker read', () => {
       files: [],
     });
     expect(messages.at(-1)!.type).toBe('done');
+  });
+});
+
+// Story "Streaming restore and restore races" (epic 7): the central-directory reader. Zips are
+// built here byte by byte (`buildZip`), so entry order, data descriptors, methods and the
+// records restore rejects can be set exactly, and an entry's data can be virtual (a size only).
+describe('backup worker read: the central-directory reader', () => {
+  async function read(file: Blob) {
+    const messages: FromBackupWorker[] = [];
+    await readBackupZip(file, (m) => messages.push(m));
+    return messages;
+  }
+  async function readOk(file: Blob) {
+    const [reply] = await read(file);
+    if (reply?.type !== 'read') throw new Error(`no read: ${JSON.stringify(reply)}`);
+    return reply;
+  }
+
+  interface TestEntry {
+    name: string;
+    /** The stored data; or `virtualSize` zero bytes never materialised. */
+    data?: Uint8Array;
+    virtualSize?: number;
+    /** Compression method in both headers (default 0, stored). */
+    method?: number;
+    /** The uncompressed size the central directory claims (default the data's size). */
+    size?: number;
+    /** Overrides for the local header. */
+    localName?: string;
+    localMethod?: number;
+    /** Central directory overrides. */
+    flags?: number;
+    diskStart?: number;
+  }
+  interface BuildOptions {
+    disk?: number;
+    count?: number;
+    zip64Locator?: boolean;
+    comment?: number;
+    /** Zero bytes after the directory's entries, counted in its size. */
+    trailing?: number;
+  }
+  interface Segment {
+    offset: number;
+    bytes: Uint8Array;
+  }
+
+  const u16 = (v: DataView, at: number, n: number) => v.setUint16(at, n, true);
+  const u32 = (v: DataView, at: number, n: number) => v.setUint32(at, n, true);
+
+  /** A zip as the backup writer makes it (data descriptors, sizes 0 in local headers). */
+  function buildZip(entries: TestEntry[], options: BuildOptions = {}) {
+    const segments: Segment[] = [];
+    let offset = 0;
+    const push = (bytes: Uint8Array) => {
+      segments.push({ offset, bytes });
+      offset += bytes.length;
+    };
+    const central: Uint8Array[] = [];
+    for (const e of entries) {
+      const name = strToU8(e.name);
+      const localName = strToU8(e.localName ?? e.name);
+      const compressed = e.data?.length ?? e.virtualSize ?? 0;
+      const size = e.size ?? compressed;
+      const localOffset = offset;
+      const local = new Uint8Array(30 + localName.length);
+      const lv = new DataView(local.buffer);
+      u32(lv, 0, 0x04034b50);
+      u16(lv, 4, 20);
+      u16(lv, 6, 0x8 | 0x800);
+      u16(lv, 8, e.localMethod ?? e.method ?? 0);
+      u16(lv, 26, localName.length);
+      local.set(localName, 30);
+      push(local);
+      if (e.data) push(e.data);
+      else offset += compressed;
+      const descriptor = new Uint8Array(16);
+      const dv = new DataView(descriptor.buffer);
+      u32(dv, 0, 0x08074b50);
+      u32(dv, 8, compressed);
+      u32(dv, 12, size);
+      push(descriptor);
+      const header = new Uint8Array(46 + name.length);
+      const hv = new DataView(header.buffer);
+      u32(hv, 0, 0x02014b50);
+      u16(hv, 4, 20);
+      u16(hv, 6, 20);
+      u16(hv, 8, e.flags ?? 0x8 | 0x800);
+      u16(hv, 10, e.method ?? 0);
+      u32(hv, 20, compressed);
+      u32(hv, 24, size);
+      u16(hv, 28, name.length);
+      u16(hv, 34, e.diskStart ?? 0);
+      u32(hv, 42, localOffset);
+      header.set(name, 46);
+      central.push(header);
+    }
+    const cdOffset = offset;
+    for (const header of central) push(header);
+    if (options.trailing) push(new Uint8Array(options.trailing));
+    const cdSize = offset - cdOffset;
+    if (options.zip64Locator) {
+      const locator = new Uint8Array(20);
+      u32(new DataView(locator.buffer), 0, 0x07064b50);
+      push(locator);
+    }
+    const comment = options.comment ?? 0;
+    const end = new Uint8Array(22 + comment);
+    const ev = new DataView(end.buffer);
+    u32(ev, 0, 0x06054b50);
+    u16(ev, 4, options.disk ?? 0);
+    u16(ev, 8, options.count ?? entries.length);
+    u16(ev, 10, options.count ?? entries.length);
+    u32(ev, 12, cdSize);
+    u32(ev, 16, cdOffset);
+    u16(ev, 20, comment);
+    push(end);
+    return { size: offset, segments };
+  }
+
+  /**
+   * A File-like Blob over `zip`'s segments (zeros elsewhere) that logs the size of every read;
+   * a read larger than `maxRead` throws as a whole-file read of a huge file would.
+   */
+  function virtualFile(zip: { size: number; segments: Segment[] }, maxRead = Infinity) {
+    const reads: number[] = [];
+    const sliceOf = (start: number, end: number, type = ''): Blob => {
+      const size = Math.max(0, end - start);
+      return {
+        size,
+        type,
+        slice(a = 0, b = size, t = '') {
+          const from = start + Math.min(Math.max(a, 0), size);
+          const to = start + Math.min(Math.max(b, 0), size);
+          return sliceOf(from, to, t);
+        },
+        async arrayBuffer() {
+          reads.push(size);
+          if (size > maxRead) throw new RangeError('Array buffer allocation failed');
+          const out = new Uint8Array(size);
+          for (const { offset, bytes } of zip.segments) {
+            const lo = Math.max(offset, start);
+            const hi = Math.min(offset + bytes.length, end);
+            if (lo < hi) out.set(bytes.subarray(lo - offset, hi - offset), lo - start);
+          }
+          return out.buffer;
+        },
+      } as unknown as Blob;
+    };
+    return { file: sliceOf(0, zip.size), reads };
+  }
+
+  const fileOf = (entries: TestEntry[], options?: BuildOptions) =>
+    virtualFile(buildZip(entries, options)).file;
+  const MANIFEST = strToU8('{"format":1}');
+  const audioBytes = bytes(5000, 7);
+
+  const expectInvalid = async (file: Blob) =>
+    expect(await read(file)).toEqual([
+      { type: 'error', code: 'backup-invalid', message: expect.any(String) },
+    ]);
+
+  it('an app-made zip (data descriptors, manifest first): the entries as lazy slices', async () => {
+    const reply = await readOk(
+      fileOf([
+        { name: 'manifest.json', data: MANIFEST },
+        { name: 'audio/a.webm', data: audioBytes },
+      ]),
+    );
+    expect(reply.manifest).toBe('{"format":1}');
+    expect(reply.entries).toHaveLength(1);
+    expect(reply.entries[0]).toMatchObject({ name: 'audio/a.webm' });
+    expect(reply.entries[0]!.inflatedSize).toBeUndefined();
+    expect(new Uint8Array(await reply.entries[0]!.blob.arrayBuffer())).toEqual(audioBytes);
+  });
+
+  it('the manifest last (an OS-style zip): the same result', async () => {
+    const reply = await readOk(
+      fileOf([
+        { name: 'audio/a.webm', data: audioBytes },
+        { name: 'manifest.json', data: MANIFEST },
+      ]),
+    );
+    expect(reply.manifest).toBe('{"format":1}');
+    expect(new Uint8Array(await reply.entries[0]!.blob.arrayBuffer())).toEqual(audioBytes);
+  });
+
+  it('deflated audio and a deflated manifest (fflate, manifest last): audio marked, manifest inflated', async () => {
+    const zipped = zipSync({
+      'audio/a.webm': [audioBytes, { level: 6 }],
+      'manifest.json': [MANIFEST, { level: 6 }],
+    });
+    const reply = await readOk(new Blob([zipped as Uint8Array<ArrayBuffer>]));
+    expect(reply.manifest).toBe('{"format":1}');
+    const [audio] = reply.entries;
+    expect(audio!.inflatedSize).toBe(audioBytes.length);
+    const deflatedBytes = new Uint8Array(await audio!.blob.arrayBuffer());
+    expect(inflateSync(deflatedBytes)).toEqual(audioBytes);
+  });
+
+  it('a top-level folder is stripped (prefix), its entries still found by their headers', async () => {
+    const reply = await readOk(
+      fileOf([
+        { name: 'backup/audio/a.webm', data: audioBytes },
+        { name: 'backup/manifest.json', data: MANIFEST },
+      ]),
+    );
+    expect(reply.manifest).toBe('{"format":1}');
+    expect(reply.entries.map((e) => e.name)).toEqual(['audio/a.webm']);
+    expect(new Uint8Array(await reply.entries[0]!.blob.arrayBuffer())).toEqual(audioBytes);
+  });
+
+  it('an archive comment is allowed', async () => {
+    const reply = await readOk(
+      fileOf([{ name: 'manifest.json', data: MANIFEST }], { comment: 40 }),
+    );
+    expect(reply.manifest).toBe('{"format":1}');
+  });
+
+  it('a big file: bounded reads only, audio entries never read', async () => {
+    const big = 600 * 1024 * 1024;
+    const { file, reads } = virtualFile(
+      buildZip([
+        { name: 'manifest.json', data: MANIFEST },
+        { name: 'audio/a.webm', virtualSize: big },
+        { name: 'audio/b.wav', virtualSize: 1024 },
+      ]),
+      // Whole-file reads throw; the end-record search reads at most 22 + 65,535 bytes.
+      70_000,
+    );
+    await expect(file.arrayBuffer()).rejects.toThrow(RangeError);
+    reads.length = 0;
+    const reply = await readOk(file);
+    expect(reply.entries.map((e) => [e.name, e.blob.size])).toEqual([
+      ['audio/a.webm', big],
+      ['audio/b.wav', 1024],
+    ]);
+    expect(Math.max(...reads)).toBeLessThanOrEqual(70_000);
+    // The tail, the directory, three local headers and the manifest's bytes: nothing else.
+    expect(reads).toHaveLength(6);
+    expect(reads).not.toContain(big);
+    expect(reads).not.toContain(1024);
+  });
+
+  it('ZIP64 records are rejected', async () => {
+    await expectInvalid(
+      fileOf([{ name: 'manifest.json', data: MANIFEST }], { zip64Locator: true }),
+    );
+    await expectInvalid(fileOf([{ name: 'manifest.json', data: MANIFEST }], { count: 0xffff }));
+    await expectInvalid(
+      fileOf([
+        { name: 'manifest.json', data: MANIFEST },
+        { name: 'audio/a.webm', data: audioBytes, size: 0xffff_ffff },
+      ]),
+    );
+  });
+
+  it('multi-disk archives are rejected', async () => {
+    await expectInvalid(fileOf([{ name: 'manifest.json', data: MANIFEST }], { disk: 1 }));
+    await expectInvalid(fileOf([{ name: 'manifest.json', data: MANIFEST, diskStart: 1 }]));
+  });
+
+  it('a local header disagreeing with the central directory (name or method) is rejected', async () => {
+    await expectInvalid(
+      fileOf([
+        { name: 'manifest.json', data: MANIFEST },
+        { name: 'audio/a.webm', data: audioBytes, localName: 'audio/b.webm' },
+      ]),
+    );
+    await expectInvalid(
+      fileOf([
+        { name: 'manifest.json', data: MANIFEST },
+        { name: 'audio/a.webm', data: audioBytes, localMethod: 8 },
+      ]),
+    );
+  });
+
+  it('a method other than stored or deflate, or an encrypted entry, is rejected', async () => {
+    await expectInvalid(
+      fileOf([
+        { name: 'manifest.json', data: MANIFEST },
+        { name: 'audio/a.webm', data: audioBytes, method: 12 },
+      ]),
+    );
+    await expectInvalid(
+      fileOf([
+        { name: 'manifest.json', data: MANIFEST },
+        { name: 'audio/a.webm', data: audioBytes, flags: 0x8 | 0x1 },
+      ]),
+    );
+  });
+
+  it('an entry listed twice, or data running into the directory, is rejected', async () => {
+    await expectInvalid(
+      fileOf([
+        { name: 'manifest.json', data: MANIFEST },
+        { name: 'audio/a.webm', data: audioBytes },
+        { name: 'audio/a.webm', data: audioBytes },
+      ]),
+    );
+    const zip = buildZip([{ name: 'manifest.json', data: MANIFEST }]);
+    // The central directory claims more data than lies before it.
+    const cd = zip.segments.find(
+      (seg) => new DataView(seg.bytes.buffer).getUint32(0, true) === 0x02014b50,
+    )!;
+    new DataView(cd.bytes.buffer).setUint32(20, 10_000, true);
+    await expectInvalid(virtualFile(zip).file);
+  });
+
+  it('a stored entry whose sizes differ, or a deflated manifest that does not inflate, is rejected', async () => {
+    await expectInvalid(
+      fileOf([
+        { name: 'manifest.json', data: MANIFEST },
+        { name: 'audio/a.webm', data: audioBytes, size: 4 },
+      ]),
+    );
+    await expectInvalid(fileOf([{ name: 'manifest.json', data: bytes(30, 3), method: 8 }]));
+  });
+
+  it('a deflated manifest inflating past its directory size is rejected', async () => {
+    const big = strToU8(`{"format":1,"pad":"${'x'.repeat(5000)}"}`);
+    // The directory claims 10 bytes; the data inflates to far more.
+    await expectInvalid(
+      fileOf([{ name: 'manifest.json', data: deflateSync(big), method: 8, size: 10 }]),
+    );
+  });
+
+  it('a manifest over MANIFEST_MAX_BYTES is rejected before it is read', async () => {
+    const { file, reads } = virtualFile(
+      buildZip([
+        { name: 'manifest.json', virtualSize: 1000, method: 8, size: MANIFEST_MAX_BYTES + 1 },
+      ]),
+    );
+    await expectInvalid(file);
+    expect(reads).not.toContain(1000);
+  });
+
+  it('trailing bytes in the central directory are rejected', async () => {
+    await expectInvalid(fileOf([{ name: 'manifest.json', data: MANIFEST }], { trailing: 8 }));
+  });
+
+  it('explicit folder entries, as OS zippers write them, are dropped', async () => {
+    const reply = await readOk(
+      fileOf([
+        { name: 'backup/', data: new Uint8Array(0) },
+        { name: 'backup/audio/', data: new Uint8Array(0) },
+        { name: 'backup/audio/a.webm', data: audioBytes },
+        { name: 'backup/manifest.json', data: MANIFEST },
+      ]),
+    );
+    expect(reply.manifest).toBe('{"format":1}');
+    expect(reply.entries.map((e) => e.name)).toEqual(['audio/a.webm']);
   });
 });

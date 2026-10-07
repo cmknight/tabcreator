@@ -72,6 +72,7 @@ import { audioStore, type RawWriter } from '../storage/audio-store';
 import { db, type TakePatch } from '../storage/db';
 import { isStorageFull, persistence, subscribeStorageFull } from '../storage/persistence';
 import { loadPrefs, updatePrefs } from '../storage/prefs';
+import { isRestoreRunning } from '../storage/restore-state';
 import type { InputTransition, OpenedInput } from './input-derivation';
 import { createInputQualityWatch } from './input-quality-watch';
 import { createLevelWatch } from './level-watch';
@@ -267,6 +268,7 @@ const NO_RECOVERY: RecoveryDeps = {
   encodePcm: () => Promise.reject(new AppError('storage-failed', 'No encoder')),
   encodeWav: () => new Blob([], { type: WAV_MIME }),
   decode: () => Promise.reject(new AppError('audio-missing', 'No decoder')),
+  isRestoreRunning: () => false,
 };
 
 /** The `beforeunload` guard: asks before the page is left. */
@@ -890,6 +892,7 @@ export const recordingSession: RecordingSession = createRecordingSession({
     encodePcm: import.meta.env.DEV ? devEncodePcm(encodePcm) : encodePcm,
     encodeWav: encodeWavBlob,
     decode: decodeTakeAudio,
+    isRestoreRunning,
   },
   addUnloadGuard: (handler) => {
     window.addEventListener('beforeunload', handler);

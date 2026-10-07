@@ -1,3 +1,4 @@
+import { deflateSync } from 'fflate';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createAudioStore,
@@ -335,6 +336,8 @@ describe('compressedSize', () => {
 /** A fake OPFS root with a writable `audio/` directory that logs every file operation. */
 function writableAudioRoot(files: string[], hooks: { onWrite?: () => void; onClose?: () => void }) {
   const log: string[] = [];
+  /** What each file was written with, chunk by chunk (Blobs and byte arrays as passed). */
+  const written = new Map<string, unknown[]>();
   const present = new Set(files);
   const notFound = () => new DOMException('not found', 'NotFoundError');
   const audio = {
@@ -346,13 +349,16 @@ function writableAudioRoot(files: string[], hooks: { onWrite?: () => void; onClo
       }
       return {
         async createWritable() {
+          const chunks: unknown[] = [];
           return {
-            async write() {
+            async write(data: unknown) {
               log.push(`write ${name}`);
+              chunks.push(data);
               hooks.onWrite?.();
             },
             async close() {
               log.push(`close ${name}`);
+              written.set(name, chunks);
               hooks.onClose?.();
             },
             async abort() {
@@ -376,6 +382,7 @@ function writableAudioRoot(files: string[], hooks: { onWrite?: () => void; onClo
   return {
     log,
     present,
+    written,
     root: () => Promise.resolve(root as unknown as FileSystemDirectoryHandle),
   };
 }
@@ -407,5 +414,129 @@ describe('writeCompressed and the write fence (story 5.3)', () => {
     ).rejects.toMatchObject({ code: 'instance-taken' });
     expect(fake.log.filter((l) => l.startsWith('remove'))).toEqual([]);
     expect(fake.present.has('t1.wav') && fake.present.has('t1.webm')).toBe(true);
+  });
+});
+
+// Story "Streaming restore and restore races": restore's create-only write, a Blob as one write,
+// a deflated entry inflated through DecompressionStream chunk by chunk.
+describe('restoreCompressed', () => {
+  /** A Blob-like whose stream() yields `bytes` in two chunks (jsdom's Blob has no stream()). */
+  const streamable = (bytes: Uint8Array, type: string) =>
+    ({
+      type,
+      size: bytes.length,
+      stream: () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            const half = Math.floor(bytes.length / 2);
+            controller.enqueue(bytes.slice(0, half));
+            controller.enqueue(bytes.slice(half));
+            controller.close();
+          },
+        }),
+    }) as unknown as Blob;
+
+  const bytesOf = async (chunks: unknown[]) => {
+    const parts = await Promise.all(
+      chunks.map(async (c) =>
+        ArrayBuffer.isView(c)
+          ? new Uint8Array(c.buffer, c.byteOffset, c.byteLength)
+          : new Uint8Array(await (c as Blob).arrayBuffer()),
+      ),
+    );
+    return new Uint8Array(parts.flatMap((p) => [...p]));
+  };
+
+  it('writes a stored entry as one Blob write, replacing a file of the take in another format', async () => {
+    const fake = writableAudioRoot(['t1.webm'], {});
+    const store = createAudioStore({ root: fake.root });
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/wav' });
+    await expect(store.restoreCompressed('t1', blob)).resolves.toBeUndefined();
+    expect(fake.log).toEqual(['create t1.wav', 'write t1.wav', 'close t1.wav', 'remove t1.webm']);
+    expect(fake.written.get('t1.wav')).toEqual([blob]);
+  });
+
+  const audio = new Uint8Array(100_000).map((_, i) => (i * 7) % 251);
+  const deflatedAudio = () => streamable(deflateSync(audio), 'audio/webm;codecs=opus');
+
+  it('a deflated entry is inflated as it streams into the file', async () => {
+    const fake = writableAudioRoot([], {});
+    const store = createAudioStore({ root: fake.root });
+    await store.restoreCompressed('t1', deflatedAudio(), audio.length);
+    expect(await bytesOf(fake.written.get('t1.webm')!)).toEqual(audio);
+  });
+
+  it('a deflated entry inflating short of, or past, its size is backup-invalid and leaves no file', async () => {
+    for (const size of [audio.length + 1, audio.length - 1]) {
+      const fake = writableAudioRoot([], {});
+      const store = createAudioStore({ root: fake.root });
+      await expect(store.restoreCompressed('t1', deflatedAudio(), size)).rejects.toMatchObject({
+        code: 'backup-invalid',
+      });
+      expect(fake.present.size).toBe(0);
+      expect(fake.log).toContain('abort t1.webm');
+      expect(fake.log).not.toContain('close t1.webm');
+    }
+  });
+
+  it('a corrupt deflate stream is backup-invalid and leaves no file', async () => {
+    const fake = writableAudioRoot([], {});
+    const store = createAudioStore({ root: fake.root });
+    const blob = streamable(new Uint8Array([0xff, 0xff, 0xff, 0xff]), 'audio/webm;codecs=opus');
+    await expect(store.restoreCompressed('t1', blob, 10)).rejects.toMatchObject({
+      code: 'backup-invalid',
+    });
+    expect(fake.present.size).toBe(0);
+    expect(fake.log).toContain('remove t1.webm');
+  });
+
+  it('a picked file that cannot be read while inflating is storage-failed', async () => {
+    const fake = writableAudioRoot([], {});
+    const store = createAudioStore({ root: fake.root });
+    const blob = {
+      type: 'audio/webm;codecs=opus',
+      stream: () =>
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(new DOMException('changed', 'NotReadableError'));
+          },
+        }),
+    } as unknown as Blob;
+    await expect(store.restoreCompressed('t1', blob, 10)).rejects.toMatchObject({
+      code: 'storage-failed',
+    });
+    expect(fake.present.size).toBe(0);
+  });
+
+  it('removeCompressedFile removes that one file only', async () => {
+    const fake = writableAudioRoot(['t1.wav', 't1.webm'], {});
+    const store = createAudioStore({ root: fake.root });
+    await store.removeCompressedFile('t1', 'wav');
+    await store.removeCompressedFile('t1', 'ogg');
+    expect([...fake.present]).toEqual(['t1.webm']);
+  });
+
+  it('a source that cannot be read (the picked file changed) fails and leaves no file', async () => {
+    const fake = writableAudioRoot([], {
+      onWrite: () => {
+        throw Object.assign(new Error('changed'), { name: 'NotReadableError' });
+      },
+    });
+    const store = createAudioStore({ root: fake.root });
+    const blob = new Blob([new Uint8Array([1])], { type: 'audio/wav' });
+    await expect(store.restoreCompressed('t1', blob)).rejects.toMatchObject({
+      code: 'storage-failed',
+    });
+    expect(fake.present.size).toBe(0);
+  });
+
+  it('fenced: rejects instance-taken', async () => {
+    const fake = writableAudioRoot([], {});
+    const store = createAudioStore({ root: fake.root });
+    fenceWrites();
+    await expect(
+      store.restoreCompressed('t1', new Blob([], { type: 'audio/wav' })),
+    ).rejects.toMatchObject({ code: 'instance-taken' });
+    expect(fake.log).toEqual([]);
   });
 });

@@ -319,7 +319,7 @@ describe('dev storage-full save hook', () => {
     await db.patchTake('t2', { title: 'Other' }, 'library-session');
     await db.putTab({ takeId: 't2', notes: [], updatedAt: '', deletedStartMs: [] }, 'take-session');
     await db.createTake({ ...take, id: 't3' });
-    await expect(db.importTakes([])).resolves.toBe(0);
+    await expect(db.importTakes([])).resolves.toEqual([]);
     expect(isStorageFull()).toBe(true);
     db.close();
   });

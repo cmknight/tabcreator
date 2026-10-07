@@ -2,11 +2,12 @@ import { act, cleanup, fireEvent, render, screen, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { searchKey, type LibraryRow } from '../../src/model/library';
 import { announce } from '../../src/ui/a11y/announcer';
-import type {
-  BackupResult,
-  LibrarySnapshot,
-  RestorePlan,
-  RestoreResult,
+import {
+  RestoreLeftFilesError,
+  type BackupResult,
+  type LibrarySnapshot,
+  type RestorePlan,
+  type RestoreResult,
 } from '../../src/session/library-session';
 import type { ValidBackup } from '../../src/storage/restore';
 import { AppError } from '../../src/model/errors';
@@ -886,7 +887,7 @@ describe('Restore from backup', () => {
 
   const button = () => screen.getByRole('button', { name: /^(Restore from backup|Restoring…)$/ });
   const zip = () => new File(['zip'], 'tabcreator-backup-20261006.zip');
-  const backup: ValidBackup = { takes: [], tabs: [], audio: new Map() };
+  const backup: ValidBackup = { takes: [], tabs: [], audio: new Map(), deflated: new Map() };
   const planOf = (n: number, toSkip = 0): RestorePlan => ({
     backup: {
       ...backup,
@@ -1007,6 +1008,22 @@ describe('Restore from backup', () => {
       "Restore didn't finish — nothing was changed.",
     );
     expect(getToast()).toBeNull();
+  });
+
+  it('a failed restore whose rollback left files behind says so, not "nothing was changed"', async () => {
+    const session = empty();
+    vi.mocked(pickFile).mockResolvedValueOnce(zip());
+    session.readBackup.mockResolvedValueOnce(planOf(1));
+    session.restore.mockRejectedValueOnce(
+      new RestoreLeftFilesError(new AppError('instance-taken', 'fenced')),
+    );
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Restore' })));
+    const text =
+      "Restore didn't finish — some files were left behind and will be cleaned up the next time TabCreator opens.";
+    expect(screen.getByTestId('restore-error').textContent).toBe(text);
+    expect(announce).toHaveBeenCalledWith(text, 'assertive');
   });
 
   it('while a restore runs: "Restoring…", aria-disabled, Back up disabled, row writes paused', () => {

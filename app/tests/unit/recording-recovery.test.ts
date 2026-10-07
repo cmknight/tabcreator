@@ -59,6 +59,7 @@ function setup(
   let activeTakeId = options.activeTakeId ?? null;
   let recording = options.recording ?? false;
   let handedOver = false;
+  let restoreRunning = false;
   const extOf = (blob: Blob) =>
     blob.type === 'audio/wav' ? 'wav' : blob.type.startsWith('audio/ogg') ? 'ogg' : 'webm';
   const deps: RecoveryDeps = {
@@ -99,6 +100,7 @@ function setup(
       if (!pcm) throw new AppError('analysis-failed', 'undecodable');
       return { pcm };
     }),
+    isRestoreRunning: vi.fn(() => restoreRunning),
   };
   const host: RecoveryHost = {
     activeTakeId: () => activeTakeId,
@@ -138,6 +140,7 @@ function setup(
     published: () => published,
     setActive: (id: string | null) => (activeTakeId = id),
     setRecording: (on: boolean) => (recording = on),
+    setRestoreRunning: (on: boolean) => (restoreRunning = on),
     handOver: () => (handedOver = true),
   };
 }
@@ -190,6 +193,35 @@ describe('recovery scan', () => {
     expect(t.raw.size).toBe(0);
     expect(t.audio.size).toBe(0);
     expect(t.published()).toEqual([]);
+  });
+
+  it('a restore running: no orphan file is deleted (its audio comes before its records)', async () => {
+    const t = setup({
+      raw: new Map([['x', seconds(1)]]),
+      audio: new Map([['y', new Blob(['a'], { type: 'audio/webm;codecs=opus' })]]),
+    });
+    t.setRestoreRunning(true);
+    await t.recovery.scan();
+    expect(t.log).toEqual([]);
+    expect(t.audio.has('y') && t.raw.has('x')).toBe(true);
+    // The next scan, with the restore over, removes real orphans.
+    t.setRestoreRunning(false);
+    await t.recovery.scan();
+    expect(t.log).toEqual(['deleteRaw x', 'deleteAudio y']);
+  });
+
+  it('a restore starting mid-scan: the file found orphaned is not deleted', async () => {
+    const t = setup({
+      audio: new Map([['y', new Blob(['a'], { type: 'audio/webm;codecs=opus' })]]),
+    });
+    // The restore begins while the scan re-reads the file's take, just before the delete.
+    vi.mocked(t.deps.getTake).mockImplementation(async () => {
+      t.setRestoreRunning(true);
+      return null;
+    });
+    await t.recovery.scan();
+    expect(t.deps.deleteAudio).not.toHaveBeenCalled();
+    expect(t.audio.has('y')).toBe(true);
   });
 
   it('a recorded or analysed take with a raw file is left alone, with no banner', async () => {

@@ -11,10 +11,18 @@
 // "Storage-full status that clears when space is freed" (epic 7): `deleteAudio` reports the
 // freed space to persistence.ts (`beginFreeing`), and both deletes read the usage again once
 // their files are removed. Story "Restore validation and missing audio" (epic 7): a restore that
-// imported takes asks for persistent storage (`requestPersist`, fire and forget).
+// imported takes asks for persistent storage (`requestPersist`, fire and forget). Story
+// "Streaming restore and restore races" (epic 7): a restore holds storage's restore signal
+// (`beginRestore`, storage/restore-state.ts) so the recovery scan deletes no file meanwhile; it
+// writes a take's audio only while the take has no record (re-read just before the write),
+// streamed from the picked file; the file written for a take the import skipped goes again (that
+// file only); and a rollback that could not remove
+// every file it wrote rejects with `RestoreLeftFilesError`, so the screen never says "nothing was
+// changed" when files were left behind.
 
+import { extensionFor } from '../model/audio-format';
 import { libraryRow, pickSize, sortRows, withTitle, type LibraryRow } from '../model/library';
-import { isAppError, type AppErrorCode } from '../model/errors';
+import { AppError, isAppError, type AppErrorCode } from '../model/errors';
 import { devWarn } from '../model/log';
 import { renamedTitle } from '../model/title';
 import type { Tab, Take, TakeWriter } from '../model/types';
@@ -29,6 +37,7 @@ import {
 } from '../storage/persistence';
 import { loadPrefs, updatePrefs } from '../storage/prefs';
 import { readBackup, type ValidBackup } from '../storage/restore';
+import { beginRestore } from '../storage/restore-state';
 import { requestPersist } from './take-save';
 import {
   subscribe as subscribeStorage,
@@ -82,6 +91,28 @@ export interface RestorePlan {
   toSkip: number;
 }
 
+/**
+ * A restore failed and its rollback could not remove every audio file it wrote (for example after
+ * the write fence, `instance-taken`): files were left behind, for the next start-up scan. Its
+ * `code` is the failure's (the restore's, else `storage-failed`), the failure its `cause`.
+ */
+export class RestoreLeftFilesError extends AppError {
+  constructor(failure: unknown) {
+    super(
+      isAppError(failure) ? failure.code : 'storage-failed',
+      'Restore failed and its rollback left files behind',
+      { cause: failure },
+    );
+    this.name = 'RestoreLeftFilesError';
+  }
+}
+
+/** A compressed file a restore wrote: `audio/{id}.{ext}`. */
+interface RestoredFile {
+  id: string;
+  ext: string;
+}
+
 export interface RestoreResult {
   imported: number;
   /** Takes in the file that were already in the library. */
@@ -128,11 +159,15 @@ export interface LibrarySession {
    */
   readBackup(file: Blob): Promise<RestorePlan | null>;
   /**
-   * Imports a checked backup's takes not already present: their audio is written first, then
-   * their records (`importTakes`, which skips ids present by then); a failed write removes the
-   * audio written so far and writes no record. Existing takes are never touched. `restoring` is
-   * set meanwhile. Resolves to null when a backup or restore is running. A failure rejects
-   * (logged) with the write's AppError.
+   * Imports a checked backup's takes not already present: their audio is written first (only
+   * while the take has no record, re-read just before; an orphan file of the id is replaced),
+   * then their records
+   * (`importTakes`, which skips ids present by then); the file written for a take it skipped is
+   * removed again (that file only). A failed write removes the audio written so far and writes no record. Existing
+   * takes are never touched, their audio never overwritten or removed. `restoring` is set, and
+   * storage's restore signal held, meanwhile. Resolves to null when a backup or restore is
+   * running. A failure rejects (logged) with the write's AppError, or with a
+   * `RestoreLeftFilesError` when the rollback could not remove every file it wrote.
    */
   restore(backup: ValidBackup): Promise<RestoreResult | null>;
   /**
@@ -163,12 +198,19 @@ export interface LibraryDeps {
   deleteRaw(takeId: string): Promise<void>;
   /** Builds the backup zip, reporting progress (0..1). */
   createBackup(onProgress: (progress: number) => void): Promise<BackupResult>;
-  /** Unzips and checks a backup file (the backup worker's `read`). */
+  /** Reads and checks a backup file (the backup worker's `read`). */
   readBackup(file: Blob): Promise<ValidBackup>;
-  /** Writes a take's compressed audio (its extension from `blob.type`). */
-  writeCompressed(takeId: string, blob: Blob): Promise<void>;
-  /** Writes whole records, skipping ids present; resolves to the number written. */
-  importTakes(records: readonly ImportRecord[]): Promise<number>;
+  /**
+   * Restore's audio write (audio-store `restoreCompressed`): its extension from `blob.type`,
+   * replacing any file of the take; inflated to exactly `inflatedSize` bytes when not null.
+   */
+  restoreCompressed(takeId: string, blob: Blob, inflatedSize: number | null): Promise<void>;
+  /** Removes the one file `audio/{takeId}.{ext}` (restore's cleanup). */
+  removeCompressedFile(takeId: string, ext: string): Promise<void>;
+  /** Writes whole records, skipping ids present; resolves to the ids written. */
+  importTakes(records: readonly ImportRecord[]): Promise<string[]>;
+  /** Raises storage's restore signal (storage/restore-state.ts); the returned call lowers it. */
+  beginRestore(): () => void;
   /**
    * Asks the browser to keep storage (storage/persistence.ts `requestPersistOnce`), after a
    * restore imported takes. Fire and forget.
@@ -563,35 +605,63 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     }, 'Library: reading a backup failed');
   }
 
+  /**
+   * Removes each file a restore wrote (that file only: another writer's file of the take in
+   * another format stays); true when every removal succeeded. Never rejects.
+   */
+  async function removeRestoredAudio(files: readonly RestoredFile[]): Promise<boolean> {
+    let removed = true;
+    for (const { id, ext } of files) {
+      await deps.removeCompressedFile(id, ext).catch((cleanup: unknown) => {
+        removed = false;
+        devWarn(`Library: removing restored audio of take ${id} failed`, cleanup);
+      });
+    }
+    return removed;
+  }
+
   function restore(backup: ValidBackup): Promise<RestoreResult | null> {
     return asRestore(async () => {
-      const existing = new Set((await deps.listTakes()).map((t) => t.id));
-      const fresh = backup.takes.filter((t) => !existing.has(t.id));
-      const tabs = new Map(backup.tabs.map((t) => [t.takeId, t]));
-      const written: string[] = [];
-      let imported: number;
+      // Held from before the first audio write until the import and its cleanup are done: the
+      // recovery scan must not take the new audio for orphans before its records exist.
+      const endRestore = deps.beginRestore();
       try {
-        // Audio first: a record never points at audio that is not there yet.
-        for (const take of fresh) {
-          const audio = backup.audio.get(take.id);
-          if (!audio) continue;
-          written.push(take.id);
-          await deps.writeCompressed(take.id, audio);
+        const existing = new Set((await deps.listTakes()).map((t) => t.id));
+        const fresh = backup.takes.filter((t) => !existing.has(t.id));
+        const tabs = new Map(backup.tabs.map((t) => [t.takeId, t]));
+        /** The files this restore wrote (or began to write). */
+        const written: RestoredFile[] = [];
+        let inserted: string[];
+        try {
+          // Audio first: a record never points at audio that is not there yet.
+          for (const take of fresh) {
+            const audio = backup.audio.get(take.id);
+            if (!audio) continue;
+            // Re-read just before the write: a take created since the library was read keeps its
+            // audio. With no record, any file of the id is an orphan, and is replaced.
+            if ((await deps.getTake(take.id)) !== null) continue;
+            // Listed before the write: one that committed and then failed (fenced after its
+            // close) is still removed by the rollback.
+            written.push({ id: take.id, ext: extensionFor(audio.type) });
+            await deps.restoreCompressed(take.id, audio, backup.deflated.get(take.id) ?? null);
+          }
+          inserted = await deps.importTakes(
+            fresh.map((take) => ({ take, tab: tabs.get(take.id) ?? null })),
+          );
+        } catch (err) {
+          // Nothing was imported (one transaction): the new takes' audio goes again.
+          if (!(await removeRestoredAudio(written))) throw new RestoreLeftFilesError(err);
+          throw err;
         }
-        imported = await deps.importTakes(
-          fresh.map((take) => ({ take, tab: tabs.get(take.id) ?? null })),
-        );
-      } catch (err) {
-        // Nothing was imported (one transaction): the new takes' audio goes again.
-        for (const id of written) {
-          await deps.deleteAudio(id).catch((cleanup: unknown) => {
-            devWarn(`Library: removing restored audio of take ${id} failed`, cleanup);
-          });
-        }
-        throw err;
+        // A take that appeared since the library was read was skipped by the import: the audio
+        // written for it goes (best effort; the import itself succeeded).
+        const imported = new Set(inserted);
+        await removeRestoredAudio(written.filter(({ id }) => !imported.has(id)));
+        if (inserted.length > 0) requestPersist(deps);
+        return { imported: inserted.length, skipped: backup.takes.length - inserted.length };
+      } finally {
+        endRestore();
       }
-      if (imported > 0) requestPersist(deps);
-      return { imported, skipped: backup.takes.length - imported };
     }, 'Library: restoring failed');
   }
 
@@ -636,8 +706,11 @@ export const librarySession: LibrarySession = createLibrarySession({
   createBackup: (onProgress) =>
     createBackup({ listTakes: () => db.listTakes(), listTabs: () => db.listTabs() }, onProgress),
   readBackup: (file) => readBackup(file),
-  writeCompressed: (id, blob) => audioStore.writeCompressed(id, blob),
+  restoreCompressed: (id, blob, inflatedSize) =>
+    audioStore.restoreCompressed(id, blob, inflatedSize),
+  removeCompressedFile: (id, ext) => audioStore.removeCompressedFile(id, ext),
   importTakes: (records) => db.importTakes(records),
+  beginRestore,
   requestPersist: () => {
     void persistence.requestPersistOnce();
   },

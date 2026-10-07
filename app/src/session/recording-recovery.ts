@@ -29,6 +29,11 @@
 // decoded copy's length, which can exceed the raw file after raw append failures or an early
 // storage-full; clipping counts the raw samples plus the decoded copy past them. A copy that does
 // not decode keeps the raw-based values. The banner's `durationMs` stays the raw length.
+//
+// Never a restore's audio (story "Streaming restore and restore races"): while a restore runs
+// (`isRestoreRunning`, storage/restore-state.ts) the scan deletes no file. The guard covers every
+// file written after the signal was raised (restore raises it before its first write); a deletion
+// already past its check when the signal rises removes only a file listed before then.
 
 import { quietly } from '../model/quietly';
 import type { Take } from '../model/types';
@@ -68,6 +73,11 @@ export interface RecoveryDeps {
   encodeWav: (samples: Float32Array, sampleRate: number) => Blob;
   /** Decodes a compressed copy to mono PCM (audio/decode.ts `decodeTakeAudio`). */
   decode: (blob: Blob, sampleRate: number) => Promise<{ pcm: Float32Array }>;
+  /**
+   * A restore is running (storage/restore-state.ts): its audio is written before its records,
+   * so the scan deletes no file meanwhile.
+   */
+  isRestoreRunning: () => boolean;
 }
 
 /** What recovery needs from the recording store besides its own deps. */
@@ -202,18 +212,23 @@ export function createRecordingRecovery(deps: RecoveryDeps, host: RecoveryHost):
     const noAudio = new Set(
       takes.filter((t) => t.status === 'analyzed' && t.audioMime === null).map((t) => t.id),
     );
+    // While a restore runs (checked after listing and again just before each deletion), its
+    // audio may be written before its records: no file is deleted; the next scan removes real
+    // orphans.
     const raws = await deps.listRaw().catch(() => [] as string[]);
     for (const id of raws) {
-      if (known.has(id) && !noAudio.has(id)) continue;
+      if ((known.has(id) && !noAudio.has(id)) || deps.isRestoreRunning()) continue;
       await quietly(async () => {
-        if (known.has(id) ? await audioDeleted(id) : await orphan(id)) await deps.deleteRaw(id);
+        const gone = known.has(id) ? await audioDeleted(id) : await orphan(id);
+        if (gone && !deps.isRestoreRunning()) await deps.deleteRaw(id);
       });
     }
     const compressed = await deps.listCompressed().catch(() => [] as CompressedFile[]);
     for (const id of new Set(compressed.map((f) => f.id))) {
-      if (known.has(id) && !noAudio.has(id)) continue;
+      if ((known.has(id) && !noAudio.has(id)) || deps.isRestoreRunning()) continue;
       await quietly(async () => {
-        if (known.has(id) ? await audioDeleted(id) : await orphan(id)) await deps.deleteAudio(id);
+        const gone = known.has(id) ? await audioDeleted(id) : await orphan(id);
+        if (gone && !deps.isRestoreRunning()) await deps.deleteAudio(id);
       });
     }
 

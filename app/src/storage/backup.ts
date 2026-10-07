@@ -47,7 +47,10 @@ export interface BackupRequest {
   files: BackupFile[];
 }
 
-/** A restore request (story 6.6): unzip `file` and hand back its manifest text and entries. */
+/**
+ * A restore request (story 6.6): read `file`'s zip directory and hand back its manifest text and
+ * entries (slices of `file`; see backup-worker.ts).
+ */
 export interface ReadRequest {
   type: 'read';
   file: Blob;
@@ -56,10 +59,18 @@ export interface ReadRequest {
 /** The request to the backup worker: one per worker (it is terminated after its reply). */
 export type ToBackupWorker = BackupRequest | ReadRequest;
 
-/** One zip entry other than the manifest, as read by a `read` request. */
+/**
+ * One zip entry other than the manifest, as read by a `read` request: its data as stored in the
+ * zip, a lazy slice of the picked file (nothing is read until restore writes it).
+ */
 export interface BackupEntry {
   name: string;
   blob: Blob;
+  /**
+   * Present when the data is raw deflate (method 8): the size it must inflate to (the central
+   * directory's). Absent when stored as is.
+   */
+  inflatedSize?: number;
 }
 
 /**

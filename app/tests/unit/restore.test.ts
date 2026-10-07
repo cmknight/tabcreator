@@ -108,8 +108,33 @@ describe('validateBackup', () => {
     expect([...new Uint8Array(await result.audio.get('a')!.arrayBuffer())]).toEqual([9, 8, 7]);
   });
 
+  it('entries are re-typed without being read; deflated entries are listed', async () => {
+    const read = vi.fn();
+    const lazy = new Blob([new Uint8Array([4, 5, 6])]);
+    // A slice of the picked file: re-typing it must not read its bytes.
+    const tracked = {
+      size: lazy.size,
+      type: '',
+      arrayBuffer: read,
+      slice: (start?: number, end?: number, type?: string) => lazy.slice(start, end, type),
+    } as unknown as Blob;
+    const result = validateBackup(manifestOf([makeTake('a'), makeTake('b')]), [
+      { name: 'audio/a.webm', blob: tracked },
+      { name: 'audio/b.webm', blob: new Blob([new Uint8Array([1])]), inflatedSize: 40 },
+    ]);
+    expect(read).not.toHaveBeenCalled();
+    expect(result.audio.get('a')!.type).toBe('audio/webm;codecs=opus');
+    expect([...new Uint8Array(await result.audio.get('a')!.arrayBuffer())]).toEqual([4, 5, 6]);
+    expect([...result.deflated]).toEqual([['b', 40]]);
+  });
+
   it('an empty backup is valid', () => {
-    expect(validateBackup(manifestOf([]), [])).toEqual({ takes: [], tabs: [], audio: new Map() });
+    expect(validateBackup(manifestOf([]), [])).toEqual({
+      takes: [],
+      tabs: [],
+      audio: new Map(),
+      deflated: new Map(),
+    });
   });
 
   it('a take with an audio type but no entry is valid, restored with audioMime null', () => {
@@ -375,6 +400,39 @@ describe('readBackup', () => {
       code: 'backup-invalid',
     });
     expect(worker.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it('deflated audio on a browser without DecompressionStream rejects backup-invalid up front', async () => {
+    const reply = () =>
+      fakeWorker((w) =>
+        send(w, {
+          type: 'read',
+          manifest: manifestOf([makeTake('a')]),
+          entries: [{ ...entry('audio/a.webm'), inflatedSize: 10 }],
+        }),
+      );
+    vi.stubGlobal('DecompressionStream', undefined);
+    try {
+      await expect(
+        readBackup(new Blob([]), { createWorker: () => reply().worker }),
+      ).rejects.toMatchObject({ code: 'backup-invalid' });
+      // Stored audio needs no inflating.
+      const stored = fakeWorker((w) =>
+        send(w, {
+          type: 'read',
+          manifest: manifestOf([makeTake('a')]),
+          entries: [entry('audio/a.webm')],
+        }),
+      );
+      await expect(
+        readBackup(new Blob([]), { createWorker: () => stored.worker }),
+      ).resolves.toBeDefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    await expect(
+      readBackup(new Blob([]), { createWorker: () => reply().worker }),
+    ).resolves.toMatchObject({ deflated: new Map([['a', 10]]) });
   });
 
   it("the worker's backup-invalid error rejects with it", async () => {

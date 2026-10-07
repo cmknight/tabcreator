@@ -9,14 +9,23 @@
 // `error`, and closes. The handler is an exported factory so tests can drive it with fake
 // directories and no OPFS.
 //
-// Restore (story 6.6) is its second request type, `read`: it unzips the picked file in memory
-// (`unzipSync`; a file that is not a zip, or is cut short, fails) and replies with the manifest's
-// text (strict UTF-8) and every other entry as a Blob (named by `backupEntryNames`: what an OS
-// re-zip adds dropped, a single top-level folder stripped),
-// or `error` `backup-invalid` (`storage-failed` when it runs out of memory). It writes
-// nothing; restore.ts validates what comes back.
+// Restore (story 6.6) is its second request type, `read`. Story "Streaming restore and restore
+// races" (epic 7) replaced its in-memory unzip with a central-directory reader, so a backup of
+// any size the writer can make is restorable: it reads the end of central directory record and
+// the central directory from the end of the picked file (`file.slice`, never the whole file),
+// names the entries by `backupEntryNames` (what an OS re-zip adds dropped, a single top-level
+// folder stripped), inflates only the manifest (strict UTF-8), and hands back every other entry
+// as a lazy slice of the picked file (its data, found from its 30-byte local header), with the
+// size it must inflate to when deflated; no audio byte is read until restore writes it, and the
+// audio is checked (inflate, size) as it streams into OPFS at Confirm (audio-store.ts). Entry order and data descriptors do
+// not matter. fflate's streaming `Unzip` is not used: without sizes in the local header it finds
+// an entry's end by scanning for a signature, which stored audio can contain. It replies
+// `error` `backup-invalid` for a file that is not a plain zip (ZIP64, multi-disk, encrypted, a
+// method other than stored or deflate, a local header disagreeing with the central directory,
+// anything cut short), `storage-failed` when it runs out of memory. It writes nothing; restore.ts
+// validates what comes back.
 
-import { strToU8, unzipSync, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
+import { inflateSync, strToU8, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
 import { backupEntryNames, MANIFEST_NAME } from './backup';
 import { AUDIO_DIR } from './paths';
 import type {
@@ -217,31 +226,206 @@ export function createBackupHandler(
   };
 }
 
+/** Zip record signatures and fixed sizes. */
+const EOCD_SIG = 0x06054b50;
+const ZIP64_LOCATOR_SIG = 0x07064b50;
+const ZIP64_LOCATOR = 20;
+const CENTRAL_SIG = 0x02014b50;
+const CENTRAL_HEADER = 46;
+const LOCAL_SIG = 0x04034b50;
+const LOCAL_HEADER = 30;
+/** The largest end record: its fixed part and a comment of up to 65,535 bytes. */
+const EOCD_MAX = END_RECORD + 0xffff;
+/** The largest manifest restore reads (its uncompressed size in the central directory). */
+export const MANIFEST_MAX_BYTES = 64 * 1024 * 1024;
+/** Compression methods restore reads. */
+const STORED = 0;
+const DEFLATE = 8;
+
+/** The file is not a plain zip restore can read. */
+class InvalidZip extends Error {}
+
+const notZip = (why: string) => new InvalidZip(why);
+
+/** Bytes `start`..`end` of `file` (bounded reads only). */
+async function bytesAt(file: Blob, start: number, end: number): Promise<Uint8Array> {
+  return new Uint8Array(await file.slice(start, end).arrayBuffer());
+}
+
+/** One central directory entry. */
+interface CentralEntry {
+  name: string;
+  /** The name's bytes as stored, to compare with the local header's. */
+  rawName: Uint8Array;
+  method: number;
+  compressedSize: number;
+  size: number;
+  localOffset: number;
+}
+
+const decodeName = (bytes: Uint8Array, utf8: boolean): string =>
+  utf8
+    ? new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    : // Not flagged UTF-8: read byte for byte (the app's own names are ASCII).
+      String.fromCharCode(...bytes);
+
+const sameBytes = (a: Uint8Array, b: Uint8Array) =>
+  a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** The end of central directory record: where the directory is and how many entries it has. */
+async function readEnd(file: Blob): Promise<{ count: number; offset: number; size: number }> {
+  if (file.size < END_RECORD) throw notZip('too short for a zip');
+  const tailStart = Math.max(0, file.size - EOCD_MAX);
+  const tail = await bytesAt(file, tailStart, file.size);
+  const view = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+  // The last record whose comment runs exactly to the end of the file.
+  let at = -1;
+  for (let i = tail.length - END_RECORD; i >= 0; i--) {
+    if (
+      view.getUint32(i, true) === EOCD_SIG &&
+      i + END_RECORD + view.getUint16(i + 20, true) === tail.length
+    ) {
+      at = i;
+      break;
+    }
+  }
+  if (at < 0) throw notZip('no end of central directory record');
+  const disk = view.getUint16(at + 4, true);
+  const cdDisk = view.getUint16(at + 6, true);
+  const diskCount = view.getUint16(at + 8, true);
+  const count = view.getUint16(at + 10, true);
+  const size = view.getUint32(at + 12, true);
+  const offset = view.getUint32(at + 16, true);
+  if (
+    (at >= ZIP64_LOCATOR && view.getUint32(at - ZIP64_LOCATOR, true) === ZIP64_LOCATOR_SIG) ||
+    count === 0xffff ||
+    size === 0xffff_ffff ||
+    offset === 0xffff_ffff
+  ) {
+    throw notZip('ZIP64');
+  }
+  if (disk !== 0 || cdDisk !== 0 || diskCount !== count) throw notZip('multi-disk');
+  if (offset + size > tailStart + at) throw notZip('central directory out of range');
+  return { count, offset, size };
+}
+
+/** Every central directory entry, in directory order, and where the directory starts. */
+async function readCentral(file: Blob): Promise<{ entries: CentralEntry[]; offset: number }> {
+  const end = await readEnd(file);
+  const dir = await bytesAt(file, end.offset, end.offset + end.size);
+  const view = new DataView(dir.buffer, dir.byteOffset, dir.byteLength);
+  const entries: CentralEntry[] = [];
+  let p = 0;
+  for (let i = 0; i < end.count; i++) {
+    if (p + CENTRAL_HEADER > dir.length || view.getUint32(p, true) !== CENTRAL_SIG) {
+      throw notZip('bad central directory');
+    }
+    const flags = view.getUint16(p + 8, true);
+    const method = view.getUint16(p + 10, true);
+    const compressedSize = view.getUint32(p + 20, true);
+    const size = view.getUint32(p + 24, true);
+    const nameLength = view.getUint16(p + 28, true);
+    const extraLength = view.getUint16(p + 30, true);
+    const commentLength = view.getUint16(p + 32, true);
+    const diskStart = view.getUint16(p + 34, true);
+    const localOffset = view.getUint32(p + 42, true);
+    const next = p + CENTRAL_HEADER + nameLength + extraLength + commentLength;
+    if (next > dir.length) throw notZip('bad central directory');
+    if ([compressedSize, size, localOffset].includes(0xffff_ffff)) throw notZip('ZIP64');
+    if (diskStart !== 0) throw notZip('multi-disk');
+    if (flags & 1) throw notZip('encrypted');
+    const rawName = dir.slice(p + CENTRAL_HEADER, p + CENTRAL_HEADER + nameLength);
+    let name: string;
+    try {
+      name = decodeName(rawName, (flags & 0x800) !== 0);
+    } catch {
+      throw notZip('an entry name is not UTF-8');
+    }
+    entries.push({ name, rawName, method, compressedSize, size, localOffset });
+    p = next;
+  }
+  // The directory holds exactly its entries: anything after them is not a plain zip.
+  if (p !== dir.length) throw notZip('trailing bytes in the central directory');
+  return { entries, offset: end.offset };
+}
+
 /**
- * Reads a backup zip (restore's `read` request): posts `read` with the manifest's text (null when
- * there is no `manifest.json`) and every other entry, named and filtered by `backupEntryNames`
- * (what an OS re-zip adds dropped, a single top-level folder stripped), or
- * `error` `backup-invalid` when the file cannot be read, is not a zip (or is truncated), or its
- * manifest is not UTF-8 text; `storage-failed` when it is too large to unzip in memory
- * (RangeError).
+ * Where an entry's data starts, from its local header (read with its name, one bounded read);
+ * the local header must agree with the central directory on name and method.
+ */
+async function dataStart(file: Blob, entry: CentralEntry, limit: number): Promise<number> {
+  const headerEnd = entry.localOffset + LOCAL_HEADER + entry.rawName.length;
+  if (headerEnd > limit) throw notZip(`${entry.name}: local header out of range`);
+  const header = await bytesAt(file, entry.localOffset, headerEnd);
+  const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+  if (view.getUint32(0, true) !== LOCAL_SIG) throw notZip(`${entry.name}: no local header`);
+  if (view.getUint16(8, true) !== entry.method) throw notZip(`${entry.name}: method mismatch`);
+  const nameLength = view.getUint16(26, true);
+  if (
+    nameLength !== entry.rawName.length ||
+    !sameBytes(header.subarray(LOCAL_HEADER), entry.rawName)
+  ) {
+    throw notZip(`${entry.name}: name mismatch`);
+  }
+  const start = headerEnd + view.getUint16(28, true);
+  if (start + entry.compressedSize > limit) throw notZip(`${entry.name}: data out of range`);
+  return start;
+}
+
+/**
+ * Reads a backup zip (restore's `read` request; see the header): posts `read` with the manifest's
+ * text (null when there is no `manifest.json`, at most `MANIFEST_MAX_BYTES`) and every other kept
+ * entry as a slice of `file` (`inflatedSize` when its method is deflate), or `error` `backup-invalid` when the file cannot be
+ * read, is not a plain zip, or its manifest is not UTF-8 text; `storage-failed` when it runs out
+ * of memory (RangeError). Reads only the end record, the central directory, each kept entry's
+ * local header and the manifest's bytes.
  */
 export async function readBackupZip(file: Blob, post: PostBackup): Promise<void> {
   try {
-    const files = unzipSync(new Uint8Array(await file.arrayBuffer()));
+    const central = await readCentral(file);
+    const byName = new Map<string, CentralEntry>();
+    for (const entry of central.entries) {
+      if (byName.has(entry.name)) throw notZip(`${entry.name} listed twice`);
+      byName.set(entry.name, entry);
+    }
+    // Entry data lies before the central directory.
+    const limit = central.offset;
     let manifest: string | null = null;
     const entries: BackupEntry[] = [];
-    // What an OS re-zip adds is dropped, and a single top-level folder is stripped.
-    for (const [original, name] of backupEntryNames(Object.keys(files))) {
-      const bytes = files[original]!;
+    for (const [original, name] of backupEntryNames(byName.keys())) {
+      const entry = byName.get(original)!;
+      if (entry.method !== STORED && entry.method !== DEFLATE) {
+        throw notZip(`${entry.name}: compression method ${entry.method}`);
+      }
+      if (entry.method === STORED && entry.compressedSize !== entry.size) {
+        throw notZip(`${entry.name}: stored sizes differ`);
+      }
+      const start = await dataStart(file, entry, limit);
+      const data = file.slice(start, start + entry.compressedSize);
       if (name === MANIFEST_NAME) {
+        if (entry.size > MANIFEST_MAX_BYTES) throw notZip('manifest too large');
+        const raw = new Uint8Array(await data.arrayBuffer());
+        // Inflated into a buffer one byte longer than the directory's size: fflate never grows a
+        // given buffer, so a manifest inflating to more fills it (and is rejected) and memory
+        // stays bounded.
+        const bytes =
+          entry.method === DEFLATE
+            ? inflateSync(raw, { out: new Uint8Array(entry.size + 1) })
+            : raw;
+        if (bytes.length !== entry.size) throw notZip('manifest size mismatch');
         manifest = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
       } else {
-        entries.push({ name, blob: new Blob([bytes]) });
+        entries.push(
+          entry.method === DEFLATE
+            ? { name, blob: data, inflatedSize: entry.size }
+            : { name, blob: data },
+        );
       }
     }
     post({ type: 'read', manifest, entries });
   } catch (err) {
-    // Out of memory (a file too large to unzip here) is not the file being invalid.
+    // Out of memory (a central directory or manifest too large to hold) is not the file being
+    // invalid.
     const code = errorName(err) === 'RangeError' ? 'storage-failed' : 'backup-invalid';
     post({ type: 'error', code, message: `Read backup: ${errorMessage(err)}` });
   }

@@ -546,6 +546,9 @@ export const strings = {
   'library.restoreInvalid': "That file isn't a TabCreator backup — nothing was changed.",
   /** The error banner when a restore's write failed (storage full or failed). */
   'library.restoreFailed': "Restore didn't finish — nothing was changed.",
+  /** The error banner when a restore failed and its rollback could not remove every file. */
+  'library.restoreLeftFiles':
+    "Restore didn't finish — some files were left behind and will be cleaned up the next time TabCreator opens.",
   /** Story 6.7: the one-time notice when the browser refused persistent storage. */
   'library.persistNotice':
     'Your browser may clear these takes when space runs low. Back them up regularly.',

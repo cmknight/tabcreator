@@ -60,9 +60,10 @@ export interface TakeDb {
   /**
    * Writes whole records as given (writer `restore`, no `updatedAt` stamp) in one transaction,
    * skipping every record whose take id already exists (its take and tab stay untouched; story
-   * 6.6). Resolves to the number written and always emits one `library-restored` with it.
+   * 6.6). Resolves to the ids written, in order, and always emits one `library-restored` with
+   * their count.
    */
-  importTakes(records: readonly ImportRecord[]): Promise<number>;
+  importTakes(records: readonly ImportRecord[]): Promise<string[]>;
   /**
    * Removes the Take and Tab in one transaction, then its audio and raw files best-effort. A
    * player's delete (writer `library-session`) of a take that existed then reports the freed
@@ -309,21 +310,25 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     },
 
     async importTakes(records) {
-      const count = await write('Import takes', ['takes', 'tabs'], async (tx) => {
+      const inserted = await write('Import takes', ['takes', 'tabs'], async (tx) => {
         const takes = tx.objectStore('takes');
-        let written = 0;
+        const written: string[] = [];
         for (const { take, tab } of records) {
           // An existing take is never overwritten: not its record, not its tab (story 6.6).
           if ((await takes.getKey(take.id)) !== undefined) continue;
           await takes.add(take);
           if (tab) await tx.objectStore('tabs').put({ ...tab, takeId: take.id });
-          written++;
+          written.push(take.id);
         }
         return written;
       });
-      const event: StorageEvent = { type: 'library-restored', count, writer: 'restore' };
+      const event: StorageEvent = {
+        type: 'library-restored',
+        count: inserted.length,
+        writer: 'restore',
+      };
       emit(event);
-      return count;
+      return inserted;
     },
 
     async deleteTake(id, writer) {

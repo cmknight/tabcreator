@@ -352,14 +352,14 @@ describe('importTakes', () => {
         { take: a, tab },
         { take: b, tab: null },
       ]),
-    ).toBe(2);
+    ).toEqual(['a', 'b']);
     expect(await db.getTake('a')).toEqual(a);
     expect(await db.getTake('b')).toEqual(b);
     expect(await db.getTab('a')).toEqual(tab);
     expect(events).toEqual([{ type: 'library-restored', count: 2, writer: 'restore' }]);
   });
 
-  it('skips a take id already stored: its record and tab stay; returns and emits the count written', async () => {
+  it('skips a take id already stored: its record and tab stay; returns the ids written, emits their count', async () => {
     const mine = makeTake('a', { title: 'Mine', updatedAt: '2025-03-01T00:00:00.000Z' });
     const myTab = { ...makeTab('a'), updatedAt: '2025-03-01T00:00:00.000Z', deletedStartMs: [7] };
     await db.importTakes([{ take: mine, tab: myTab }]);
@@ -371,7 +371,7 @@ describe('importTakes', () => {
         { take: other, tab: makeTab('a') },
         { take: fresh, tab: makeTab('b') },
       ]),
-    ).toBe(1);
+    ).toEqual(['b']);
     expect(await db.getTake('a')).toEqual(mine);
     expect(await db.getTab('a')).toEqual(myTab);
     expect(await db.getTake('b')).toEqual(fresh);
@@ -381,7 +381,7 @@ describe('importTakes', () => {
   it('nothing new: writes nothing and still emits library-restored with 0', async () => {
     await db.importTakes([{ take: makeTake('a'), tab: null }]);
     events = [];
-    expect(await db.importTakes([{ take: makeTake('a', { title: 'X' }), tab: null }])).toBe(0);
+    expect(await db.importTakes([{ take: makeTake('a', { title: 'X' }), tab: null }])).toEqual([]);
     expect((await db.getTake('a'))?.title).toBe(makeTake('a').title);
     expect(events).toEqual([{ type: 'library-restored', count: 0, writer: 'restore' }]);
   });
@@ -393,7 +393,7 @@ describe('importTakes', () => {
         { take: first, tab: null },
         { take: makeTake('a', { title: 'Second' }), tab: null },
       ]),
-    ).toBe(1);
+    ).toEqual(['a']);
     expect(await db.getTake('a')).toEqual(first);
   });
 });

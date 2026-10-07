@@ -38,7 +38,9 @@
 // summary ("Imported 2 takes, skipped 1 already in your library") is a toast and a polite
 // announcement; the list refreshes through `library-restored`. An invalid file, or a failed
 // write, shows an error banner (announced assertively) until the next restore attempt or leaving
-// the Library; nothing was changed. Cancelling the picker or the dialog changes nothing.
+// the Library; nothing was changed. Cancelling the picker or the dialog changes nothing. Story
+// "Streaming restore and restore races": a failed restore whose rollback could not remove every
+// file it wrote (`RestoreLeftFilesError`) says so instead ("some files were left behind…").
 //
 // Story "Storage protection and Library states" (6.7, CAP-19, CAP-25; mockup library.html (d),
 // (e), .libfoot): above the heading, the one-time storage notice (a warning banner, role status,
@@ -66,6 +68,7 @@ import { filterRows, formatMegabytes } from '../../model/library';
 import { isAppError } from '../../model/errors';
 import {
   librarySession,
+  RestoreLeftFilesError,
   type LibraryRow,
   type LibrarySession,
   type LibraryStatus,
@@ -721,11 +724,13 @@ export function Library({
   /** A picker is open: a second click does nothing. */
   const picking = useRef(false);
   const restoreFailed = (err: unknown) => {
-    // The session logged it; nothing was written.
+    // The session logged it. Nothing was written, unless its rollback left files behind.
     const text =
-      isAppError(err) && err.code === 'backup-invalid'
-        ? strings['library.restoreInvalid']
-        : strings['library.restoreFailed'];
+      err instanceof RestoreLeftFilesError
+        ? strings['library.restoreLeftFiles']
+        : isAppError(err) && err.code === 'backup-invalid'
+          ? strings['library.restoreInvalid']
+          : strings['library.restoreFailed'];
     setRestoreError(text);
     announce(text, 'assertive');
   };
