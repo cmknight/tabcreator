@@ -149,6 +149,7 @@ describe('settings session prefs (Defaults for new takes)', () => {
     expect(session.getSnapshot().prefs).toEqual({
       barLines: false,
       analysisDefaults: { sensitivity: 0.5, minNoteMs: 20, maxFret: 24 },
+      theme: 'system',
     });
     expect(loadPrefs()).toMatchObject({
       barLines: false,
@@ -210,5 +211,57 @@ describe('settings session storage protection', () => {
     session.subscribe(() => {});
     await flush();
     expect(session.getSnapshot().storageProtected).toBe(false);
+  });
+});
+
+// Story "Theme toggle": the theme pref.
+describe('settings session prefs (Theme)', () => {
+  const version = () => new Promise<string>(() => {});
+
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it('loads the stored theme; system by default, and a bad value reads as system', () => {
+    expect(createSettingsSession({ version }).getSnapshot().prefs.theme).toBe('system');
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ ...DEFAULT_PREFS, theme: 'dark' }));
+    expect(createSettingsSession({ version }).getSnapshot().prefs.theme).toBe('dark');
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ ...DEFAULT_PREFS, theme: 'purple' }));
+    expect(createSettingsSession({ version }).getSnapshot().prefs.theme).toBe('system');
+  });
+
+  it("setTheme saves prefs.theme, publishes, survives a reload and keeps others' fields", () => {
+    const session = createSettingsSession({ version });
+    localStorage.setItem(
+      PREFS_KEY,
+      JSON.stringify({ ...DEFAULT_PREFS, countIn: { on: true, bpm: 90 } }),
+    );
+    const listener = vi.fn();
+    session.subscribePrefs(listener);
+    session.setTheme('dark');
+    expect(session.getSnapshot().prefs.theme).toBe('dark');
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(loadPrefs()).toMatchObject({ theme: 'dark', countIn: { on: true, bpm: 90 } });
+    expect(createSettingsSession({ version }).getSnapshot().prefs.theme).toBe('dark');
+    session.setTheme('dark'); // unchanged: nothing written or published
+    expect(listener).toHaveBeenCalledTimes(1);
+    session.setTheme('light');
+    expect(loadPrefs().theme).toBe('light');
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed write still changes the theme for this session', () => {
+    const prefs: Prefs = { ...DEFAULT_PREFS };
+    const session = createSettingsSession(
+      { version },
+      {
+        loadPrefs: () => prefs,
+        updatePrefs: () => {
+          throw new AppError('storage-full', 'full');
+        },
+      },
+    );
+    session.setTheme('dark');
+    expect(session.getSnapshot().prefs.theme).toBe('dark');
   });
 });

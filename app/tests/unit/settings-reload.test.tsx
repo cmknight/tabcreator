@@ -12,7 +12,11 @@ import { dismissToast } from '../../src/ui/toast';
 const stores = vi.hoisted(() => ({
   settings: {
     engine: { state: 'unavailable' },
-    prefs: { barLines: false, analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 } },
+    prefs: {
+      barLines: false,
+      analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 },
+      theme: 'system',
+    },
   },
   recording: false,
   analysing: false,
@@ -22,6 +26,7 @@ vi.mock('../../src/session/settings-session', () => ({
     subscribe: () => () => {},
     getSnapshot: () => stores.settings,
     setAnalysisDefaults: () => {},
+    setTheme: () => {},
   },
 }));
 vi.mock('../../src/session/recording-session', () => ({

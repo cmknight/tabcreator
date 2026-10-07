@@ -54,3 +54,42 @@
 .warn .statIcon {
   color: var(--color-warning);
 }
+
+/* Story "Theme toggle": the Theme segmented control, three joined toggle buttons (the Tab
+   screen's speed control, components/PlaybackControls.module.css); the selected segment uses the
+   pressed style (buttons.module.css .toggle). */
+.segments {
+  display: inline-flex;
+}
+
+.segment {
+  padding-inline: var(--space-3);
+}
+
+/* The pressed segment's border sits above its neighbours'; a focused segment's ring above all. */
+.segment[aria-pressed='true'] {
+  position: relative;
+}
+
+.segment:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+.segment:not(:first-child) {
+  margin-inline-start: -1px;
+}
+
+.segment:not(:first-child, :last-child) {
+  border-radius: 0;
+}
+
+.segment:first-child:not(:last-child) {
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+}
+
+.segment:last-child:not(:first-child) {
+  border-start-start-radius: 0;
+  border-end-start-radius: 0;
+}

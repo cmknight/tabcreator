@@ -1309,7 +1309,11 @@ describe('Tab screen tab area, header and selection', () => {
     const settingsWith = (barLines: boolean) => {
       const snapshot: SettingsSnapshot = {
         engine: { state: 'loading' },
-        prefs: { barLines, analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 } },
+        prefs: {
+          barLines,
+          analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 },
+          theme: 'system',
+        },
         storageProtected: null,
       };
       return { subscribePrefs: () => () => {}, getSnapshot: () => snapshot, setBarLines: vi.fn() };
@@ -2259,7 +2263,11 @@ describe('Tab screen flags, warnings and bar lines', () => {
   function fakeSettings(barLines = true) {
     let snapshot: SettingsSnapshot = {
       engine: { state: 'loading' },
-      prefs: { barLines, analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 } },
+      prefs: {
+        barLines,
+        analysisDefaults: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 },
+        theme: 'system',
+      },
       storageProtected: null,
     };
     const listeners = new Set<() => void>();

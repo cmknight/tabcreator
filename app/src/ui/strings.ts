@@ -617,6 +617,14 @@ export const strings = {
   'settings.storageAtRisk': 'Storage: may be cleared by the browser',
   /** The link to the Library shown when storage is not protected. */
   'settings.storageBackUp': 'Back up library',
+  /** Story "Theme toggle": the Appearance panel (mockup settings.html). */
+  'settings.appearance': 'Appearance',
+  /** The Theme segmented control's label, which names its button group. */
+  'settings.theme': 'Theme',
+  /** The segments: follow the operating system, or always light, or always dark. */
+  'settings.themeSystem': 'System',
+  'settings.themeLight': 'Light',
+  'settings.themeDark': 'Dark',
 } as const;
 
 export type StringKey = keyof typeof strings;

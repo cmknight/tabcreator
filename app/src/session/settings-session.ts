@@ -9,10 +9,13 @@
 //
 // Story "Storage protection and Library states" (6.7): `storageProtected`, whether storage is
 // persisted (storage/persistence.ts), read on each `subscribe` for the Storage panel.
+//
+// Story "Theme toggle": `prefs.theme` (system, light or dark), the Settings screen's Appearance
+// panel. `main.tsx` has `ui/theme-apply.ts`'s `followTheme` apply it to the page on each change.
 
 import { engineClient, type EngineClient } from '../engine/engine-client';
 import { clampAnalysisSettings, sameSettings } from '../model/analysis-settings';
-import type { AnalysisSettings, Prefs } from '../model/types';
+import type { AnalysisSettings, Prefs, ThemePref } from '../model/types';
 import { persistence } from '../storage/persistence';
 import { loadPrefs, updatePrefs, type PrefsPatch } from '../storage/prefs';
 
@@ -22,9 +25,9 @@ export type EngineStatus =
 export interface SettingsSnapshot {
   engine: EngineStatus;
   /**
-   * The prefs this store handles, loaded at start and kept with its own changes: `barLines` and
-   * `analysisDefaults`; the other prefs belong to their writers (recording-session) and are not
-   * mirrored.
+   * The prefs this store handles, loaded at start and kept with its own changes: `barLines`,
+   * `analysisDefaults` and `theme`; the other prefs belong to their writers (recording-session)
+   * and are not mirrored.
    */
   prefs: SettingsPrefs;
   /** Whether storage is persisted (false when unknown); null until read. */
@@ -32,7 +35,7 @@ export interface SettingsSnapshot {
 }
 
 /** The prefs fields settings-session handles. */
-export type SettingsPrefs = Pick<Prefs, 'barLines' | 'analysisDefaults'>;
+export type SettingsPrefs = Pick<Prefs, 'barLines' | 'analysisDefaults' | 'theme'>;
 
 export interface SettingsSession {
   /** Subscribes, asking the engine for its version on the first subscription. */
@@ -53,6 +56,11 @@ export interface SettingsSession {
    * `prefs.analysisDefaults` at once. A failed write shows the stored defaults again.
    */
   setAnalysisDefaults(patch: Partial<AnalysisSettings>): void;
+  /**
+   * Chooses the theme (system, light or dark); remembered in prefs. A failed write still changes
+   * the theme for this page session; only remembering it is lost.
+   */
+  setTheme(pref: ThemePref): void;
 }
 
 export interface SettingsPrefsDeps {
@@ -74,8 +82,8 @@ export function createSettingsSession(
   let snapshot: SettingsSnapshot = {
     engine: { state: 'loading' },
     prefs: (() => {
-      const { barLines, analysisDefaults } = prefsDeps.loadPrefs();
-      return { barLines, analysisDefaults };
+      const { barLines, analysisDefaults, theme } = prefsDeps.loadPrefs();
+      return { barLines, analysisDefaults, theme };
     })(),
     storageProtected: null,
   };
@@ -152,6 +160,15 @@ export function createSettingsSession(
         return;
       }
       publish({ prefs: { ...snapshot.prefs, analysisDefaults } });
+    },
+    setTheme(theme) {
+      if (snapshot.prefs.theme === theme) return;
+      try {
+        prefsDeps.updatePrefs({ theme });
+      } catch {
+        // The theme still changes this page session; only remembering it is lost.
+      }
+      publish({ prefs: { ...snapshot.prefs, theme } });
     },
   };
 }

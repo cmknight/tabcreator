@@ -3,9 +3,13 @@
 // without Re-analyse, saved on each change to `prefs.analysisDefaults` through settings-session;
 // new takes copy them at creation), Storage (story 6.7: "Storage: protected", or "Storage: may be
 // cleared by the browser" with a Back up library link to the Library) and About (the engine
-// version).
+// version). Story "Theme toggle": Appearance, between Defaults and Storage, with the Theme
+// segmented control (System / Light / Dark, `aria-pressed`, like the Tab screen's speed control);
+// a change is saved through settings-session, and `followTheme` (started in main.tsx) applies it
+// to the page at once.
 
 import { useSyncExternalStore } from 'react';
+import type { ThemePref } from '../../model/types';
 import {
   settingsSession,
   type EngineStatus,
@@ -21,6 +25,12 @@ import { strings } from '../strings';
 import styles from './Screen.module.css';
 import settingsStyles from './Settings.module.css';
 
+const THEMES: readonly { pref: ThemePref; label: string }[] = [
+  { pref: 'system', label: strings['settings.themeSystem'] },
+  { pref: 'light', label: strings['settings.themeLight'] },
+  { pref: 'dark', label: strings['settings.themeDark'] },
+];
+
 function engineLine(engine: EngineStatus): string {
   switch (engine.state) {
     case 'ready':
@@ -34,7 +44,7 @@ function engineLine(engine: EngineStatus): string {
 
 export interface SettingsProps {
   /** The settings store; tests pass their own. */
-  session?: Pick<SettingsSession, 'subscribe' | 'getSnapshot' | 'setAnalysisDefaults'>;
+  session?: Pick<SettingsSession, 'subscribe' | 'getSnapshot' | 'setAnalysisDefaults' | 'setTheme'>;
 }
 
 export function Settings({ session = settingsSession }: SettingsProps = {}) {
@@ -67,6 +77,27 @@ export function Settings({ session = settingsSession }: SettingsProps = {}) {
           settings={prefs.analysisDefaults}
           onChange={(patch) => session.setAnalysisDefaults(patch)}
         />
+      </section>
+      <section className={settingsStyles.panel} aria-labelledby="settings-appearance">
+        <h2 id="settings-appearance" className={settingsStyles.panelTitle}>
+          {strings['settings.appearance']}
+        </h2>
+        <div className={settingsStyles.row}>
+          <span id="settings-theme">{strings['settings.theme']}</span>
+          <div role="group" aria-labelledby="settings-theme" className={settingsStyles.segments}>
+            {THEMES.map(({ pref, label }) => (
+              <button
+                key={pref}
+                type="button"
+                className={`${buttons.secondary} ${buttons.toggle} ${settingsStyles.segment}`}
+                aria-pressed={prefs.theme === pref}
+                onClick={() => session.setTheme(pref)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
       </section>
       <section className={settingsStyles.panel} aria-labelledby="settings-storage">
         <h2 id="settings-storage" className={settingsStyles.panelTitle}>

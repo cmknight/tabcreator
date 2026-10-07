@@ -3,6 +3,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { pwaIcons, pwaManifest } from './build/pwa-icons.ts';
+import { themeBoot } from './build/theme-boot.ts';
 
 /**
  * The production Content-Security-Policy (spine AD-13). Exported for the e2e tests, which
@@ -55,6 +56,8 @@ export default defineConfig({
   plugins: [
     react(),
     cspMeta(),
+    // The theme pref applied before the first paint (story "Theme toggle"): build/theme-boot.ts.
+    themeBoot(),
     e2eBuildMeta(E2E_BUILD),
     pwaIcons(),
     // The installable, offline app (CAP-20, spine AD-19). Production builds only: the dev server
@@ -69,7 +72,8 @@ export default defineConfig({
       manifest: pwaManifest(),
       workbox: {
         // The shell, every JS chunk (workers and the recorder worklet included), the CSS, the
-        // engine wasm and the icons (emitted by pwaIcons). The manifest is added by the plugin.
+        // engine wasm, the icons (emitted by pwaIcons) and theme-boot.js (themeBoot). The manifest
+        // is added by the plugin.
         globPatterns: ['**/*.{js,wasm,css,html,png,svg}'],
         // The first visit is controlled without a reload, so it works offline straight away.
         // No skipWaiting: an update waits (registerType 'prompt').

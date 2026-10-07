@@ -7,12 +7,22 @@ import { devWarn } from './model/log';
 import { appUpdate } from './session/app-update';
 import { missingCapabilities } from './session/capabilities';
 import { instanceLock } from './session/instance-lock';
+import { settingsSession } from './session/settings-session';
 import { recheckStorageFull } from './storage/persistence';
+import { loadPrefs } from './storage/prefs';
 import { InstanceScreen } from './ui/components/InstanceScreen';
 import { strings } from './ui/strings';
+import { applyTheme, followTheme } from './ui/theme-apply';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('#root element missing from index.html');
+
+// The theme pref (spine AD-12): applied synchronously before anything renders, the dev fake mic
+// and the capability gate included, so the unsupported screen is themed too (production builds
+// set it even earlier, from the boot script in <head>: build/theme-boot.ts). `loadPrefs` never
+// throws; a bad stored value reads as system. Later changes (Settings → Theme) follow the store.
+applyTheme(loadPrefs().theme);
+followTheme(settingsSession);
 
 document.title = strings['global.appName'];
 
