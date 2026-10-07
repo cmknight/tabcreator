@@ -105,6 +105,11 @@ export const strings = {
     'This microphone may be a Bluetooth headset in call mode — accuracy will be poor. Use the built-in or a wired mic.',
   'global.dismiss': 'Dismiss',
   /**
+   * A toast when a backup finishes after the player left the Library (story 7.17); the Library's
+   * banner then offers it.
+   */
+  'global.backupReady': 'Backup ready — download it from the Library',
+  /**
    * EXPERIENCE.md's Storage full copy, which never says "saved": Record's banner when nothing was
    * saved (or storage filled elsewhere), the Library's banner, and the Tab screen's storage-full
    * save failures.
@@ -499,6 +504,12 @@ export const strings = {
   'library.renameFailed': "Couldn't rename the take",
   'library.deleteTakeFailed': "Couldn't delete the take",
   'library.deleteAudioFailed': "Couldn't delete the audio",
+  /**
+   * A row action refused because a backup or restore is running (a toast; story "Library
+   * robustness during backup and restore").
+   */
+  'library.busyBackup': 'Wait for the backup to finish',
+  'library.busyRestore': 'Wait for the restore to finish',
   /** The search field (story 6.3; EXPERIENCE.md Search): its name and placeholder. */
   'library.search': 'Search takes',
   /** No search matches (EXPERIENCE.md :116). */
@@ -514,6 +525,13 @@ export const strings = {
   'library.backupPercent': (percent: number) => `${percent}%`,
   /** A toast and an assertive announcement when the backup failed. */
   'library.backupFailed': "Couldn't back up the library",
+  /**
+   * The banner offering a backup that finished after the player left the Library (story 7.17), with
+   * Download (and Dismiss, `global.dismiss`): its take count and the time it finished ("9:14 pm").
+   */
+  'library.backupReady': (takes: number, time: string) =>
+    `Your backup is ready — ${takes} ${takes === 1 ? 'take' : 'takes'}, made at ${time}`,
+  'library.backupReadyDownload': 'Download',
   /** Announced once the backup has downloaded. */
   'library.backedUp': (n: number) => `Backed up ${n} ${n === 1 ? 'take' : 'takes'}`,
   /** A toast when some takes' audio is in a format this build cannot back up. */

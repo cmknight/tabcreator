@@ -6,8 +6,12 @@
 // are kept as Blob parts, never one concatenated buffer. fflate writes no ZIP64, so a backup that
 // would pass 4 GiB or 65,535 entries fails up front instead of producing a corrupt zip. It posts
 // progress by bytes zipped, then one `done` (the Blob and the takes whose file was missing) or
-// `error`, and closes. The handler is an exported factory so tests can drive it with fake
-// directories and no OPFS.
+// `error`, and closes. Story "Library robustness during backup and restore" (7.17): a file whose
+// read fails mid-zip and that is then confirmed gone (its handle NotFound) restarts the zip once
+// more without it, every remaining file re-checked and all those gone dropped in the same pass,
+// each reported missing; a file still there fails `storage-failed`. Progress is posted only when
+// it increases. The handler is an exported factory so tests can drive it with fake directories
+// and no OPFS.
 //
 // Restore (story 6.6) is its second request type, `read`. Story "Streaming restore and restore
 // races" (epic 7) replaced its in-memory unzip with a central-directory reader, so a backup of
@@ -17,13 +21,13 @@
 // folder stripped), inflates only the manifest (strict UTF-8), and hands back every other entry
 // as a lazy slice of the picked file (its data, found from its 30-byte local header), with the
 // size it must inflate to when deflated; no audio byte is read until restore writes it, and the
-// audio is checked (inflate, size) as it streams into OPFS at Confirm (audio-store.ts). Entry order and data descriptors do
-// not matter. fflate's streaming `Unzip` is not used: without sizes in the local header it finds
-// an entry's end by scanning for a signature, which stored audio can contain. It replies
-// `error` `backup-invalid` for a file that is not a plain zip (ZIP64, multi-disk, encrypted, a
-// method other than stored or deflate, a local header disagreeing with the central directory,
-// anything cut short), `storage-failed` when it runs out of memory. It writes nothing; restore.ts
-// validates what comes back.
+// audio is checked (inflate, size) as it streams into OPFS at Confirm (audio-store.ts). Entry
+// order and data descriptors do not matter. fflate's streaming `Unzip` is not used: without
+// sizes in the local header it finds an entry's end by scanning for a signature, which stored
+// audio can contain. It replies `error` `backup-invalid` for a file that is not a plain zip
+// (ZIP64, multi-disk, encrypted, a method other than stored or deflate, a local header
+// disagreeing with the central directory, anything cut short), `storage-failed` when it runs out
+// of memory. It writes nothing; restore.ts validates what comes back.
 
 import { inflateSync, strToU8, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
 import { backupEntryNames, MANIFEST_NAME } from './backup';
@@ -85,7 +89,7 @@ const isGone = (err: unknown) => ['NotFoundError', 'TypeMismatchError'].includes
 /** An error with the code it is reported with. */
 class Failure extends Error {
   constructor(
-    readonly code: 'storage-failed' | 'audio-missing',
+    readonly code: 'storage-failed',
     message: string,
   ) {
     super(message);
@@ -128,26 +132,7 @@ export function createBackupHandler(
   }: BackupHandlerOptions = {},
 ): (request: BackupRequest) => Promise<void> {
   return async ({ manifest, files }) => {
-    const parts: Blob[] = [];
-    let zipError: Error | null = null;
-    let ended = false;
-    let written = 0;
-    const zip = new Zip((err, chunk, final) => {
-      if (err) {
-        zipError = err;
-        return;
-      }
-      written += chunk.byteLength;
-      if (written > maxBytes) zipError ??= tooLarge();
-      // Each chunk becomes its own Blob part: the browser can keep them outside the JS heap.
-      if (chunk.byteLength > 0) parts.push(new Blob([chunk]));
-      if (final) ended = true;
-    });
-    const check = () => {
-      if (zipError instanceof Failure) throw zipError;
-      if (zipError) throw new Failure('storage-failed', `Zip: ${zipError.message}`);
-    };
-
+    let zip: Zip | null = null;
     try {
       const manifestBytes = strToU8(JSON.stringify(manifest));
 
@@ -162,11 +147,19 @@ export function createBackupHandler(
         }
       }
       const missing: string[] = [];
-      const found: { path: string; blob: Blob }[] = [];
+      let found: FoundAudio[] = [];
       for (const file of files) {
         const audio = await openAudio(dir, file);
-        if (audio) found.push({ path: `${AUDIO_DIR}/${audio.name}`, blob: audio.blob });
-        else missing.push(file.takeId);
+        if (audio) {
+          found.push({
+            takeId: file.takeId,
+            name: audio.name,
+            path: `${AUDIO_DIR}/${audio.name}`,
+            blob: audio.blob,
+          });
+        } else {
+          missing.push(file.takeId);
+        }
       }
 
       // The plain zip limits, checked before anything is written (the manifest is counted
@@ -176,54 +169,152 @@ export function createBackupHandler(
       for (const { path, blob } of found) projected += ENTRY_OVERHEAD + 2 * path.length + blob.size;
       if (projected > maxBytes) throw tooLarge();
 
-      const total = manifestBytes.length + found.reduce((n, f) => n + f.blob.size, 0);
-      let done = 0;
+      /** The highest progress posted: posted only when it increases (a restart never lowers it). */
+      let posted = -1;
+      const progress = (p: number) => {
+        if (p <= posted) return;
+        posted = p;
+        post({ type: 'progress', progress: p });
+      };
 
-      const entry = new ZipDeflate(MANIFEST_NAME, { level: 6 });
-      zip.add(entry);
-      entry.push(manifestBytes, true);
-      check();
-      done += manifestBytes.length;
-      post({ type: 'progress', progress: done / total });
-
-      for (const { path, blob } of found) {
-        // Stored, not deflated: compressed audio does not shrink, and the bytes stay as they are.
-        const audio = new ZipPassThrough(path);
-        zip.add(audio);
-        let offset = 0;
-        do {
-          const end = Math.min(blob.size, offset + sliceBytes);
-          let bytes: Uint8Array<ArrayBuffer>;
-          try {
-            bytes = new Uint8Array(await blob.slice(offset, end).arrayBuffer());
-          } catch (err) {
-            // Its entry is already begun, so the file cannot be left out any more.
-            throw new Failure(
-              isGone(err) || errorName(err) === 'NotReadableError'
-                ? 'audio-missing'
-                : 'storage-failed',
-              `Read ${path}: ${errorMessage(err)}`,
-            );
-          }
-          audio.push(bytes, end >= blob.size);
-          check();
-          done += end - offset;
-          offset = end;
-          post({ type: 'progress', progress: done / total });
-        } while (offset < blob.size);
+      // A file whose read fails mid-zip (its entry already begun) and that is confirmed gone
+      // restarts the zip without it: every remaining file is re-checked and all those gone are
+      // dropped in that pass, reported missing. Each restart drops at least one file, so this ends.
+      for (;;) {
+        const attempt = zipAll(manifestBytes, found, sliceBytes, maxBytes, progress);
+        zip = attempt.zip;
+        const result = await attempt.run;
+        zip = null;
+        if (result.type === 'done') {
+          post({ type: 'done', blob: result.blob, missing });
+          return;
+        }
+        const failed = result.audio;
+        if (!(await isFileGone(dir, failed.name))) {
+          throw new Failure('storage-failed', `Read ${failed.path}: ${errorMessage(result.cause)}`);
+        }
+        const kept: FoundAudio[] = [];
+        for (const f of found) {
+          if (f === failed || (await isFileGone(dir, f.name))) missing.push(f.takeId);
+          else kept.push(f);
+        }
+        found = kept;
       }
-
-      zip.end();
-      check();
-      if (!ended) throw new Failure('storage-failed', 'Zip: the archive did not finish');
-      post({ type: 'done', blob: new Blob(parts, { type: 'application/zip' }), missing });
     } catch (err) {
-      zip.terminate();
+      zip?.terminate();
       const failure =
         err instanceof Failure ? err : new Failure('storage-failed', errorMessage(err));
       post({ type: 'error', code: failure.code, message: failure.message });
     }
   };
+}
+
+/** An audio file found for a take (`name` in `audio/`), to be zipped as `path`. */
+interface FoundAudio {
+  takeId: string;
+  name: string;
+  path: string;
+  blob: Blob;
+}
+
+/**
+ * One zip attempt: the zip blob, or the file whose read failed as a vanished file's would
+ * (NotFound, TypeMismatch, NotReadable; the zip abandoned) with the error.
+ */
+type ZipOutcome =
+  { type: 'done'; blob: Blob } | { type: 'read-failed'; audio: FoundAudio; cause: unknown };
+
+/**
+ * Whether `name` is no longer in the audio directory (its handle NotFound or the wrong kind). Any
+ * other failure to look is `storage-failed`.
+ */
+async function isFileGone(dir: BackupDirectory | null, name: string): Promise<boolean> {
+  if (!dir) return true;
+  try {
+    await dir.getFileHandle(name);
+    return false;
+  } catch (err) {
+    if (isGone(err)) return true;
+    throw new Failure('storage-failed', `Check ${name}: ${errorMessage(err)}`);
+  }
+}
+
+/**
+ * Zips the manifest (deflated) and every `found` file (stored), posting progress by bytes zipped.
+ * `zip` is the running zip (for the caller to terminate on a failure); `run` settles with the
+ * outcome, or rejects with a `Failure`.
+ */
+function zipAll(
+  manifestBytes: Uint8Array,
+  found: readonly FoundAudio[],
+  sliceBytes: number,
+  maxBytes: number,
+  progress: (p: number) => void,
+): { zip: Zip; run: Promise<ZipOutcome> } {
+  const parts: Blob[] = [];
+  let zipError: Error | null = null;
+  let ended = false;
+  let written = 0;
+  const zip = new Zip((err, chunk, final) => {
+    if (err) {
+      zipError = err;
+      return;
+    }
+    written += chunk.byteLength;
+    if (written > maxBytes) zipError ??= tooLarge();
+    // Each chunk becomes its own Blob part: the browser can keep them outside the JS heap.
+    if (chunk.byteLength > 0) parts.push(new Blob([chunk]));
+    if (final) ended = true;
+  });
+  const check = () => {
+    if (zipError instanceof Failure) throw zipError;
+    if (zipError) throw new Failure('storage-failed', `Zip: ${zipError.message}`);
+  };
+
+  const run = async (): Promise<ZipOutcome> => {
+    const total = manifestBytes.length + found.reduce((n, f) => n + f.blob.size, 0);
+    let done = 0;
+
+    const entry = new ZipDeflate(MANIFEST_NAME, { level: 6 });
+    zip.add(entry);
+    entry.push(manifestBytes, true);
+    check();
+    done += manifestBytes.length;
+    progress(done / total);
+
+    for (const audioFile of found) {
+      const { path, blob } = audioFile;
+      // Stored, not deflated: compressed audio does not shrink, and the bytes stay as they are.
+      const audio = new ZipPassThrough(path);
+      zip.add(audio);
+      let offset = 0;
+      do {
+        const end = Math.min(blob.size, offset + sliceBytes);
+        let bytes: Uint8Array<ArrayBuffer>;
+        try {
+          bytes = new Uint8Array(await blob.slice(offset, end).arrayBuffer());
+        } catch (err) {
+          if (isGone(err) || errorName(err) === 'NotReadableError') {
+            // Its entry is already begun: this zip is abandoned; the caller checks the file.
+            zip.terminate();
+            return { type: 'read-failed', audio: audioFile, cause: err };
+          }
+          throw new Failure('storage-failed', `Read ${path}: ${errorMessage(err)}`);
+        }
+        audio.push(bytes, end >= blob.size);
+        check();
+        done += end - offset;
+        offset = end;
+        progress(done / total);
+      } while (offset < blob.size);
+    }
+
+    zip.end();
+    check();
+    if (!ended) throw new Failure('storage-failed', 'Zip: the archive did not finish');
+    return { type: 'done', blob: new Blob(parts, { type: 'application/zip' }) };
+  };
+  return { zip, run: run() };
 }
 
 /** Zip record signatures and fixed sizes. */
@@ -375,8 +466,9 @@ async function dataStart(file: Blob, entry: CentralEntry, limit: number): Promis
 /**
  * Reads a backup zip (restore's `read` request; see the header): posts `read` with the manifest's
  * text (null when there is no `manifest.json`, at most `MANIFEST_MAX_BYTES`) and every other kept
- * entry as a slice of `file` (`inflatedSize` when its method is deflate), or `error` `backup-invalid` when the file cannot be
- * read, is not a plain zip, or its manifest is not UTF-8 text; `storage-failed` when it runs out
+ * entry as a slice of `file` (`inflatedSize` when its method is deflate), or `error`
+ * `backup-invalid` when the file cannot be read, is not a plain zip, or its manifest is not UTF-8
+ * text; `storage-failed` when it runs out
  * of memory (RangeError). Reads only the end record, the central directory, each kept entry's
  * local header and the manifest's bytes.
  */

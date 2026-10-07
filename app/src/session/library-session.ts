@@ -18,7 +18,13 @@
 // streamed from the picked file; the file written for a take the import skipped goes again (that
 // file only); and a rollback that could not remove
 // every file it wrote rejects with `RestoreLeftFilesError`, so the screen never says "nothing was
-// changed" when files were left behind.
+// changed" when files were left behind. Story "Library robustness during backup and restore"
+// (7.17): rename and both deletes refuse (`LibraryBusyError`, code `library-busy`, with its reason)
+// while a backup or restore runs, before any optimistic change, and a backup or restore waits for
+// the writes already in flight to settle before it starts; a backup that finishes while no
+// Library screen is subscribed is kept as `pendingDownload` (memory only) for the next visit.
+// "Off-screen" means no subscriber at all: the Library screen is this session's only subscriber,
+// so a new subscriber elsewhere would have to change how that is decided.
 
 import { extensionFor } from '../model/audio-format';
 import { libraryRow, pickSize, sortRows, withTitle, type LibraryRow } from '../model/library';
@@ -37,7 +43,8 @@ import {
 } from '../storage/persistence';
 import { loadPrefs, updatePrefs } from '../storage/prefs';
 import { readBackup, type ValidBackup } from '../storage/restore';
-import { beginRestore } from '../storage/restore-state';
+import { beginRestore, isRestoreRunning } from '../storage/restore-state';
+import { devHoldBackup } from '../dev/hooks/backup';
 import { requestPersist } from './take-save';
 import {
   subscribe as subscribeStorage,
@@ -61,10 +68,21 @@ export interface LibrarySnapshot {
   /** Storage status (story 6.7). */
   storage: LibraryStorage;
   /**
+   * A backup that finished while no Library screen was subscribed, for the screen to offer
+   * ("Your backup is ready"); null when there is none. A newer backup replaces or clears it.
+   */
+  pendingDownload: PendingDownload | null;
+  /**
    * The one-time storage notice shows this visit: storage is not persisted, the library has a
    * take not still recording, and `prefs.persistNoticeShown` was false. Once true it stays so until the screen leaves.
    */
   persistNotice: boolean;
+}
+
+/** A backup kept for the screen to offer: its result and when it finished (ISO 8601). */
+export interface PendingDownload {
+  result: BackupResult;
+  finishedAt: string;
 }
 
 export interface LibraryStorage {
@@ -107,6 +125,20 @@ export class RestoreLeftFilesError extends AppError {
   }
 }
 
+/** What a library write is waiting for. */
+export type LibraryBusyReason = 'backup' | 'restore';
+
+/**
+ * A library write (rename, delete take, delete audio) refused because a backup or restore is
+ * running (`library-busy`); nothing was changed. `reason` says which.
+ */
+export class LibraryBusyError extends AppError {
+  constructor(readonly reason: LibraryBusyReason) {
+    super('library-busy', `Library write refused: a ${reason} is running`);
+    this.name = 'LibraryBusyError';
+  }
+}
+
 /** A compressed file a restore wrote: `audio/{id}.{ext}`. */
 interface RestoredFile {
   id: string;
@@ -130,28 +162,35 @@ export interface LibrarySession {
   /**
    * Renames a take: trimmed, at most `TITLE_MAX` code points; empty or unchanged writes nothing.
    * The row shows the new title at once; a failed write rejects (logged), and the row re-reads
-   * the stored title unless a later rename is being written.
+   * the stored title unless a later rename is being written. While a backup or restore runs it
+   * rejects with `LibraryBusyError` before showing anything.
    */
   rename(id: string, title: string): Promise<void>;
   /**
    * Deletes the take, its tab and every audio file (`db.deleteTake`; files best-effort, AD-15).
    * The row goes with the `take-deleted` event. A failure rejects (logged) and the row stays.
+   * While a backup or restore runs it rejects with `LibraryBusyError`.
    */
   deleteTake(id: string): Promise<void>;
   /**
    * Deletes the take's audio, keeping its tab: `audioMime` set to null first, then every
    * compressed file and the raw file removed, best-effort (AD-15). The row shows "Audio deleted"
    * through the `take-put` event. Does nothing unless the take is analysed and still has
-   * `audioMime`. A failed read or patch rejects (logged) and no file is removed.
+   * `audioMime`. A failed read or patch rejects (logged) and no file is removed. While a backup
+   * or restore runs it rejects with `LibraryBusyError`.
    */
   deleteAudio(id: string): Promise<void>;
   /**
    * Backs up the library (storage/backup.ts): the zip Blob and its file name, for the screen to
    * download. One at a time: while one runs, another call does nothing and resolves to null.
    * `backup` in the snapshot shows its progress, and is null again once it ends. A failure
-   * rejects (logged).
+   * rejects (logged). One that finishes while no screen is subscribed resolves to null too: its
+   * result is kept as `pendingDownload` instead (replacing any earlier one); one that finishes
+   * with a screen subscribed clears `pendingDownload`.
    */
   backUp(): Promise<BackupResult | null>;
+  /** The screen downloaded or dismissed `pending`: `pendingDownload` clears if it is still that. */
+  clearPendingDownload(pending: PendingDownload): void;
   /**
    * Reads and checks a backup file (storage/restore.ts; nothing is written) and counts its takes
    * against the library. `restoring` is set meanwhile. Resolves to null when a backup or restore
@@ -211,6 +250,8 @@ export interface LibraryDeps {
   importTakes(records: readonly ImportRecord[]): Promise<string[]>;
   /** Raises storage's restore signal (storage/restore-state.ts); the returned call lowers it. */
   beginRestore(): () => void;
+  /** Whether storage's restore signal is raised (by any restore). */
+  isRestoreRunning(): boolean;
   /**
    * Asks the browser to keep storage (storage/persistence.ts `requestPersistOnce`), after a
    * restore imported takes. Fire and forget.
@@ -246,6 +287,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     error: null,
     backup: null,
     restoring: false,
+    pendingDownload: null,
     storage: { protected: null, usageBytes: null, full: false },
     persistNotice: false,
   };
@@ -493,11 +535,22 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     });
   }
 
+  /**
+   * Rejects with `LibraryBusyError` while a backup or restore runs (this session's, or any
+   * restore holding storage's signal): no library write runs meanwhile, and nothing is queued.
+   */
+  function refuseWhileBusy() {
+    if (backupRun !== 0) throw new LibraryBusyError('backup');
+    if (restoreRunning || deps.isRestoreRunning()) throw new LibraryBusyError('restore');
+  }
+
   async function rename(id: string, raw: string) {
     const shown = snapshot.rows.find((r) => r.id === id);
     if (!shown) return;
     const title = renamedTitle(raw, shown.title);
     if (title === null) return;
+    // Before the title shows: a refused rename never shows and then reverts.
+    refuseWhileBusy();
     pendingTitles.set(id, title);
     showTitle(id, title);
     try {
@@ -515,6 +568,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
   }
 
   async function deleteTake(id: string) {
+    refuseWhileBusy();
     try {
       // Resolves once its files are removed (and the storage-full status updated, db.ts).
       await deps.deleteTake(id, WRITER);
@@ -527,6 +581,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
   }
 
   async function deleteAudio(id: string) {
+    refuseWhileBusy();
     // A storage-full failure after this point is not cleared by this delete.
     const freed = deps.beginFreeing();
     try {
@@ -558,23 +613,60 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
   let backupRun = 0;
   let lastBackupRun = 0;
 
+  /** The rename and delete calls in flight (each removed once it settles). */
+  const writes = new Set<Promise<unknown>>();
+
+  /** Tracks a write until it settles, so a backup or restore can wait for it. */
+  function tracked<T>(write: Promise<T>): Promise<T> {
+    writes.add(write);
+    const done = () => writes.delete(write);
+    write.then(done, done);
+    return write;
+  }
+
+  /**
+   * Resolves once every write in flight has settled. Called after the backup or restore has set
+   * its running flag, so no new write starts meanwhile (each is refused).
+   */
+  async function writesSettled() {
+    while (writes.size > 0) await Promise.allSettled([...writes]);
+  }
+
   async function backUp(): Promise<BackupResult | null> {
     if (backupRun !== 0 || restoreRunning) return null;
     const run = ++lastBackupRun;
     backupRun = run;
     publish({ ...snapshot, backup: { progress: 0 } });
+    // A write that started before Back up finishes before the takes are listed.
+    if (writes.size > 0) await writesSettled();
+    let result: BackupResult;
     try {
-      return await deps.createBackup((progress) => {
+      result = await deps.createBackup((progress) => {
         if (backupRun !== run || snapshot.backup?.progress === progress) return;
         publish({ ...snapshot, backup: { progress } });
       });
     } catch (err) {
       devWarn('Library: backing up failed', err);
-      throw err;
-    } finally {
       backupRun = 0;
       publish({ ...snapshot, backup: null });
+      throw err;
     }
+    backupRun = 0;
+    // Off-screen (no subscriber: the Library is the only one, so the player left it): kept for
+    // the next visit, and the screen that started it gets null. Otherwise it downloads now, and
+    // any kept one, now stale, goes.
+    const offScreen = listeners.size === 0;
+    publish({
+      ...snapshot,
+      backup: null,
+      pendingDownload: offScreen ? { result, finishedAt: new Date().toISOString() } : null,
+    });
+    return offScreen ? null : result;
+  }
+
+  function clearPendingDownload(pending: PendingDownload) {
+    if (snapshot.pendingDownload !== pending) return;
+    publish({ ...snapshot, pendingDownload: null });
   }
 
   /** A restore (its read or its import) is running. */
@@ -586,6 +678,8 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
     restoreRunning = true;
     publish({ ...snapshot, restoring: true });
     try {
+      // A write that started before the restore finishes before the takes are listed.
+      if (writes.size > 0) await writesSettled();
       return await job();
     } catch (err) {
       devWarn(failure, err);
@@ -666,10 +760,11 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
   }
 
   return {
-    rename,
-    deleteTake,
-    deleteAudio,
+    rename: (id, title) => tracked(rename(id, title)),
+    deleteTake: (id) => tracked(deleteTake(id)),
+    deleteAudio: (id) => tracked(deleteAudio(id)),
     backUp,
+    clearPendingDownload,
     readBackup: readBackupFile,
     restore,
     markPersistNoticeShown() {
@@ -703,14 +798,20 @@ export const librarySession: LibrarySession = createLibrarySession({
   deleteTake: (id, writer) => db.deleteTake(id, writer),
   deleteAudio: (id) => audioStore.deleteAudio(id),
   deleteRaw: (id) => audioStore.deleteRaw(id),
-  createBackup: (onProgress) =>
-    createBackup({ listTakes: () => db.listTakes(), listTabs: () => db.listTabs() }, onProgress),
+  createBackup: (onProgress) => {
+    const work = createBackup(
+      { listTakes: () => db.listTakes(), listTabs: () => db.listTabs() },
+      onProgress,
+    );
+    return import.meta.env.DEV ? devHoldBackup(work) : work;
+  },
   readBackup: (file) => readBackup(file),
   restoreCompressed: (id, blob, inflatedSize) =>
     audioStore.restoreCompressed(id, blob, inflatedSize),
   removeCompressedFile: (id, ext) => audioStore.removeCompressedFile(id, ext),
   importTakes: (records) => db.importTakes(records),
   beginRestore,
+  isRestoreRunning,
   requestPersist: () => {
     void persistence.requestPersistOnce();
   },

@@ -134,7 +134,7 @@ flowchart TD
 
 - **Binds:** CAP-1, CAP-9, CAP-17, CAP-19, CAP-22, CAP-25, CAP-26
 - **Prevents:** each module inventing error shapes, the UI string-matching messages, and technical text reaching users.
-- **Rule:** Shell modules reject with `AppError { code, message, cause? }` (`model/errors.ts`). `code` is one of: `mic-denied`, `mic-no-device`, `mic-in-use`, `mic-failed`, `mic-lost`, `storage-full`, `storage-failed`, `take-not-found`, `audio-missing`, `engine-unavailable`, `analysis-failed`, `analysis-cancelled`, `backup-invalid`, `unsupported-browser`, `instance-taken`. Adding a code is an edit to this list. The UI maps codes to `ui/strings.ts`; `message` goes to logs only and is never shown (the analysis-failed banner reads "Analysis failed — try again").
+- **Rule:** Shell modules reject with `AppError { code, message, cause? }` (`model/errors.ts`). `code` is one of: `mic-denied`, `mic-no-device`, `mic-in-use`, `mic-failed`, `mic-lost`, `storage-full`, `storage-failed`, `take-not-found`, `audio-missing`, `engine-unavailable`, `analysis-failed`, `analysis-cancelled`, `backup-invalid`, `unsupported-browser`, `instance-taken`, `library-busy` (a library write refused while a backup or restore runs; story 7.17). Adding a code is an edit to this list. The UI maps codes to `ui/strings.ts`; `message` goes to logs only and is never shown (the analysis-failed banner reads "Analysis failed — try again").
 
 ### AD-11 — Persisted shapes are versioned
 

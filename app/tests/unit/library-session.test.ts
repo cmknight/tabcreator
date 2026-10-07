@@ -7,6 +7,7 @@ import type { ImportRecord } from '../../src/storage/db';
 import type { ValidBackup } from '../../src/storage/restore';
 import {
   createLibrarySession,
+  LibraryBusyError,
   RestoreLeftFilesError,
   type LibraryDeps,
 } from '../../src/session/library-session';
@@ -172,6 +173,7 @@ function fakeLibrary() {
         storage.restoreRunning = false;
       };
     }),
+    isRestoreRunning: () => storage.restoreRunning,
     requestPersist: vi.fn(),
     persisted: vi.fn(async () => storage.persisted),
     estimateUsage: vi.fn(async () => storage.usage),
@@ -222,6 +224,7 @@ describe('library session', () => {
       error: null,
       backup: null,
       restoring: false,
+      pendingDownload: null,
       storage: { protected: null, usageBytes: null, full: false },
       persistNotice: false,
     });
@@ -254,6 +257,7 @@ describe('library session', () => {
       error: null,
       backup: null,
       restoring: false,
+      pendingDownload: null,
       storage: { protected: true, usageBytes: null, full: false },
       persistNotice: false,
     });
@@ -272,6 +276,7 @@ describe('library session', () => {
       error: 'storage-failed',
       backup: null,
       restoring: false,
+      pendingDownload: null,
       storage: { protected: true, usageBytes: null, full: false },
       persistNotice: false,
     });
@@ -746,6 +751,7 @@ describe('library session backUp', () => {
     const run = deferred<BackupResult>();
     vi.mocked(lib.deps.createBackup).mockImplementationOnce(() => run.promise);
     const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
     const first = session.backUp();
     await expect(session.backUp()).resolves.toBeNull();
     expect(lib.deps.createBackup).toHaveBeenCalledTimes(1);
@@ -810,11 +816,12 @@ describe('library session backUp', () => {
     await flush();
     const result = session.backUp();
     report(0.3);
-    await session.rename('a', 'Renamed');
+    // Another writer's changes (the Tab screen's rename, a recovery delete) still arrive.
+    await lib.deps.patchTake('a', { title: 'Renamed' }, 'take-session');
     await flush();
     expect(session.getSnapshot().rows.find((r) => r.id === 'a')!.title).toBe('Renamed');
     expect(session.getSnapshot().backup).toEqual({ progress: 0.3 });
-    await session.deleteTake('b');
+    await lib.deps.deleteTake('b', 'recording-session');
     await flush();
     expect(session.getSnapshot().rows.map((r) => r.id)).toEqual(['a']);
     expect(session.getSnapshot().backup).toEqual({ progress: 0.3 });
@@ -852,6 +859,224 @@ describe('library session backUp', () => {
     report(0.7);
     expect(session.getSnapshot().backup).toBeNull();
     expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+// Story "Library robustness during backup and restore" (7.17): writes refused while a backup or
+// restore runs, and a backup finishing with no screen kept for the next visit.
+describe('library session: busy refusals and the pending download (story 7.17)', () => {
+  const result = (fileName: string): BackupResult => ({
+    blob: new Blob(['z']),
+    fileName,
+    takes: 1,
+    missingAudio: 0,
+    unsupportedAudio: 0,
+    skippedUnfinished: 0,
+  });
+
+  async function loaded() {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1, { title: 'Old' }), 5, 100);
+    const session = createLibrarySession(lib.deps);
+    const unsubscribe = session.subscribe(() => {});
+    await flush();
+    return { lib, session, unsubscribe };
+  }
+
+  it('during a backup: rename, deleteTake and deleteAudio reject library-busy (backup), nothing changes', async () => {
+    const { lib, session } = await loaded();
+    const run = deferred<BackupResult>();
+    vi.mocked(lib.deps.createBackup).mockImplementationOnce(() => run.promise);
+    const seen: string[] = [];
+    session.subscribe(() => seen.push(session.getSnapshot().rows[0]?.title ?? ''));
+    const backingUp = session.backUp();
+
+    const rename = session.rename('a', 'New');
+    await expect(rename).rejects.toBeInstanceOf(LibraryBusyError);
+    await expect(rename).rejects.toMatchObject({ code: 'library-busy', reason: 'backup' });
+    // Never shown, then reverted.
+    expect(seen).not.toContain('New');
+    expect(session.getSnapshot().rows[0]!.title).toBe('Old');
+    await expect(session.deleteTake('a')).rejects.toMatchObject({
+      code: 'library-busy',
+      reason: 'backup',
+    });
+    await expect(session.deleteAudio('a')).rejects.toMatchObject({
+      code: 'library-busy',
+      reason: 'backup',
+    });
+    expect(lib.deps.patchTake).not.toHaveBeenCalled();
+    expect(lib.deps.deleteTake).not.toHaveBeenCalled();
+    expect(lib.deps.getTake).not.toHaveBeenCalledWith('a');
+    expect(lib.deps.beginFreeing).not.toHaveBeenCalled();
+    expect(lib.takes.get('a')!.title).toBe('Old');
+
+    run.resolve(result('x.zip'));
+    await backingUp;
+    // Once it ended, the writes run again.
+    await session.rename('a', 'New');
+    expect(lib.takes.get('a')!.title).toBe('New');
+  });
+
+  it('during a restore read or import: the writes reject library-busy (restore)', async () => {
+    const { lib, session } = await loaded();
+    const read = deferred<ValidBackup>();
+    vi.mocked(lib.deps.readBackup).mockImplementationOnce(() => read.promise);
+    const reading = session.readBackup(new Blob([]));
+    await expect(session.deleteAudio('a')).rejects.toMatchObject({
+      code: 'library-busy',
+      reason: 'restore',
+    });
+    await expect(session.rename('a', 'New')).rejects.toMatchObject({ reason: 'restore' });
+    await expect(session.deleteTake('a')).rejects.toMatchObject({ reason: 'restore' });
+    read.reject(new AppError('backup-invalid', 'x'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(reading).rejects.toMatchObject({ code: 'backup-invalid' });
+    warn.mockRestore();
+    expect(lib.takes.has('a')).toBe(true);
+    expect(lib.takes.get('a')!.audioMime).not.toBeNull();
+  });
+
+  it("storage's restore signal held by any restore refuses the writes too", async () => {
+    const { lib, session } = await loaded();
+    lib.storage.restoreRunning = true;
+    await expect(session.deleteTake('a')).rejects.toMatchObject({ reason: 'restore' });
+    lib.storage.restoreRunning = false;
+    await session.deleteTake('a');
+    expect(lib.takes.has('a')).toBe(false);
+  });
+
+  it('during the restore import (importTakes pending): the writes reject library-busy (restore)', async () => {
+    const { lib, session } = await loaded();
+    const importing = deferred<string[]>();
+    vi.mocked(lib.deps.importTakes).mockImplementationOnce(() => importing.promise);
+    const restoring = session.restore({
+      takes: [makeTake('z', T3)],
+      tabs: [],
+      audio: new Map(),
+      deflated: new Map(),
+    });
+    await flush();
+    expect(lib.deps.importTakes).toHaveBeenCalledTimes(1);
+    await expect(session.rename('a', 'New')).rejects.toMatchObject({
+      code: 'library-busy',
+      reason: 'restore',
+    });
+    await expect(session.deleteTake('a')).rejects.toMatchObject({ reason: 'restore' });
+    await expect(session.deleteAudio('a')).rejects.toMatchObject({ reason: 'restore' });
+    importing.resolve(['z']);
+    await expect(restoring).resolves.toEqual({ imported: 1, skipped: 0 });
+    expect(lib.takes.get('a')).toMatchObject({ title: 'Old' });
+    expect(lib.deps.deleteTake).not.toHaveBeenCalled();
+  });
+
+  it('after a failed backup the writes run again, and pendingDownload is untouched', async () => {
+    const { lib, session, unsubscribe } = await loaded();
+    // A kept backup from an earlier off-screen run.
+    unsubscribe();
+    await session.backUp();
+    const kept = session.getSnapshot().pendingDownload;
+    expect(kept).not.toBeNull();
+    session.subscribe(() => {});
+    await flush();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(lib.deps.createBackup).mockRejectedValueOnce(new AppError('storage-failed', 'x'));
+    await expect(session.backUp()).rejects.toMatchObject({ code: 'storage-failed' });
+    warn.mockRestore();
+    expect(session.getSnapshot().pendingDownload).toBe(kept);
+    await session.rename('a', 'After');
+    expect(lib.takes.get('a')!.title).toBe('After');
+    await session.deleteTake('a');
+    expect(lib.takes.has('a')).toBe(false);
+  });
+
+  it('a write in flight when Back up starts settles before the backup lists the takes', async () => {
+    const { lib, session } = await loaded();
+    const deleting = deferred<void>();
+    const realDelete = lib.deps.deleteTake;
+    vi.mocked(lib.deps.deleteTake).mockImplementationOnce(async (id, writer) => {
+      await deleting.promise;
+      return realDelete(id, writer);
+    });
+    const order: string[] = [];
+    vi.mocked(lib.deps.createBackup).mockImplementationOnce(async () => {
+      order.push(lib.takes.has('a') ? 'backup saw a' : 'backup without a');
+      return result('x.zip');
+    });
+    const deleted = session.deleteTake('a').then(() => order.push('deleted'));
+    await flush();
+    const backingUp = session.backUp();
+    await flush();
+    expect(lib.deps.createBackup).not.toHaveBeenCalled();
+    expect(session.getSnapshot().backup).toEqual({ progress: 0 });
+    deleting.resolve();
+    await deleted;
+    await backingUp;
+    expect(order).toEqual(['deleted', 'backup without a']);
+  });
+
+  it('a write in flight when a restore starts settles before it reads the backup', async () => {
+    const { lib, session } = await loaded();
+    const renaming = deferred<void>();
+    const realPatch = lib.deps.patchTake;
+    vi.mocked(lib.deps.patchTake).mockImplementationOnce(async (id, patch, writer) => {
+      await renaming.promise;
+      return realPatch(id, patch, writer);
+    });
+    const renamed = session.rename('a', 'New');
+    const reading = session.readBackup(new Blob([]));
+    await flush();
+    expect(lib.deps.readBackup).not.toHaveBeenCalled();
+    renaming.resolve();
+    await renamed;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(reading).rejects.toMatchObject({ code: 'backup-invalid' });
+    warn.mockRestore();
+    expect(lib.deps.readBackup).toHaveBeenCalledTimes(1);
+  });
+
+  it('a backup finishing with no screen resolves null and is kept as pendingDownload', async () => {
+    const { lib, session, unsubscribe } = await loaded();
+    const run = deferred<BackupResult>();
+    vi.mocked(lib.deps.createBackup).mockImplementationOnce(() => run.promise);
+    const backingUp = session.backUp();
+    unsubscribe();
+    const done = result('away.zip');
+    run.resolve(done);
+    await expect(backingUp).resolves.toBeNull();
+    const kept = session.getSnapshot().pendingDownload!;
+    expect(session.getSnapshot().backup).toBeNull();
+    expect(kept.result).toBe(done);
+    expect(new Date(kept.finishedAt).toISOString()).toBe(kept.finishedAt);
+    // Kept across the next visit's subscribe and full read.
+    session.subscribe(() => {});
+    await flush();
+    expect(session.getSnapshot().pendingDownload).toBe(kept);
+    // Clearing another one changes nothing; clearing it clears it.
+    session.clearPendingDownload({ ...kept });
+    expect(session.getSnapshot().pendingDownload).toBe(kept);
+    session.clearPendingDownload(kept);
+    expect(session.getSnapshot().pendingDownload).toBeNull();
+  });
+
+  it('a newer backup replaces the pending one (off-screen) or clears it (on-screen)', async () => {
+    const { lib, session, unsubscribe } = await loaded();
+    const first = result('first.zip');
+    const second = result('second.zip');
+    vi.mocked(lib.deps.createBackup)
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second)
+      .mockResolvedValueOnce(result('third.zip'));
+    unsubscribe();
+    await expect(session.backUp()).resolves.toBeNull();
+    expect(session.getSnapshot().pendingDownload?.result).toBe(first);
+    await expect(session.backUp()).resolves.toBeNull();
+    expect(session.getSnapshot().pendingDownload?.result).toBe(second);
+    // On the Library: it downloads at once, and the stale one goes.
+    session.subscribe(() => {});
+    await flush();
+    await expect(session.backUp()).resolves.toMatchObject({ fileName: 'third.zip' });
+    expect(session.getSnapshot().pendingDownload).toBeNull();
   });
 });
 

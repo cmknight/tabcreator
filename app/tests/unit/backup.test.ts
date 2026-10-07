@@ -275,14 +275,14 @@ describe('createBackup', () => {
 
   it('a worker error reply rejects with its code and terminates the worker', async () => {
     const { worker } = fakeWorker((w) =>
-      send(w, { type: 'error', code: 'audio-missing', message: 'gone mid-read' }),
+      send(w, { type: 'error', code: 'storage-failed', message: 'read failed' }),
     );
     await expect(
       createBackup(
         { listTakes: async () => [], listTabs: async () => [], createWorker: () => worker },
         () => {},
       ),
-    ).rejects.toMatchObject({ code: 'audio-missing' });
+    ).rejects.toMatchObject({ code: 'storage-failed', message: 'read failed' });
     expect(worker.terminate).toHaveBeenCalledTimes(1);
   });
 
@@ -546,23 +546,107 @@ describe('backup worker handler', () => {
     expect(messages.at(-1)).toMatchObject({ type: 'error', code: 'storage-failed' });
   });
 
-  it('a file vanishing mid-read replies audio-missing', async () => {
+  it('a file vanishing mid-read (confirmed gone) restarts the zip without it: done, that take missing (story 7.17)', async () => {
+    const wav = bytes(5000, 1);
+    const present = new Set(['wav.wav', 'webm.webm']);
+    let reads = 0;
+    // Readable for its first slice, then removed while the worker reads it.
     const vanishing = {
-      size: 10,
+      size: 3000,
       type: '',
-      slice: () => ({
+      slice: (start: number, end: number) => ({
         arrayBuffer: async () => {
-          throw Object.assign(new Error('gone'), { name: 'NotFoundError' });
+          reads++;
+          if (start > 0) {
+            present.delete('webm.webm');
+            throw Object.assign(new Error('gone'), { name: 'NotFoundError' });
+          }
+          return bytes(end - start, 2).buffer;
         },
       }),
     } as unknown as Blob;
     const root: BackupRoot = {
       async getDirectoryHandle() {
-        return { getFileHandle: async () => ({ getFile: async () => vanishing }) };
+        return {
+          async getFileHandle(name: string) {
+            if (!present.has(name)) throw notFound();
+            return { getFile: async () => (name === 'wav.wav' ? new Blob([wav]) : vanishing) };
+          },
+        };
+      },
+    };
+    const messages = await run(root, { manifest, files }, { sliceBytes: 1000 });
+    expect(reads).toBe(2);
+    const done = messages.at(-1)!;
+    if (done.type !== 'done') throw new Error(JSON.stringify(done));
+    // rec has no file; webm vanished mid-read.
+    expect(done.missing).toEqual(['rec', 'webm']);
+    const entries = await unzip(done.blob);
+    expect(Object.keys(entries).sort()).toEqual(['audio/wav.wav', 'manifest.json']);
+    expect(entries['audio/wav.wav']).toEqual(wav);
+    // Progress is posted only when it increases, and ends at 1.
+    const progress = messages.filter((x) => x.type === 'progress').map((x) => x.progress);
+    for (let i = 1; i < progress.length; i++) expect(progress[i]).toBeGreaterThan(progress[i - 1]!);
+    expect(progress.at(-1)).toBe(1);
+  });
+
+  it('on a restart every remaining file is re-checked: all gone are dropped in one pass (story 7.17)', async () => {
+    const present = new Set(['wav.wav', 'webm.webm']);
+    let failed = false;
+    let checks = 0;
+    // wav's read fails and, meanwhile, webm went too.
+    const failing = {
+      size: 10,
+      type: '',
+      slice: () => ({
+        arrayBuffer: async () => {
+          failed = true;
+          present.clear();
+          throw Object.assign(new Error('gone'), { name: 'NotReadableError' });
+        },
+      }),
+    } as unknown as Blob;
+    const root: BackupRoot = {
+      async getDirectoryHandle() {
+        return {
+          async getFileHandle(name: string) {
+            if (failed) checks++;
+            if (!present.has(name)) throw notFound();
+            return {
+              getFile: async () => (name === 'wav.wav' ? failing : new Blob([bytes(5, 1)])),
+            };
+          },
+        };
       },
     };
     const messages = await run(root, { manifest, files });
-    expect(messages.at(-1)).toMatchObject({ type: 'error', code: 'audio-missing' });
+    const done = messages.at(-1)!;
+    if (done.type !== 'done') throw new Error(JSON.stringify(done));
+    expect(done.missing).toEqual(['rec', 'wav', 'webm']);
+    expect(Object.keys(await unzip(done.blob))).toEqual(['manifest.json']);
+    // One pass after the failure: one check each for wav and webm, then no further zip attempt.
+    expect(checks).toBe(2);
+  });
+
+  it('a read failing while the file is still there replies storage-failed (NotReadable, NotFound or other)', async () => {
+    for (const name of ['NotReadableError', 'NotFoundError', 'NotAllowedError']) {
+      const failing = {
+        size: 10,
+        type: '',
+        slice: () => ({
+          arrayBuffer: async () => {
+            throw Object.assign(new Error('x'), { name });
+          },
+        }),
+      } as unknown as Blob;
+      const root: BackupRoot = {
+        async getDirectoryHandle() {
+          return { getFileHandle: async () => ({ getFile: async () => failing }) };
+        },
+      };
+      const messages = await run(root, { manifest, files });
+      expect(messages.at(-1), name).toMatchObject({ type: 'error', code: 'storage-failed' });
+    }
   });
 });
 

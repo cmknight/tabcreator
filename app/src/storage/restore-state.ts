@@ -4,7 +4,7 @@
 // first audio write until its import and cleanup are done; the recovery scan
 // (session/recording-recovery.ts) skips every file deletion while it is held, so restored audio
 // is never removed as an orphan before its record exists (the next scan removes real orphans).
-// Story 17 reads the same signal to refuse library writes during a restore.
+// Story 7.17 reads the same signal to refuse library writes during a restore.
 
 import { devWarn } from '../model/log';
 

@@ -84,7 +84,7 @@ export type FromBackupWorker =
   | { type: 'read'; manifest: string | null; entries: BackupEntry[] }
   | {
       type: 'error';
-      code: Extract<AppErrorCode, 'storage-failed' | 'audio-missing' | 'backup-invalid'>;
+      code: Extract<AppErrorCode, 'storage-failed' | 'backup-invalid'>;
       message: string;
     };
 

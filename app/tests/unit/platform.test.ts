@@ -16,6 +16,7 @@ import {
   isWindowsPlatform,
   PICK_FOCUS_GRACE_MS,
   pickFile,
+  REVOKE_DELAY_MS,
 } from '../../src/ui/platform';
 import { copyTab, downloadTab, tabExportText } from '../../src/ui/tab-export';
 import { dismissToast, getToast } from '../../src/ui/toast';
@@ -182,6 +183,31 @@ describe('the platform helpers', () => {
     expect(revoke).toHaveBeenCalledWith('blob:x');
   });
 
+  it('downloadBlob keeps the URL for REVOKE_DELAY_MS (60 s), or until pagehide if sooner', () => {
+    vi.useFakeTimers();
+    expect(REVOKE_DELAY_MS).toBe(60_000);
+    let n = 0;
+    const revoke = vi.fn();
+    Object.assign(URL, { createObjectURL: () => `blob:${++n}`, revokeObjectURL: revoke });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    downloadBlob('a.zip', new Blob(['a']));
+    vi.advanceTimersByTime(REVOKE_DELAY_MS - 1);
+    expect(revoke).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(revoke).toHaveBeenCalledExactlyOnceWith('blob:1');
+    // Gone at the timer: a later pagehide revokes nothing again.
+    window.dispatchEvent(new Event('pagehide'));
+    expect(revoke).toHaveBeenCalledTimes(1);
+
+    // pagehide first: revoked then, and the timer is cleared.
+    downloadBlob('b.zip', new Blob(['b']));
+    vi.advanceTimersByTime(1000);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(revoke).toHaveBeenLastCalledWith('blob:2');
+    expect(revoke).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('downloadBlob keeps the blob as given', () => {
     vi.useFakeTimers();
     const blob = new Blob(['zip'], { type: 'application/zip' });
@@ -223,10 +249,13 @@ describe('the platform helpers', () => {
     expect(document.querySelector('input')).not.toBeNull();
     await vi.advanceTimersByTimeAsync(1);
     expect(settled).toBeNull();
-    expect(document.querySelector('input')).toBeNull();
+    // Kept for a late change, until the next pickFile.
+    expect(document.querySelector('input')).not.toBeNull();
 
     // A file whose change arrives within the grace after the focus is kept.
     const chosen = pickFile('.zip');
+    // The earlier kept input went with this call.
+    expect(document.querySelectorAll('input')).toHaveLength(1);
     const input = click.mock.contexts[1] as HTMLInputElement;
     window.dispatchEvent(new Event('focus'));
     const file = new File(['x'], 'b.zip');
@@ -237,6 +266,65 @@ describe('the platform helpers', () => {
     expect(document.querySelector('input')).toBeNull();
     // Its listener is gone: a later focus starts no timer.
     window.dispatchEvent(new Event('focus'));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('pickFile with neither cancel nor focus: the page becoming visible settles null after the grace', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => {});
+    const visibility = vi.spyOn(document, 'visibilityState', 'get');
+    let settled: File | null | undefined;
+    void pickFile('.zip').then((f) => (settled = f));
+    // Hidden: nothing yet.
+    visibility.mockReturnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(PICK_FOCUS_GRACE_MS * 2);
+    expect(settled).toBeUndefined();
+    visibility.mockReturnValue('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(PICK_FOCUS_GRACE_MS);
+    expect(settled).toBeNull();
+    // Superseded by the next call: its kept input goes.
+    void pickFile('.zip');
+    expect(document.querySelectorAll('input')).toHaveLength(1);
+  });
+
+  it('pickFile: a change after a fallback null goes to onLate, once, and the input goes', async () => {
+    vi.useFakeTimers();
+    const click = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => {});
+    const onLate = vi.fn();
+    const picked = pickFile('.zip', { onLate });
+    const input = click.mock.contexts[0] as HTMLInputElement;
+    window.dispatchEvent(new Event('focus'));
+    await vi.advanceTimersByTimeAsync(PICK_FOCUS_GRACE_MS);
+    await expect(picked).resolves.toBeNull();
+    expect(onLate).not.toHaveBeenCalled();
+    const file = new File(['x'], 'late.zip');
+    Object.defineProperty(input, 'files', { value: [file] });
+    input.dispatchEvent(new Event('change'));
+    expect(onLate).toHaveBeenCalledExactlyOnceWith(file);
+    expect(document.querySelector('input')).toBeNull();
+    // A later pickFile has nothing to supersede; the old input sends nothing more.
+    input.dispatchEvent(new Event('change'));
+    expect(onLate).toHaveBeenCalledTimes(1);
+  });
+
+  it('pickFile: a new call supersedes a pending one, which settles null and never sends late', async () => {
+    vi.useFakeTimers();
+    const click = vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => {});
+    const onLate = vi.fn();
+    const first = pickFile('.zip', { onLate });
+    const firstInput = click.mock.contexts[0] as HTMLInputElement;
+    const second = pickFile('.zip');
+    await expect(first).resolves.toBeNull();
+    expect(document.querySelectorAll('input')).toHaveLength(1);
+    Object.defineProperty(firstInput, 'files', { value: [new File(['x'], 'old.zip')] });
+    firstInput.dispatchEvent(new Event('change'));
+    expect(onLate).not.toHaveBeenCalled();
+    const secondInput = click.mock.contexts[1] as HTMLInputElement;
+    secondInput.dispatchEvent(new Event('cancel'));
+    await expect(second).resolves.toBeNull();
+    expect(document.querySelector('input')).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
   });
 });

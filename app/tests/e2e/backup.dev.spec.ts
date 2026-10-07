@@ -14,7 +14,9 @@ import { opfsFileBase64, opfsFiles, readTab, readTakes } from './storage-helpers
 // tab, exactly as stored) and each take's compressed audio, byte-identical (WAV included); a take
 // whose audio was deleted has no entry. "Backing up…" and a progress bar show while it runs, with
 // the button disabled. Story "Restore validation and missing audio" (epic 7): the manifest carries
-// `schemaVersion`, and the toast says when unfinished (still recording) takes were left out.
+// `schemaVersion`, and the toast says when unfinished (still recording) takes were left out. Story
+// "Library robustness during backup and restore" (7.17): a refused delete during a held backup, and
+// the "Your backup is ready" banner for a backup that finished off-screen.
 
 /** Errors other than the dev-only warnings the app logs on purpose. */
 const unexpected = (errors: string[]) => errors.filter((e) => !e.includes('[tabcreator]'));
@@ -273,5 +275,73 @@ test('an unfinished take is left out of the backup, and the toast says how to re
   await expect(page.getByTestId('toast')).toContainText(
     '1 unfinished take not backed up — open it from Record to recover',
   );
+  expect(unexpected(errors)).toEqual([]);
+});
+
+// Story "Library robustness during backup and restore" (7.17): library-session refuses writes while
+// a backup runs, and keeps a backup that finished off-screen for the next visit. The dev hook
+// `__holdBackupHook` holds the backup open (`__holdBackupHeld` is true while it does).
+interface HoldHooks {
+  __holdBackupHook?: boolean;
+  __holdBackupHeld?: boolean;
+}
+
+const setHold = (page: Page, on: boolean) =>
+  page.evaluate((value) => {
+    (window as unknown as HoldHooks).__holdBackupHook = value;
+  }, on);
+const held = (page: Page) =>
+  page.evaluate(() => (window as unknown as HoldHooks).__holdBackupHeld === true);
+
+test('a delete during a held backup is refused with its reason and the take survives; the backup, finished off-screen, is offered on return', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const errors = await goLive(page);
+  const id = await recordAndAnalyse(page);
+  await openLibrary(page);
+  await setHold(page, true);
+
+  // The Delete take dialog is opened before Back up starts (the menu's items are disabled once it
+  // runs), then Back up is clicked behind it (a DOM click: no pointer-down on the scrim).
+  await row(page, id)
+    .getByRole('button', { name: /^More actions for / })
+    .click();
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Delete take' }).click();
+  const dialog = page.getByRole('alertdialog');
+  await expect(dialog).toBeVisible();
+  await backupButton(page).evaluate((button: HTMLElement) => button.click());
+  await expect(page.getByTestId('backup-progress')).toBeVisible();
+
+  await dialog.getByRole('button', { name: 'Delete take' }).click();
+  await expect(page.getByTestId('toast')).toContainText('Wait for the backup to finish');
+  await expect(row(page, id)).toBeVisible();
+  expect((await readTakes<Take>(page)).map((t) => t.id)).toContain(id);
+
+  // Leave the Library while the backup is held: nothing downloads then.
+  let downloads = 0;
+  page.on('download', () => downloads++);
+  await expect.poll(() => held(page)).toBe(true);
+  await nav(page, 'Record').click();
+  await expect(page).toHaveURL(/#\/record$/);
+  await setHold(page, false);
+  await expect.poll(() => held(page)).toBe(false);
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  expect(downloads).toBe(0);
+
+  // Back on the Library: the banner offers it; Download saves it and the banner goes.
+  await openLibrary(page);
+  const ready = page.getByTestId('backup-ready');
+  await expect(ready).toContainText('Your backup is ready');
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    ready.getByRole('button', { name: 'Download' }).click(),
+  ]);
+  expect(download.suggestedFilename()).toBe(await expectedName(page));
+  const entries = unzipSync(new Uint8Array(await readFile((await download.path())!)));
+  const manifest = JSON.parse(strFromU8(entries['manifest.json']!)) as { takes: Take[] };
+  expect(manifest.takes.map((t) => t.id)).toEqual([id]);
+  await expect(ready).toHaveCount(0);
+  expect(downloads).toBe(1);
   expect(unexpected(errors)).toEqual([]);
 });

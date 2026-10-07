@@ -51,6 +51,16 @@
 // is set, which only freed space clears). After the list, the footer: "23 takes · 41.0 MB used", the
 // whole library's count even while searching, with no footer for an empty library or an unknown
 // usage.
+//
+// Story "Library robustness during backup and restore" (7.17): a row write library-session refuses
+// while a backup or restore runs (`LibraryBusyError`, e.g. a rename field blurred after Back up)
+// is a toast with its reason ("Wait for the backup to finish"), not the failure text. A backup
+// that finished after the player left the Library shows a global toast then ("Backup ready —
+// download it from the Library") and, on the next visit, the "Your backup is ready" banner with
+// its take count and time (Download, Dismiss; announced once, no role, as the storage-full
+// banner; hidden while a newer backup runs). A file chosen after the picker already settled null
+// (its fallback) still starts the restore (`onLate`), or, while a backup or restore runs, is
+// refused with the same toast. Restore always opens a new picker, superseding one still open.
 
 import {
   useCallback,
@@ -69,9 +79,12 @@ import { isAppError } from '../../model/errors';
 import {
   librarySession,
   RestoreLeftFilesError,
+  type BackupResult,
+  type LibraryBusyReason,
   type LibraryRow,
   type LibrarySession,
   type LibraryStatus,
+  type PendingDownload,
   type RestorePlan,
 } from '../../session/library-session';
 import { announce } from '../a11y/announcer';
@@ -91,7 +104,7 @@ import {
 } from '../components/icons';
 import { RowMenu, type RowMenuItem } from '../components/RowMenu';
 import { StorageFullBannerView } from '../components/StorageFullBannerView';
-import { formatElapsed, formatTakeDate } from '../format';
+import { formatClockTime, formatElapsed, formatTakeDate } from '../format';
 import { downloadBlob, pickFile } from '../platform';
 import { routeToHash } from '../router';
 import { strings } from '../strings';
@@ -175,10 +188,52 @@ function RowBody({ row, ids, title }: { row: LibraryRow; ids: RowIds; title?: Re
 /** The library-session writes a row's menu uses. */
 type RowActions = Pick<LibrarySession, 'rename' | 'deleteTake' | 'deleteAudio'>;
 
-/** A failed write's toast (the session logged the error and corrected the row). */
+/**
+ * A failed write's toast (the session logged the error and corrected the row); a write refused
+ * while a backup or restore runs says what to wait for instead (nothing was changed).
+ */
 const toastFailure =
-  (key: 'library.renameFailed' | 'library.deleteTakeFailed' | 'library.deleteAudioFailed') => () =>
-    showToast({ message: strings[key] });
+  (key: 'library.renameFailed' | 'library.deleteTakeFailed' | 'library.deleteAudioFailed') =>
+  (err: unknown) => {
+    if (isAppError(err) && err.code === 'library-busy') {
+      const reason = (err as { reason?: unknown }).reason;
+      toastBusy(reason === 'restore' ? 'restore' : 'backup');
+    } else {
+      showToast({ message: strings[key] });
+    }
+  };
+
+/** The toast for something refused while a backup or restore runs: what to wait for. */
+function toastBusy(reason: LibraryBusyReason) {
+  showToast({
+    message: strings[reason === 'backup' ? 'library.busyBackup' : 'library.busyRestore'],
+  });
+}
+
+/** The ready banner's text: "Your backup is ready — 3 takes, made at 9:14 pm". */
+const readyText = (pending: PendingDownload) =>
+  strings['library.backupReady'](
+    pending.result.takes,
+    formatClockTime(new Date(pending.finishedAt)),
+  );
+
+/**
+ * Downloads a finished backup and says so: "Backed up N takes" announced, and a toast for any
+ * missing, unsupported or unfinished takes.
+ */
+function deliverBackup(result: BackupResult) {
+  downloadBlob(result.fileName, result.blob);
+  announce(strings['library.backedUp'](result.takes));
+  const notes: string[] = [];
+  if (result.missingAudio > 0) notes.push(strings['library.backupMissing'](result.missingAudio));
+  if (result.unsupportedAudio > 0) {
+    notes.push(strings['library.backupUnsupported'](result.unsupportedAudio));
+  }
+  if (result.skippedUnfinished > 0) {
+    notes.push(strings['library.backupUnfinished'](result.skippedUnfinished));
+  }
+  if (notes.length > 0) showToast({ message: notes.join(' · ') });
+}
 
 /**
  * The inline rename field: focused with its text selected. Enter or blur saves, Esc cancels
@@ -609,17 +664,33 @@ export function Library({
     | 'deleteTake'
     | 'deleteAudio'
     | 'backUp'
+    | 'clearPendingDownload'
     | 'readBackup'
     | 'restore'
     | 'markPersistNoticeShown'
   >;
 } = {}) {
-  const { loading, rows, error, backup, restoring, storage, persistNotice } = useSyncExternalStore(
-    session.subscribe,
-    session.getSnapshot,
-  );
+  const { loading, rows, error, backup, restoring, storage, persistNotice, pendingDownload } =
+    useSyncExternalStore(session.subscribe, session.getSnapshot);
   const heading = useRef<HTMLHeadingElement>(null);
   const focusHeading = useCallback(() => heading.current?.focus(), []);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  // A backup kept while the player was away: its banner is announced once (AD-18).
+  // Hidden while a newer backup runs (that one replaces or clears it).
+  const ready = backup ? null : pendingDownload;
+  const readyAnnounced = useRef<PendingDownload | null>(null);
+  useEffect(() => {
+    if (!ready || readyAnnounced.current === ready) return;
+    readyAnnounced.current = ready;
+    announce(readyText(ready));
+  }, [ready]);
 
   // The storage-full banner is announced once each time it shows, including on mount (AD-18).
   const fullAnnounced = useRef(false);
@@ -691,19 +762,12 @@ export function Library({
     announce(strings['library.backingUp']);
     session.backUp().then(
       (result) => {
-        if (!result) return;
-        downloadBlob(result.fileName, result.blob);
-        announce(strings['library.backedUp'](result.takes));
-        const notes: string[] = [];
-        if (result.missingAudio > 0)
-          notes.push(strings['library.backupMissing'](result.missingAudio));
-        if (result.unsupportedAudio > 0) {
-          notes.push(strings['library.backupUnsupported'](result.unsupportedAudio));
+        // Null: another one runs, or it finished with no screen (kept as pendingDownload): then
+        // a global toast (announced politely by the toast host) says where to get it.
+        if (result) deliverBackup(result);
+        else if (!mounted.current && session.getSnapshot().pendingDownload) {
+          showToast({ message: strings['global.backupReady'] });
         }
-        if (result.skippedUnfinished > 0) {
-          notes.push(strings['library.backupUnfinished'](result.skippedUnfinished));
-        }
-        if (notes.length > 0) showToast({ message: notes.join(' · ') });
       },
       () => {
         // The session logged the error and cleared its backup state.
@@ -721,8 +785,6 @@ export function Library({
   } | null>(null);
   /** The error banner's text: the last restore attempt failed. */
   const [restoreError, setRestoreError] = useState<string | null>(null);
-  /** A picker is open: a second click does nothing. */
-  const picking = useRef(false);
   const restoreFailed = (err: unknown) => {
     // The session logged it. Nothing was written, unless its rollback left files behind.
     const text =
@@ -735,16 +797,27 @@ export function Library({
     announce(text, 'assertive');
   };
   const startRestore = async () => {
-    if (backup || restoring || picking.current) return;
+    if (backup || restoring) return;
     setRestoreError(null);
-    picking.current = true;
-    let file: File | null;
-    try {
-      file = await pickFile('.zip,application/zip');
-    } finally {
-      picking.current = false;
-    }
-    if (!file) return;
+    // No guard for an open picker: a browser may report none of its closing (no cancel, focus or
+    // visibility change), so each click opens a new one, which settles the pending one null. A
+    // file chosen after a fallback null arrives through onLate and starts the same flow.
+    const file = await pickFile('.zip,application/zip', {
+      onLate: (late) => {
+        if (!mounted.current) return;
+        const now = session.getSnapshot();
+        if (now.backup || now.restoring) {
+          toastBusy(now.backup ? 'backup' : 'restore');
+          return;
+        }
+        setRestoreError(null);
+        readPicked(late);
+      },
+    });
+    if (file) readPicked(file);
+  };
+  /** Reads and checks a picked backup file, then asks to restore it. */
+  const readPicked = (file: File) => {
     const fileName = file.name;
     announce(strings['library.restoring']);
     session.readBackup(file).then((plan) => {
@@ -837,6 +910,37 @@ export function Library({
               // The button goes with the banner: focus moves to the heading first.
               focusHeading();
               setNoticeDismissed(true);
+            }}
+          >
+            {strings['global.dismiss']}
+          </button>
+        </div>
+      )}
+      {ready && (
+        <div
+          className={`${banner.banner} ${banner.warning} ${libraryStyles.topBanner}`}
+          data-testid="backup-ready"
+        >
+          <BackupIcon className={banner.icon} />
+          <p className={banner.text}>{readyText(ready)}</p>
+          <button
+            type="button"
+            className={libraryStyles.noticeAction}
+            onClick={() => {
+              // The button goes with the banner: focus moves to the heading first.
+              focusHeading();
+              deliverBackup(ready.result);
+              session.clearPendingDownload(ready);
+            }}
+          >
+            {strings['library.backupReadyDownload']}
+          </button>
+          <button
+            type="button"
+            className={libraryStyles.dismiss}
+            onClick={() => {
+              focusHeading();
+              session.clearPendingDownload(ready);
             }}
           >
             {strings['global.dismiss']}

@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { searchKey, type LibraryRow } from '../../src/model/library';
 import { announce } from '../../src/ui/a11y/announcer';
 import {
+  LibraryBusyError,
   RestoreLeftFilesError,
   type BackupResult,
+  type PendingDownload,
   type LibrarySnapshot,
   type RestorePlan,
   type RestoreResult,
@@ -37,12 +39,16 @@ vi.mock('../../src/ui/a11y/announcer', async (importOriginal) => ({
  * unknown usage and no notice, unless given) and spies for its writes.
  */
 function fakeSession(
-  given: Omit<LibrarySnapshot, 'backup' | 'restoring' | 'storage' | 'persistNotice'> &
+  given: Omit<
+    LibrarySnapshot,
+    'backup' | 'restoring' | 'storage' | 'persistNotice' | 'pendingDownload'
+  > &
     Partial<LibrarySnapshot>,
 ) {
   const snapshot: LibrarySnapshot = {
     backup: null,
     restoring: false,
+    pendingDownload: null,
     storage: { protected: true, usageBytes: null, full: false },
     persistNotice: false,
     ...given,
@@ -54,6 +60,7 @@ function fakeSession(
     deleteTake: vi.fn(async () => {}),
     deleteAudio: vi.fn(async () => {}),
     backUp: vi.fn(async (): Promise<BackupResult | null> => null),
+    clearPendingDownload: vi.fn<(pending: PendingDownload) => void>(),
     readBackup: vi.fn<(file: Blob) => Promise<RestorePlan | null>>(async () => null),
     restore: vi.fn<(backup: ValidBackup) => Promise<RestoreResult | null>>(async () => null),
     markPersistNoticeShown: vi.fn(),
@@ -412,6 +419,47 @@ describe('row actions', () => {
     expect(getToast()?.message).toBe("Couldn't delete the audio");
     dismissToast();
   });
+
+  it('a write refused during a backup or restore: a toast with its reason (story 7.17)', async () => {
+    const { session } = renderRows([analysed]);
+    session.rename.mockRejectedValueOnce(new LibraryBusyError('backup'));
+    session.deleteTake.mockRejectedValueOnce(new LibraryBusyError('backup'));
+    session.deleteAudio.mockRejectedValueOnce(new LibraryBusyError('restore'));
+
+    // The rename field was open before Back up; its blur saves, and is refused.
+    openMenu('Blues lick in A');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Blues' } });
+    fireEvent.blur(screen.getByRole('textbox'));
+    await act(async () => {});
+    expect(session.rename).toHaveBeenCalledWith('t2', 'Blues');
+    expect(getToast()?.message).toBe('Wait for the backup to finish');
+    // The row shows the title the session holds (nothing was changed).
+    expect(screen.getByRole('link', { name: 'Blues lick in A' })).toBeTruthy();
+    dismissToast();
+
+    openMenu('Blues lick in A');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete take' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Delete take' }).at(-1)!);
+    await act(async () => {});
+    expect(getToast()?.message).toBe('Wait for the backup to finish');
+
+    openMenu('Blues lick in A');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete audio only' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete audio' }));
+    await act(async () => {});
+    expect(getToast()?.message).toBe('Wait for the restore to finish');
+    dismissToast();
+
+    // Mapped by code, not class: a plain AppError('library-busy') reads as the backup's.
+    session.deleteTake.mockRejectedValueOnce(new AppError('library-busy', 'busy'));
+    openMenu('Blues lick in A');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete take' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Delete take' }).at(-1)!);
+    await act(async () => {});
+    expect(getToast()?.message).toBe('Wait for the backup to finish');
+    dismissToast();
+  });
 });
 
 // Story "Search 500 takes" (6.3): the search field, no match, Clear search, the announced count,
@@ -433,6 +481,7 @@ describe('search', () => {
       error: null,
       backup: null,
       restoring: false,
+      pendingDownload: null,
       storage: { protected: true, usageBytes: null, full: false },
       persistNotice: false,
     };
@@ -876,6 +925,113 @@ describe('Back up library', () => {
   });
 });
 
+// Story "Library robustness during backup and restore" (7.17): a backup that finished off-screen.
+describe('the backup-ready banner', () => {
+  afterEach(() => {
+    dismissToast();
+    vi.mocked(downloadBlob).mockClear();
+    vi.mocked(announce).mockClear();
+  });
+
+  const finishedAt = new Date(2026, 9, 7, 21, 14).toISOString();
+  const ready = (missingAudio = 0): PendingDownload => ({
+    result: {
+      blob: new Blob(['zip']),
+      fileName: 'tabcreator-backup-20261007.zip',
+      takes: 2,
+      missingAudio,
+      unsupportedAudio: 0,
+      skippedUnfinished: 0,
+    },
+    finishedAt,
+  });
+  const text = 'Your backup is ready — 2 takes, made at 9:14 pm';
+
+  it('no banner without a pending download', () => {
+    render(<Library session={fakeSession({ loading: false, rows: [recorded], error: null })} />);
+    expect(screen.queryByTestId('backup-ready')).toBeNull();
+  });
+
+  it('shows its take count and time, announced once; Download saves it and clears it', () => {
+    const pending = ready(1);
+    const session = fakeSession({
+      loading: false,
+      rows: [recorded],
+      error: null,
+      pendingDownload: pending,
+    });
+    const view = render(<Library session={session} />);
+    const banner = screen.getByTestId('backup-ready');
+    expect(banner.textContent).toContain(text);
+    expect(banner.getAttribute('role')).toBeNull();
+    expect(announce).toHaveBeenCalledWith(text);
+    view.rerender(<Library session={session} />);
+    expect(vi.mocked(announce).mock.calls.filter(([t]) => t === text)).toHaveLength(1);
+    expect(downloadBlob).not.toHaveBeenCalled();
+    fireEvent.click(within(banner).getByRole('button', { name: 'Download' }));
+    expect(downloadBlob).toHaveBeenCalledWith(pending.result.fileName, pending.result.blob);
+    expect(announce).toHaveBeenCalledWith('Backed up 2 takes');
+    expect(getToast()?.message).toBe('Backed up — 1 recording was missing');
+    expect(session.clearPendingDownload).toHaveBeenCalledWith(pending);
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Library' }));
+  });
+
+  it('Dismiss clears it without downloading', () => {
+    const pending = ready();
+    const session = fakeSession({
+      loading: false,
+      rows: [recorded],
+      error: null,
+      pendingDownload: pending,
+    });
+    render(<Library session={session} />);
+    fireEvent.click(
+      within(screen.getByTestId('backup-ready')).getByRole('button', { name: 'Dismiss' }),
+    );
+    expect(session.clearPendingDownload).toHaveBeenCalledWith(pending);
+    expect(downloadBlob).not.toHaveBeenCalled();
+  });
+
+  it('hidden while a newer backup runs', () => {
+    render(
+      <Library
+        session={fakeSession({
+          loading: false,
+          rows: [recorded],
+          error: null,
+          pendingDownload: ready(),
+          backup: { progress: 0.4 },
+        })}
+      />,
+    );
+    expect(screen.queryByTestId('backup-ready')).toBeNull();
+    expect(announce).not.toHaveBeenCalledWith(text);
+  });
+
+  it('a backup the session kept (resolved null) downloads nothing from the screen', async () => {
+    const session = fakeSession({ loading: false, rows: [recorded], error: null });
+    session.backUp.mockResolvedValueOnce(null);
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Back up library' })));
+    expect(downloadBlob).not.toHaveBeenCalled();
+    expect(getToast()).toBeNull();
+  });
+
+  it('a backup finishing after the Library left: a global toast says where to get it', async () => {
+    const session = fakeSession({ loading: false, rows: [recorded], error: null });
+    let finish: (r: BackupResult | null) => void = () => {};
+    session.backUp.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    const view = render(<Library session={session} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Back up library' }));
+    view.unmount();
+    const kept = { ...session.getSnapshot(), pendingDownload: ready() };
+    session.getSnapshot = () => kept;
+    await act(async () => finish(null));
+    expect(getToast()?.message).toBe('Backup ready — download it from the Library');
+    expect(downloadBlob).not.toHaveBeenCalled();
+  });
+});
+
 // Story "Restore from a backup" (6.6): the button, the picker, the Confirm dialog, the summary
 // toast and the error banner.
 describe('Restore from backup', () => {
@@ -898,6 +1054,83 @@ describe('Restore from backup', () => {
   });
   const empty = () => fakeSession({ loading: false, rows: [], error: null });
 
+  it('a second click opens a new picker while the first never settled (no picking guard)', async () => {
+    const session = empty();
+    // The first picker never settles (a browser reporting none of its closing).
+    vi.mocked(pickFile).mockImplementationOnce(() => new Promise(() => {}));
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    vi.mocked(pickFile).mockResolvedValueOnce(zip());
+    session.readBackup.mockResolvedValueOnce(planOf(1));
+    await act(async () => fireEvent.click(button()));
+    expect(pickFile).toHaveBeenCalledTimes(2);
+    expect(session.readBackup).toHaveBeenCalledTimes(1);
+  });
+
+  it('a late file while a backup or restore runs: the wait toast, nothing read or announced', async () => {
+    for (const [busy, message] of [
+      [{ backup: { progress: 0.2 } }, 'Wait for the backup to finish'],
+      [{ restoring: true }, 'Wait for the restore to finish'],
+    ] as const) {
+      const session = empty();
+      let late: ((file: File) => void) | undefined;
+      vi.mocked(pickFile).mockImplementationOnce(async (_accept, options) => {
+        late = options?.onLate;
+        return null;
+      });
+      const view = render(<Library session={session} />);
+      await act(async () => fireEvent.click(button()));
+      const now = { ...session.getSnapshot(), ...busy };
+      session.getSnapshot = () => now;
+      vi.mocked(announce).mockClear();
+      await act(async () => late!(zip()));
+      expect(getToast()?.message).toBe(message);
+      expect(session.readBackup).not.toHaveBeenCalled();
+      expect(announce).not.toHaveBeenCalledWith('Restoring…');
+      view.unmount();
+      dismissToast();
+    }
+  });
+
+  it('a fallback null leaves Restore usable; a file chosen late still starts the restore', async () => {
+    const session = empty();
+    let late: ((file: File) => void) | undefined;
+    vi.mocked(pickFile).mockImplementationOnce(async (_accept, options) => {
+      late = options?.onLate;
+      return null;
+    });
+    session.readBackup.mockResolvedValueOnce(planOf(2));
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    expect(session.readBackup).not.toHaveBeenCalled();
+    // The late file starts the same flow: read, then the Confirm dialog.
+    const file = zip();
+    await act(async () => late!(file));
+    expect(session.readBackup).toHaveBeenCalledWith(file);
+    expect(screen.getByRole('alertdialog').textContent).toContain(
+      'Restore 2 takes from tabcreator-backup-20261006.zip?',
+    );
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Cancel' })));
+    // Not stuck: Restore opens the picker again.
+    vi.mocked(pickFile).mockResolvedValueOnce(null);
+    await act(async () => fireEvent.click(button()));
+    expect(pickFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('a late file after the Library left is ignored', async () => {
+    const session = empty();
+    let late: ((file: File) => void) | undefined;
+    vi.mocked(pickFile).mockImplementationOnce(async (_accept, options) => {
+      late = options?.onLate;
+      return null;
+    });
+    const view = render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    view.unmount();
+    late!(zip());
+    expect(session.readBackup).not.toHaveBeenCalled();
+  });
+
   it('is enabled with an empty library, while Back up library is disabled', () => {
     render(<Library session={empty()} />);
     expect(button().textContent).toBe('Restore from backup');
@@ -916,7 +1149,9 @@ describe('Restore from backup', () => {
     session.restore.mockResolvedValueOnce({ imported: 3, skipped: 0 });
     render(<Library session={session} />);
     await act(async () => fireEvent.click(button()));
-    expect(pickFile).toHaveBeenCalledWith('.zip,application/zip');
+    expect(pickFile).toHaveBeenCalledWith('.zip,application/zip', {
+      onLate: expect.any(Function),
+    });
     expect(session.readBackup).toHaveBeenCalledTimes(1);
     const dialog = screen.getByRole('alertdialog');
     expect(dialog.textContent).toContain('Restore 3 takes from tabcreator-backup-20261006.zip?');

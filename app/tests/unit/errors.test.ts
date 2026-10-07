@@ -17,8 +17,8 @@ describe('AppError', () => {
     expect(new AppError('storage-full', 'quota').cause).toBeUndefined();
   });
 
-  it('has exactly the 15 codes of spine AD-10', () => {
-    expect(new Set(APP_ERROR_CODES).size).toBe(15);
+  it('has exactly the 16 codes of spine AD-10 (story 7.17 added library-busy)', () => {
+    expect(new Set(APP_ERROR_CODES).size).toBe(16);
   });
 
   it('is not confused with a plain Error', () => {
