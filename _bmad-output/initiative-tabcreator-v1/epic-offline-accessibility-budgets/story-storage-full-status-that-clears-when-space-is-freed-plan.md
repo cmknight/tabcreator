@@ -3,7 +3,7 @@ title: 'Storage-full status that clears when space is freed'
 type: 'bugfix'
 ticket: '1'
 created: '2026-10-07'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
