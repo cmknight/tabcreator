@@ -3,7 +3,7 @@ title: 'Streaming restore and restore races'
 type: 'bugfix'
 ticket: '16'
 created: '2026-10-07'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
