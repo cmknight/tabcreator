@@ -1,15 +1,19 @@
 import {
   lazy,
   Suspense,
+  useEffect,
+  useRef,
   useSyncExternalStore,
   type ComponentType,
   type LazyExoticComponent,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import styles from './App.module.css';
 import { instanceLock } from './session/instance-lock';
 import { recordingSession } from './session/recording-session';
 import { Announcer } from './ui/a11y/announcer';
+import { isOverlayOpen, subscribeOverlay } from './ui/a11y/overlays';
 import { ShortcutListener } from './ui/a11y/shortcuts';
 import banner from './ui/components/banner.module.css';
 import { ErrorIcon } from './ui/components/icons';
@@ -17,8 +21,10 @@ import { InstanceScreen } from './ui/components/InstanceScreen';
 import { MicErrorAnnouncer } from './ui/components/MicErrorAnnouncer';
 import { MicNotices } from './ui/components/MicNotices';
 import { RecordingAnnouncer } from './ui/components/RecordingAnnouncer';
+import { ShortcutsDialogHost } from './ui/components/ShortcutsDialog';
 import { ToastHost } from './ui/components/ToastHost';
 import { parseRoute, routeToHash, useHash, useRoute, type Route } from './ui/router';
+import { closeShortcutsDialog } from './ui/shortcuts-dialog';
 import { Library } from './ui/screens/Library';
 import { Record } from './ui/screens/Record';
 import { Settings } from './ui/screens/Settings';
@@ -109,10 +115,54 @@ function RoutedScreen() {
   return renderScreen(useRoute());
 }
 
+/** A route's identity for focus: its name, and the take for the Tab screen. */
+function routeKey(route: Route | null): string | null {
+  if (route === null) return null;
+  return route.name === 'tab' ? `tab/${route.takeId}` : route.name;
+}
+
 /**
- * The app frame: top bar, main content, and the one announcer, shortcut listener and toast host
- * (spine AD-18). `upgradeBlocked`: the update-blocked notice as an alert banner at the top of
- * main (story 5.3).
+ * After a route change (a nav link, the app: Stop opening the Tab screen, back/forward) scrolls
+ * the page to the top and moves focus to the new screen's h1 (`main h1`, `tabIndex={-1}`; `main`
+ * if a screen has none). Not on the first load, not for the same route again (a nav link clicked
+ * on its own screen keeps focus), and not for an unknown hash on its way to #/record. Every routed
+ * screen renders its h1 in the commit that mounts it (Tab's through TakeHeader's fallback title).
+ * The Keyboard shortcuts dialog closes on a route change; focus moves only once no overlay is
+ * open, so it never leaves an open modal.
+ */
+function useRouteFocus(main: RefObject<HTMLElement | null>): void {
+  const key = routeKey(parseRoute(useHash()));
+  const previous = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (key === null) return;
+    const before = previous.current;
+    previous.current = key;
+    if (before === undefined || before === key) return;
+    const focusScreen = () => {
+      const root = main.current;
+      if (!root) return;
+      window.scrollTo(0, 0);
+      (root.querySelector<HTMLElement>('h1') ?? root).focus({ preventScroll: true });
+    };
+    closeShortcutsDialog();
+    if (!isOverlayOpen()) {
+      focusScreen();
+      return;
+    }
+    // The dialog closes on its next render; its release returns focus first, then this.
+    const unsubscribe = subscribeOverlay(() => {
+      if (isOverlayOpen()) return;
+      unsubscribe();
+      focusScreen();
+    });
+    return unsubscribe;
+  }, [key, main]);
+}
+
+/**
+ * The app frame: top bar, main content, and the one announcer, shortcut listener, toast host and
+ * Keyboard shortcuts dialog host (spine AD-18). A route change focuses the new screen's h1.
+ * `upgradeBlocked`: the update-blocked notice as an alert banner at the top of main (story 5.3).
  */
 function Shell({
   current,
@@ -123,6 +173,8 @@ function Shell({
   upgradeBlocked: boolean;
   children: ReactNode;
 }) {
+  const main = useRef<HTMLElement>(null);
+  useRouteFocus(main);
   return (
     <>
       <header className={styles.topBar}>
@@ -146,7 +198,7 @@ function Shell({
         </div>
       </header>
       {/* tabIndex -1: the toast returns focus here when the element it came from is gone. */}
-      <main className={styles.main} tabIndex={-1}>
+      <main ref={main} className={styles.main} tabIndex={-1}>
         {upgradeBlocked && (
           <div
             role="alert"
@@ -165,6 +217,7 @@ function Shell({
       <MicNotices />
       <RecordingAnnouncer />
       <ToastHost />
+      <ShortcutsDialogHost />
       <UpdatePrompt />
     </>
   );

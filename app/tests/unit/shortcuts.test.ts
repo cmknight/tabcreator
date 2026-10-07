@@ -4,11 +4,14 @@ import {
   cancelCountIn,
   dispatchShortcut,
   guarded,
+  helpShortcut,
   installShortcuts,
   isMacPlatform,
+  keyLabel,
   RECORD_KEYDOWN_MARK,
   recordToggle,
   SHORTCUTS,
+  shortcutGroups,
   tabEditShortcuts,
   tabExportShortcuts,
   tabPlaybackShortcuts,
@@ -43,10 +46,15 @@ describe('the registry', () => {
   });
 
   it("registers Esc as a global entry: Cancel count-in, ahead of the Tab screen's Esc", () => {
-    const esc = SHORTCUTS.filter((s) => s.key === 'Escape');
+    const esc = SHORTCUTS.filter((s) => s.key === 'Escape' && s.handler);
     expect(esc).toHaveLength(2);
     expect(esc[0]).toMatchObject({ route: 'global', description: 'Cancel count-in' });
     expect(esc[1]).toMatchObject({ route: 'tab', description: 'Clear note selection' });
+    // The overlays' Esc is listed, not dispatched (ui/a11y/overlays.ts handles it).
+    const listed = SHORTCUTS.filter((s) => s.key === 'Escape' && !s.handler);
+    expect(listed).toEqual([
+      { key: 'Escape', route: 'global', description: 'Close dialog, popover or panel' },
+    ]);
   });
 });
 
@@ -411,7 +419,7 @@ describe('the Tab selection shortcuts', () => {
   }
 
   it('registers ← / → / Esc / N on the tab route with descriptions', () => {
-    const tab = SHORTCUTS.filter((s) => s.route === 'tab');
+    const tab = SHORTCUTS.filter((s) => s.route === 'tab' && s.handler);
     expect(tab.map((s) => [s.key, s.description])).toEqual([
       ['ArrowLeft', 'Previous note'],
       ['ArrowRight', 'Next note'],
@@ -1359,5 +1367,154 @@ describe('the Tab copy shortcut', () => {
       false,
     );
     expect(elsewhere).not.toHaveBeenCalled();
+  });
+});
+
+describe('story "Shell reflow, focus and shortcuts help"', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+    window.location.hash = '';
+  });
+
+  it('registers `?` as a global entry allowing Shift', () => {
+    expect(SHORTCUTS.filter((s) => s.key === '?')).toEqual([
+      expect.objectContaining({
+        route: 'global',
+        shiftOk: true,
+        description: 'Show keyboard shortcuts',
+      }),
+    ]);
+  });
+
+  it('`?` opens the dialog (with or without Shift), naming the focused element as opener', () => {
+    const open = vi.fn<(opener: HTMLElement | null) => void>();
+    const entry = helpShortcut(open);
+    const button = add('button');
+    button.focus();
+    const event = new KeyboardEvent('keydown', { key: '?', shiftKey: true, cancelable: true });
+    expect(dispatchShortcut(event, 'library', [entry])).toBe(true);
+    expect(event.defaultPrevented).toBe(true);
+    expect(open).toHaveBeenLastCalledWith(button);
+    button.blur();
+    const plain = new KeyboardEvent('keydown', { key: '?', cancelable: true });
+    expect(dispatchShortcut(plain, null, [entry])).toBe(true);
+    expect(open).toHaveBeenLastCalledWith(null);
+  });
+
+  it('`?` is guarded in a text field: it types', () => {
+    const open = vi.fn<(opener: HTMLElement | null) => void>();
+    window.location.hash = '#/library';
+    const remove = installShortcuts(window, [helpShortcut(open)]);
+    const event = press(add('input', { type: 'search' }), '?', { shiftKey: true });
+    remove();
+    expect(open).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('the count-in Esc fires from a text field; a field that handled Esc keeps it', () => {
+    const stop = vi.fn(() => Promise.resolve());
+    const entry = cancelCountIn({
+      getSnapshot: () =>
+        ({
+          mic: 'live',
+          recording: 'count-in',
+          countIn: { on: true, bpm: 40 },
+        }) as RecordingSnapshot,
+      stop,
+    });
+    expect(entry.textFieldOk).toBe(true);
+    window.location.hash = '#/settings';
+    const remove = installShortcuts(window, [entry]);
+    const field = add('input', { type: 'number' });
+    const event = press(field, 'Escape');
+    expect(stop).toHaveBeenCalledWith('user');
+    expect(event.defaultPrevented).toBe(true);
+    stop.mockClear();
+    field.addEventListener('keydown', (e) => e.preventDefault());
+    press(field, 'Escape');
+    remove();
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it('other entries stay guarded in a text field', () => {
+    expect(guarded(document.createElement('input'), 'Escape')).toBe(true);
+    expect(guarded(document.createElement('input'), 'Escape', true)).toBe(false);
+  });
+
+  it('listing-only entries never dispatch', () => {
+    const listed = SHORTCUTS.filter((s) => !s.handler);
+    expect(listed.map((s) => [s.key, s.mod ?? null, s.group ?? s.route, s.description])).toEqual([
+      ['Escape', null, 'global', 'Close dialog, popover or panel'],
+      ['ArrowLeft', null, 'trim', 'Nudge 10 ms'],
+      ['ArrowRight', null, 'trim', 'Nudge 10 ms'],
+      ['ArrowLeft', 'shift', 'trim', 'Nudge 100 ms'],
+      ['ArrowRight', 'shift', 'trim', 'Nudge 100 ms'],
+    ]);
+    for (const entry of listed) {
+      const event = new KeyboardEvent('keydown', {
+        key: entry.key,
+        shiftKey: entry.mod === 'shift',
+        cancelable: true,
+      });
+      expect(dispatchShortcut(event, 'tab', listed)).toBe(false);
+      expect(event.defaultPrevented).toBe(false);
+    }
+  });
+
+  it('groups the registry: Global, Record, Tab, Trim handle; same descriptions merged', () => {
+    const groups = shortcutGroups(SHORTCUTS, false);
+    expect(groups.map((g) => g.title)).toEqual(['Global', 'Record', 'Tab', 'Trim handle']);
+    const rows = Object.fromEntries(
+      groups.map((g) => [g.title, g.rows.map((r) => [r.keys.join(' / '), r.description])]),
+    );
+    expect(rows).toEqual({
+      Global: [
+        ['?', 'Show keyboard shortcuts'],
+        ['Esc', 'Cancel count-in'],
+        ['Esc', 'Close dialog, popover or panel'],
+      ],
+      Record: [['Space', 'Record / stop']],
+      Tab: [
+        ['←', 'Previous note'],
+        ['→', 'Next note'],
+        ['Esc', 'Clear note selection'],
+        ['N', 'Next note to check'],
+        ['Space', 'Play / pause'],
+        ['P', 'Seek playback to selected note'],
+        ['0–9', 'Set fret; two digits within 400 ms make one number'],
+        ['Ctrl+Z', 'Undo'],
+        ['Ctrl+Shift+Z / Ctrl+Y', 'Redo'],
+        ['↑', 'Move note to the next thinner string, same pitch'],
+        ['↓', 'Move note to the next thicker string, same pitch'],
+        ['Delete / Backspace', 'Delete note'],
+        ['I', 'Insert note after selection'],
+        ['Enter', 'Confirm selected note (clears flag, locks it)'],
+        ['Ctrl+Shift+C', 'Copy tab'],
+      ],
+      'Trim handle': [
+        ['← / →', 'Nudge 10 ms'],
+        ['Shift+← / Shift+→', 'Nudge 100 ms'],
+      ],
+    });
+    // Every description appears once, in exactly one group.
+    const all = groups.flatMap((g) => g.rows.map((r) => r.description));
+    expect(new Set(all).size).toBe(all.length);
+    expect(new Set(all)).toEqual(new Set(SHORTCUTS.map((s) => s.description)));
+  });
+
+  it('labels the command modifier ⌘ on a Mac (Ctrl+Y stays Ctrl)', () => {
+    const tab = shortcutGroups(SHORTCUTS, true).find((g) => g.id === 'tab')!;
+    const keys = (description: string) => tab.rows.find((r) => r.description === description)!.keys;
+    expect(keys('Undo')).toEqual(['⌘+Z']);
+    expect(keys('Redo')).toEqual(['⌘+Shift+Z', 'Ctrl+Y']);
+    expect(keys('Copy tab')).toEqual(['⌘+Shift+C']);
+    expect(keyLabel({ key: 'ArrowRight', mod: 'shift' }, true)).toBe('Shift+→');
+  });
+
+  it('leaves out groups with no entries', () => {
+    const only: Shortcut[] = [{ key: 'x', route: 'tab', description: 'X', handler: () => {} }];
+    expect(shortcutGroups(only, false)).toEqual([
+      { id: 'tab', title: 'Tab', rows: [{ keys: ['X'], description: 'X' }] },
+    ]);
   });
 });

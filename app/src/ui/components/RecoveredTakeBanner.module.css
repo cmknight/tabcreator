@@ -5,7 +5,8 @@
   margin-block-end: var(--space-4);
 }
 
-.text {
+/* Above the shared .text's min-width 0 whatever the stylesheet order. */
+.banner .text {
   min-width: 12em;
   font-variant-numeric: tabular-nums;
 }

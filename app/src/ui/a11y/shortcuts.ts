@@ -50,6 +50,14 @@
 // Story "Copy and Download on the Tab screen": Ctrl/⌘+Shift+C copies the tab (as the toolbar's
 // Copy does: the shown notes, bar lines only with the toggle on) while it is shown, with the
 // edit keys' guards: not in a text field, not under an overlay, not in the Trim strip.
+//
+// Story "Shell reflow, focus and shortcuts help": `?` (global, typed with Shift on most layouts)
+// opens the Keyboard shortcuts dialog, which renders from this registry (`shortcutGroups`). The
+// count-in Esc opts out of the text-field guard (`textFieldOk`), so Esc cancels a count-in with
+// focus in a field; a field that handles Esc itself prevents its default first and keeps it.
+// Listing-only entries (no handler, never dispatched) register the shortcuts that live elsewhere
+// so the dialog lists them too: the overlays' Esc (ui/a11y/overlays.ts) and the Trim handles'
+// arrows (TrimStrip).
 
 import { useEffect } from 'react';
 import { recordingSession, type RecordingSession } from '../../session/recording-session';
@@ -65,6 +73,7 @@ import {
 import { parseRoute, type Route } from '../router';
 import { isOverlayOpen } from './overlays';
 import { NOTE_BUTTON, TAB_AREA, TEXT_FIELD, TOOLBAR, TRIM_STRIP } from './selectors';
+import { openShortcutsDialog } from '../shortcuts-dialog';
 import { strings } from '../strings';
 import { copyTab, tabExportText } from '../tab-export';
 
@@ -75,7 +84,15 @@ export interface Shortcut {
   route: Route['name'] | 'global';
   /** What it does, as the `?` dialog lists it. */
   description: string;
-  handler: () => void;
+  /** What it does; absent: a listing-only entry, shown in the `?` dialog but never dispatched. */
+  handler?: () => void;
+  /**
+   * Where the `?` dialog lists it, when not by `route`: `trim`, the Trim handle (listing-only
+   * entries whose keys the Trim strip handles).
+   */
+  group?: 'trim';
+  /** Whether it also fires with focus in a text field (default: no, the guard skips it). */
+  textFieldOk?: boolean;
   /**
    * Whether it applies now, given the keydown's target; when false the key is not handled
    * (default: always).
@@ -85,9 +102,10 @@ export interface Shortcut {
   repeat?: boolean;
   /**
    * The modifiers it needs (default: none). `'mod'`: Ctrl, or ⌘ on a Mac; `'mod+shift'`: that
-   * and Shift; `'ctrl'`: Ctrl on every platform. Any other modifier held means no match.
+   * and Shift; `'ctrl'`: Ctrl on every platform; `'shift'`: Shift alone. Any other modifier
+   * held means no match.
    */
-  mod?: 'mod' | 'mod+shift' | 'ctrl';
+  mod?: 'mod' | 'mod+shift' | 'ctrl' | 'shift';
   /**
    * Whether it also matches with Shift held (default: no). The digits: on some layouts (French
    * AZERTY) the number row types digits only with Shift.
@@ -127,9 +145,9 @@ const ENTER_ACTION = `${SPACE_ACTION}, a[href], [role="link"]`;
  * field, or on an element where the key has a native action (Space: a button or checkbox;
  * Enter: those and links).
  */
-export function guarded(target: EventTarget | null, key: string): boolean {
+export function guarded(target: EventTarget | null, key: string, textFieldOk = false): boolean {
   if (!(target instanceof Element)) return false;
-  if (target.closest(TEXT_FIELD)) return true;
+  if (target.closest(TEXT_FIELD)) return !textFieldOk;
   if (key === ' ') {
     if (target.closest(NOTE_BUTTON)) return false;
     return target.closest(SPACE_ACTION) !== null;
@@ -191,11 +209,16 @@ export function recordToggle(
   };
 }
 
-/** Esc: cancels a count-in; applies only while one runs (otherwise Esc is left to the page). */
+/**
+ * Esc: cancels a count-in; applies only while one runs (otherwise Esc is left to the page). It
+ * fires with focus in a text field too (`textFieldOk`): the count-in keeps running off Record,
+ * where a field may hold focus.
+ */
 export function cancelCountIn(store: Pick<RecordingSession, 'getSnapshot' | 'stop'>): Shortcut {
   return {
     key: 'Escape',
     route: 'global',
+    textFieldOk: true,
     description: strings['global.shortcutCancelCountIn'],
     when: () => store.getSnapshot().recording === 'count-in',
     handler: () => void store.stop('user'),
@@ -495,20 +518,157 @@ export function tabExportShortcuts(
   ];
 }
 
+/**
+ * `?`: opens the Keyboard shortcuts dialog (global; Shift allowed, as most layouts type `?` with
+ * it). Focus returns on close to the element that had it, or nowhere when that was <body>.
+ */
+export function helpShortcut(
+  open: (opener: HTMLElement | null) => void = openShortcutsDialog,
+): Shortcut {
+  return {
+    key: '?',
+    route: 'global',
+    shiftOk: true,
+    description: strings['global.shortcutHelp'],
+    handler: () => {
+      const active = document.activeElement;
+      open(active instanceof HTMLElement && active !== document.body ? active : null);
+    },
+  };
+}
+
+/**
+ * Listing-only entries (no handler): shortcuts handled elsewhere, registered so the `?` dialog
+ * lists every shortcut in EXPERIENCE.md: the overlays' Esc and the Trim handles' nudges.
+ */
+export const LISTING_ONLY: readonly Shortcut[] = [
+  { key: 'Escape', route: 'global', description: strings['global.shortcutCloseOverlay'] },
+  ...['ArrowLeft', 'ArrowRight'].map((key): Shortcut => ({
+    key,
+    route: 'tab',
+    group: 'trim',
+    description: strings['tab.shortcutTrimNudge'],
+  })),
+  ...['ArrowLeft', 'ArrowRight'].map((key): Shortcut => ({
+    key,
+    route: 'tab',
+    group: 'trim',
+    mod: 'shift',
+    description: strings['tab.shortcutTrimNudgeBig'],
+  })),
+];
+
 /** Every shortcut in the app. */
 export const SHORTCUTS: readonly Shortcut[] = [
+  helpShortcut(),
+  cancelCountIn(recordingSession),
   {
     key: ' ',
     route: 'record',
     description: strings['record.shortcutRecordStop'],
     handler: recordToggle(recordingSession),
   },
-  cancelCountIn(recordingSession),
   ...tabSelectionShortcuts(),
   ...tabPlaybackShortcuts(),
   ...tabEditShortcuts(),
   ...tabExportShortcuts(),
+  ...LISTING_ONLY,
 ];
+
+/** One row of the `?` dialog: its keys (as shown, joined with "/") and what they do. */
+export interface ShortcutRow {
+  keys: string[];
+  description: string;
+}
+
+/** One group of the `?` dialog: where its shortcuts work. */
+export interface ShortcutGroup {
+  id: 'global' | 'record' | 'tab' | 'trim';
+  title: string;
+  rows: ShortcutRow[];
+}
+
+const GROUPS: readonly { id: ShortcutGroup['id']; title: string }[] = [
+  { id: 'global', title: strings['global.shortcutsGroupGlobal'] },
+  { id: 'record', title: strings['global.shortcutsGroupRecord'] },
+  { id: 'tab', title: strings['global.shortcutsGroupTab'] },
+  { id: 'trim', title: strings['global.shortcutsGroupTrim'] },
+];
+
+const KEY_NAMES: Readonly<Record<string, string>> = {
+  ' ': strings['global.keySpace'],
+  Escape: strings['global.keyEsc'],
+  ArrowLeft: strings['global.keyLeft'],
+  ArrowRight: strings['global.keyRight'],
+  ArrowUp: strings['global.keyUp'],
+  ArrowDown: strings['global.keyDown'],
+};
+
+/** A shortcut's key as the dialog shows it, with its modifiers: "Ctrl+Shift+Z", "⌘+Z", "N". */
+export function keyLabel(entry: Pick<Shortcut, 'key' | 'mod'>, mac: boolean): string {
+  const name =
+    KEY_NAMES[entry.key] ?? (entry.key.length === 1 ? entry.key.toUpperCase() : entry.key);
+  const command = mac ? strings['global.keyCmd'] : strings['global.keyCtrl'];
+  const shift = strings['global.keyShift'];
+  switch (entry.mod) {
+    case undefined:
+      return name;
+    case 'mod':
+      return strings['global.keyCombo']([command, name]);
+    case 'mod+shift':
+      return strings['global.keyCombo']([command, shift, name]);
+    case 'ctrl':
+      return strings['global.keyCombo']([strings['global.keyCtrl'], name]);
+    case 'shift':
+      return strings['global.keyCombo']([shift, name]);
+  }
+}
+
+/** Collapses a row's keys that are the digits 0–9 in order into one "0–9". */
+function collapseDigits(keys: string[]): string[] {
+  const digits = Array.from({ length: 10 }, (_, d) => String(d));
+  return keys.length === 10 && keys.every((k, i) => k === digits[i])
+    ? [strings['global.keyRange'](digits[0]!, digits[9]!)]
+    : keys;
+}
+
+/**
+ * The `?` dialog's content, from the registry: groups Global, Record, Tab, Trim handle (in that
+ * order, empty ones left out); within a group, entries with the same description merge into one
+ * row, in registry order, their keys joined (the digits as "0–9"). `mac` picks ⌘ or Ctrl, as the
+ * dispatcher does.
+ */
+export function shortcutGroups(
+  shortcuts: readonly Shortcut[] = SHORTCUTS,
+  mac: boolean = isMacPlatform(),
+): ShortcutGroup[] {
+  const byGroup = new Map<ShortcutGroup['id'], Map<string, string[]>>();
+  for (const entry of shortcuts) {
+    const id: ShortcutGroup['id'] | null =
+      entry.group ??
+      (entry.route === 'global' || entry.route === 'record' || entry.route === 'tab'
+        ? entry.route
+        : null);
+    if (id === null) continue;
+    let rows = byGroup.get(id);
+    if (!rows) byGroup.set(id, (rows = new Map()));
+    const label = keyLabel(entry, mac);
+    const keys = rows.get(entry.description);
+    if (!keys) rows.set(entry.description, [label]);
+    else if (!keys.includes(label)) keys.push(label);
+  }
+  return GROUPS.flatMap(({ id, title }) => {
+    const rows = byGroup.get(id);
+    if (!rows) return [];
+    return [
+      {
+        id,
+        title,
+        rows: [...rows].map(([description, keys]) => ({ keys: collapseDigits(keys), description })),
+      },
+    ];
+  });
+}
 
 /**
  * Whether a shortcut's `key` matches a pressed `KeyboardEvent.key`. Single letters match either
@@ -526,6 +686,7 @@ function modMatches(entry: Shortcut, event: KeyboardEvent, mac: boolean): boolea
   if (altKey) return false;
   if (mod === undefined) return !ctrlKey && !metaKey && (!shiftKey || entry.shiftOk === true);
   if (mod === 'ctrl') return ctrlKey && !metaKey && !shiftKey;
+  if (mod === 'shift') return shiftKey && !ctrlKey && !metaKey;
   const command = mac ? metaKey && !ctrlKey : ctrlKey && !metaKey;
   return command && shiftKey === (mod === 'mod+shift');
 }
@@ -545,9 +706,10 @@ function entryKeyMatches(entry: Shortcut, event: KeyboardEvent): boolean {
 
 /**
  * Runs the shortcut `event` matches on `route` (null: no known route, so only global ones), if
- * any and unless the guard skips it. Returns whether a shortcut matched; its default is then
- * prevented. A key held with modifiers matches only an entry declaring exactly those (`mod`;
- * `mac` decides what `'mod'` means).
+ * any and unless the guard skips it (an entry with `textFieldOk` still runs in a text field).
+ * Listing-only entries (no handler) never match. Returns whether a shortcut matched; its
+ * default is then prevented. A key held with modifiers matches only an entry declaring exactly
+ * those (`mod`; `mac` decides what `'mod'` means).
  */
 export function dispatchShortcut(
   event: KeyboardEvent,
@@ -558,12 +720,13 @@ export function dispatchShortcut(
   if (event.defaultPrevented || isOverlayOpen()) return false;
   const entry = shortcuts.find(
     (s) =>
+      s.handler !== undefined &&
       modMatches(s, event, mac) &&
       entryKeyMatches(s, event) &&
       (s.route === 'global' || (route !== null && s.route === route)) &&
       (s.when?.(event.target) ?? true),
   );
-  if (!entry || guarded(event.target, event.key)) return false;
+  if (!entry?.handler || guarded(event.target, event.key, entry.textFieldOk)) return false;
   event.preventDefault();
   if (!event.repeat || entry.repeat) entry.handler();
   return true;

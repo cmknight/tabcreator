@@ -35,6 +35,8 @@ test('nav links, the tab route and back/forward', async ({ page }) => {
     await nav.getByRole('link', { name: s.link }).click();
     await expect(page).toHaveURL(new RegExp(`${s.hash.replace('/', '\\/')}$`));
     await expect(h1).toHaveText(s.title);
+    // A route change moves focus to the new screen's h1.
+    await expect(h1).toBeFocused();
     await expect(nav.getByRole('link', { name: s.link })).toHaveAttribute('aria-current', 'page');
   }
 
@@ -46,16 +48,21 @@ test('nav links, the tab route and back/forward', async ({ page }) => {
   await page.goBack();
   await expect(page).toHaveURL(/#\/record$/);
   await expect(h1).toHaveText('Record');
+  await expect(h1).toBeFocused();
   await page.goBack();
   await expect(page).toHaveURL(/#\/settings$/);
   await expect(h1).toHaveText('Settings');
+  await expect(h1).toBeFocused();
   await page.goBack();
   await expect(h1).toHaveText('Tuner');
+  await expect(h1).toBeFocused();
   await page.goForward();
   await expect(page).toHaveURL(/#\/settings$/);
   await expect(h1).toHaveText('Settings');
+  await expect(h1).toBeFocused();
   await page.goForward();
   await expect(h1).toHaveText('Record');
+  await expect(h1).toBeFocused();
 
   expect(errors).toEqual([]);
 });

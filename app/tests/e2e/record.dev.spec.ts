@@ -402,6 +402,31 @@ test('count-in: the beats 4-3-2-1 show and are announced; controls disabled; Can
 }) => {
   const errors = await goLive(page, held());
   await countInOn(page, 60);
+  // The beats and their announcements are recorded in the page as they change, so axe (slow
+  // under a loaded machine) running mid-count-in cannot make a polled check miss a beat.
+  // Each announcement is logged with the beat shown when it was made.
+  await page.evaluate(() => {
+    const seen = {
+      beats: [] as string[],
+      alerts: [] as { text: string; beat: string | null }[],
+    };
+    const beatNow = () =>
+      document.querySelector('[data-testid="count-in-beat"]')?.textContent ?? null;
+    const record = () => {
+      const beat = beatNow();
+      if (beat && seen.beats.at(-1) !== beat) seen.beats.push(beat);
+      for (const el of document.querySelectorAll('[role="alert"]')) {
+        const text = el.textContent;
+        if (text && seen.alerts.at(-1)?.text !== text) seen.alerts.push({ text, beat });
+      }
+    };
+    record();
+    const observer = new MutationObserver(record);
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+    const w = window as unknown as { __countIn: typeof seen; __countInObserver: MutationObserver };
+    w.__countIn = seen;
+    w.__countInObserver = observer;
+  });
   await recordButton(page).click();
 
   await expect(cancelButton(page)).toHaveText('Cancel');
@@ -411,15 +436,24 @@ test('count-in: the beats 4-3-2-1 show and are announced; controls disabled; Can
   await expect(timer(page)).toHaveCount(0);
   await expect(countInToggle(page)).toBeDisabled();
   await expect(tempoField(page)).toBeDisabled();
-  const alert = page.getByRole('alert');
-  for (const n of ['4', '3', '2', '1']) {
-    await expect(beat(page)).toHaveText(n, { timeout: 2_000 });
-    await expect(alert).toHaveText(n, { timeout: 2_000 });
-    if (n === '3') await expectNoSeriousAxe(page);
-  }
+  await expect(beat(page)).toHaveText('3', { timeout: 2_000 });
+  await expectNoSeriousAxe(page);
 
   // Recording: the timer is back, the controls stay disabled.
-  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true', { timeout: 3_000 });
+  await expect(stopButton(page)).toHaveAttribute('aria-pressed', 'true', { timeout: 6_000 });
+  const seen = await page.evaluate(() => {
+    const w = window as unknown as {
+      __countIn: { beats: string[]; alerts: { text: string; beat: string | null }[] };
+      __countInObserver: MutationObserver;
+    };
+    w.__countInObserver.disconnect();
+    return w.__countIn;
+  });
+  expect(seen.beats).toEqual(['4', '3', '2', '1']);
+  // Announcement n came while beat n was shown.
+  expect(seen.alerts.filter((a) => /^[1-4]$/.test(a.text))).toEqual(
+    ['4', '3', '2', '1'].map((n) => ({ text: n, beat: n })),
+  );
   await expect(beat(page)).toHaveCount(0);
   await expect(timer(page)).toBeVisible();
   await expect(countInToggle(page)).toBeDisabled();

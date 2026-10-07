@@ -38,7 +38,11 @@
   color: var(--color-danger);
 }
 
+/* min-width 0 and breaking long words: at 320 px the sentence narrows beside its actions instead
+   of pushing the banner past the window (WCAG 1.4.10). */
 .text {
   flex: 1;
+  min-width: 0;
   margin: 0;
+  overflow-wrap: anywhere;
 }

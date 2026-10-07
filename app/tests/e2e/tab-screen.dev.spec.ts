@@ -30,10 +30,7 @@ const h1 = (page: Page) => page.getByRole('heading', { level: 1 });
 const pageScrollsSideways = (page: Page) =>
   page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
 
-/**
- * Whether anything of the tab area reaches past the viewport's right edge. (At 320 px the shell's
- * top bar is wider than the window, so the page check alone cannot speak for the tab there.)
- */
+/** Whether anything of the tab area reaches past the viewport's right edge. */
 const tabOverflowsViewport = (page: Page) =>
   tabArea(page).evaluate((area) => {
     const right = document.documentElement.clientWidth;
@@ -61,7 +58,7 @@ test('reflow: resizing re-lays the tab out within the width and keeps the select
     expect(previous).toBeGreaterThanOrEqual(20);
     expect(await longestLine(page)).toBeLessThanOrEqual(previous);
     expect(await tabOverflowsViewport(page)).toBe(false);
-    if (width >= 500) expect(await pageScrollsSideways(page)).toBe(false);
+    expect(await pageScrollsSideways(page)).toBe(false);
     // Every note button still sits inside its system's box.
     const overflow = await tabArea(page)
       .getByRole('group')

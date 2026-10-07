@@ -222,6 +222,38 @@ export const strings = {
   'record.countInBeat': (beat: number) => `${beat}`,
   /** The Esc shortcut's description in the keyboard shortcuts dialog (EXPERIENCE.md). */
   'global.shortcutCancelCountIn': 'Cancel count-in',
+  /** The `?` shortcut's description (EXPERIENCE.md Interaction Primitives). */
+  'global.shortcutHelp': 'Show keyboard shortcuts',
+  /** The overlays' Esc, as the `?` dialog lists it (ui/a11y/overlays.ts handles it). */
+  'global.shortcutCloseOverlay': 'Close dialog, popover or panel',
+  /** The Keyboard shortcuts dialog (EXPERIENCE.md :89; mockup settings.html): title and note. */
+  'global.shortcutsTitle': 'Keyboard shortcuts',
+  'global.shortcutsNote':
+    "Shortcuts don't fire while you are typing in a field, except Esc cancelling a count-in.",
+  /** The dialog's scrolling list of shortcut tables, as a named region. */
+  'global.shortcutsList': 'Shortcut list',
+  'global.close': 'Close',
+  /** The dialog's groups: where each shortcut works. */
+  'global.shortcutsGroupGlobal': 'Global',
+  'global.shortcutsGroupRecord': 'Record',
+  'global.shortcutsGroupTab': 'Tab',
+  'global.shortcutsGroupTrim': 'Trim handle',
+  /** Key names as the dialog shows them. */
+  'global.keySpace': 'Space',
+  'global.keyEsc': 'Esc',
+  'global.keyLeft': '←',
+  'global.keyRight': '→',
+  'global.keyUp': '↑',
+  'global.keyDown': '↓',
+  'global.keyCtrl': 'Ctrl',
+  'global.keyCmd': '⌘',
+  'global.keyShift': 'Shift',
+  /** A modifier combination: "Ctrl+Shift+Z". */
+  'global.keyCombo': (parts: readonly string[]) => parts.join('+'),
+  /** A run of keys in one row: "0–9". */
+  'global.keyRange': (first: string, last: string) => `${first}–${last}`,
+  /** Between the keys of one row: "Delete / Backspace". */
+  'global.keyOr': ' / ',
   'tab.title': 'Tab',
   /** The progress bar's label while a take is analysed. */
   'tab.analysing': 'Analysing…',
@@ -445,6 +477,9 @@ export const strings = {
   'tab.downloadFailed': "Couldn't download the tab",
   /** The Ctrl/⌘+Shift+C shortcut, as the `?` dialog lists it. */
   'tab.shortcutCopy': 'Copy tab',
+  /** The Trim handles' arrow keys, as the `?` dialog lists them (TrimStrip handles them). */
+  'tab.shortcutTrimNudge': 'Nudge 10 ms',
+  'tab.shortcutTrimNudgeBig': 'Nudge 100 ms',
   /** Insert's and Delete's tooltip with no notes (No notes found). */
   'tab.noNotesYet': 'No notes yet',
   /** Delete's tooltip with notes but none selected. */
@@ -625,6 +660,10 @@ export const strings = {
   'settings.themeSystem': 'System',
   'settings.themeLight': 'Light',
   'settings.themeDark': 'Dark',
+  /** About's button that opens the Keyboard shortcuts dialog (mockup settings.html). */
+  'settings.keyboardShortcuts': 'Keyboard shortcuts',
+  /** Its key hint: the key that opens the dialog anywhere. */
+  'settings.keyboardShortcutsKey': '?',
 } as const;
 
 export type StringKey = keyof typeof strings;

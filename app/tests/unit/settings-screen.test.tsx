@@ -2,7 +2,9 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AnalysisSettings, ThemePref } from '../../src/model/types';
 import type { SettingsSnapshot } from '../../src/session/settings-session';
+import { ShortcutsDialogHost } from '../../src/ui/components/ShortcutsDialog';
 import { Settings } from '../../src/ui/screens/Settings';
+import { closeShortcutsDialog } from '../../src/ui/shortcuts-dialog';
 
 // Story "Analysis settings and re-analysis" (US-4.6; mockup settings.html): the Settings
 // screen's "Defaults for new takes", before About, with the Tab panel's fields and no Re-analyse.
@@ -133,5 +135,39 @@ describe('Appearance', () => {
     expect(session.setTheme).toHaveBeenLastCalledWith('system');
     // Settings no longer touches the page; followTheme does (theme-apply.test.ts).
     expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
+  });
+});
+
+// Story "Shell reflow, focus and shortcuts help": About's Keyboard shortcuts button.
+describe('About', () => {
+  afterEach(() => closeShortcutsDialog());
+
+  it('the Keyboard shortcuts button opens the dialog; closing it returns focus to the button', () => {
+    render(
+      <>
+        <Settings session={fakeSession(DEFAULTS)} />
+        <ShortcutsDialogHost />
+      </>,
+    );
+    const region = screen.getByRole('region', { name: 'About' });
+    const button = within(region).getByRole('button', { name: 'Keyboard shortcuts' });
+    expect(button.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(button.getAttribute('aria-keyshortcuts')).toBe('?');
+    const hint = button.querySelector('kbd')!;
+    expect(hint.textContent).toBe('?');
+    expect(hint.getAttribute('aria-hidden')).toBe('true');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    button.focus();
+    fireEvent.click(button);
+    const dialog = screen.getByRole('dialog', { name: 'Keyboard shortcuts' });
+    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Close' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(button);
+  });
+
+  it('the h1 can take focus (route changes focus it)', () => {
+    render(<Settings session={fakeSession(DEFAULTS)} />);
+    expect(screen.getByRole('heading', { level: 1 }).getAttribute('tabindex')).toBe('-1');
   });
 });

@@ -312,3 +312,28 @@ export function CloseIcon({ className }: { className?: string | undefined }) {
     </svg>
   );
 }
+
+/** Keyboard: Settings' Keyboard shortcuts button (mockup settings.html `#i-keyboard`). */
+export function KeyboardIcon({ className }: { className?: string | undefined }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <rect
+        x="2.5"
+        y="6"
+        width="19"
+        height="12"
+        rx="2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <path
+        d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M8 14h8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}

@@ -6,7 +6,9 @@
 // version). Story "Theme toggle": Appearance, between Defaults and Storage, with the Theme
 // segmented control (System / Light / Dark, `aria-pressed`, like the Tab screen's speed control);
 // a change is saved through settings-session, and `followTheme` (started in main.tsx) applies it
-// to the page at once.
+// to the page at once. Story "Shell reflow, focus and shortcuts help": About's Keyboard shortcuts
+// button opens the shortcuts dialog (a button, as in the mockup, since it opens a dialog), beside
+// the engine line in a wrapping row; the h1 takes focus after a route change (`tabIndex={-1}`).
 
 import { useSyncExternalStore } from 'react';
 import type { ThemePref } from '../../model/types';
@@ -18,9 +20,10 @@ import {
 import { AnalysisSettingsFields } from '../components/AnalysisSettingsFields';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
-import { CheckIcon, ErrorIcon, WarnIcon } from '../components/icons';
+import { CheckIcon, ErrorIcon, KeyboardIcon, WarnIcon } from '../components/icons';
 import { routeToHash } from '../router';
 import { reloadOrExplain } from '../reload-or-explain';
+import { openShortcutsDialog } from '../shortcuts-dialog';
 import { strings } from '../strings';
 import styles from './Screen.module.css';
 import settingsStyles from './Settings.module.css';
@@ -67,7 +70,9 @@ export function Settings({ session = settingsSession }: SettingsProps = {}) {
           </button>
         </div>
       )}
-      <h1 className={styles.title}>{strings['settings.title']}</h1>
+      <h1 className={styles.title} tabIndex={-1}>
+        {strings['settings.title']}
+      </h1>
       <section className={settingsStyles.panel} aria-labelledby="settings-defaults">
         <h2 id="settings-defaults" className={settingsStyles.panelTitle}>
           {strings['settings.defaults']}
@@ -127,9 +132,24 @@ export function Settings({ session = settingsSession }: SettingsProps = {}) {
         <h2 id="settings-about" className={settingsStyles.panelTitle}>
           {strings['settings.about']}
         </h2>
-        <p className={settingsStyles.engine} data-testid="engine-version">
-          {engineLine(engine)}
-        </p>
+        <div className={settingsStyles.row}>
+          <p className={settingsStyles.engine} data-testid="engine-version">
+            {engineLine(engine)}
+          </p>
+          <button
+            type="button"
+            className={`${buttons.secondary} ${settingsStyles.shortcutsButton}`}
+            aria-haspopup="dialog"
+            aria-keyshortcuts={strings['settings.keyboardShortcutsKey']}
+            onClick={(event) => openShortcutsDialog(event.currentTarget)}
+          >
+            <KeyboardIcon className={settingsStyles.shortcutsIcon} />
+            {strings['settings.keyboardShortcuts']}
+            <kbd className={settingsStyles.kbd} aria-hidden="true">
+              {strings['settings.keyboardShortcutsKey']}
+            </kbd>
+          </button>
+        </div>
       </section>
     </section>
   );
