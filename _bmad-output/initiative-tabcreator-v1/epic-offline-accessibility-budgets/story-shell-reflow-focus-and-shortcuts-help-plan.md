@@ -3,7 +3,7 @@ title: 'Shell reflow, focus and shortcuts help'
 type: 'feature'
 ticket: '10'
 created: '2026-10-07'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
