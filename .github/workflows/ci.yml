@@ -343,6 +343,17 @@ jobs:
       - name: Playwright
         run: pnpm e2e
 
+      # The 60 s analysis gate (spine AD-17, US-8.3): headless Chromium against the dist/ built
+      # above, timing the engine's analyze in the real engine worker; fails when the median of 5
+      # runs × calibrationFactor (app/benchmark.config.json) is over analysis60sMs
+      # (app/budgets.json). Cold, 5-minute peak wasm memory and end to end are reported in the job
+      # summary, not gated (n/a with the reason when they cannot be measured). No retries. It needs
+      # only the built dist/, so it also runs when Playwright failed, keeping the performance data.
+      - name: Benchmark
+        if: success() || failure()
+        timeout-minutes: 10
+        run: pnpm --filter app benchmark
+
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v7

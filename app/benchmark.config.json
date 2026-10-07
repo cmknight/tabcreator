@@ -1,0 +1,4 @@
+{
+  "$comment": "The analysis benchmark's runner calibration (build/benchmark.ts, spine AD-17, US-8.3): the gate is median(5 runs of a 60 s analysis) × calibrationFactor ≤ budgets.json analysis60sMs. factor = laptop time / runner time for the same benchmark, so the gated value is the time on the reference laptop. 1.0 until the owner calibrates it (story 14) by running `pnpm --filter app benchmark` on the laptop and on the CI runner.",
+  "calibrationFactor": 1.0
+}
