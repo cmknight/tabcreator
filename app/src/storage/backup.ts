@@ -10,6 +10,7 @@
 import { extensionFor, preferredExtensions } from '../model/audio-format';
 import { AppError, type AppErrorCode } from '../model/errors';
 import type { Tab, Take } from '../model/types';
+import { DB_VERSION } from './migrations';
 
 /** The backup format this build writes; a new shape bumps it. */
 export const BACKUP_FORMAT = 1;
@@ -17,6 +18,11 @@ export const BACKUP_FORMAT = 1;
 /** `manifest.json`: the records exactly as stored. */
 export interface BackupManifest {
   format: typeof BACKUP_FORMAT;
+  /**
+   * The IndexedDB version (`DB_VERSION`) the records were stored at; restore upgrades them from
+   * it (`migrateRecords`). Backups made before it existed lack it and were all at version 3.
+   */
+  schemaVersion: number;
   /** When the backup was made (ISO 8601). */
   exportedAt: string;
   /** Every take whose status is not `recording`, by `createdAt`. */
@@ -98,6 +104,8 @@ export interface BackupResult {
   missingAudio: number;
   /** How many takes have an audio type not in `AUDIO_FORMATS`; their audio is left out. */
   unsupportedAudio: number;
+  /** How many takes were left out because they are still recording (unfinished). */
+  skippedUnfinished: number;
 }
 
 /** The zip entry name of the manifest. */
@@ -122,7 +130,50 @@ export function buildManifest(
     const tab = tabById.get(take.id);
     if (tab) includedTabs.push(tab);
   }
-  return { format: BACKUP_FORMAT, exportedAt, takes: included, tabs: includedTabs };
+  return {
+    format: BACKUP_FORMAT,
+    schemaVersion: DB_VERSION,
+    exportedAt,
+    takes: included,
+    tabs: includedTabs,
+  };
+}
+
+/** File names an OS or archiver adds to a folder (compared lower-cased). */
+const JUNK_FILES = new Set(['thumbs.db', 'desktop.ini']);
+
+/** A zip entry an OS re-zip adds: a directory, a dot-segment, `__MACOSX/`, `Thumbs.db`, `desktop.ini`. */
+function isJunkEntry(name: string): boolean {
+  if (name.endsWith('/')) return true;
+  const segments = name.split('/');
+  if (segments[0] === '__MACOSX') return true;
+  return segments.some((s) => s.startsWith('.') || JUNK_FILES.has(s.toLowerCase()));
+}
+
+/**
+ * The entry-name policy of a backup zip, so a backup that was unzipped and re-zipped restores
+ * (story "Restore validation and missing audio"; the streaming unzip reuses it). Pure. Returns
+ * each kept entry's name mapped to the name restore reads it under:
+ * - directory entries and what an OS adds are dropped: any path with a segment starting with a
+ *   dot (`.DS_Store`, `._a.webm`), `Thumbs.db`, `desktop.ini`, anything under `__MACOSX/`;
+ * - when the root has no `manifest.json` but exactly one top-level folder does, that folder's
+ *   prefix is stripped from every entry under it (entries elsewhere keep their names, and
+ *   restore rejects them as unexpected).
+ */
+export function backupEntryNames(names: Iterable<string>): Map<string, string> {
+  const kept = [...names].filter((name) => !isJunkEntry(name));
+  const result = new Map(kept.map((name) => [name, name]));
+  if (kept.includes(MANIFEST_NAME)) return result;
+  const folders = kept.flatMap((name) => {
+    const parts = name.split('/');
+    return parts.length === 2 && parts[1] === MANIFEST_NAME ? [`${parts[0]}/`] : [];
+  });
+  if (folders.length !== 1) return result;
+  const prefix = folders[0]!;
+  for (const name of kept) {
+    if (name.startsWith(prefix)) result.set(name, name.slice(prefix.length));
+  }
+  return result;
 }
 
 const pad = (n: number, width = 2) => String(n).padStart(width, '0');
@@ -261,5 +312,6 @@ export async function createBackup(
     takes: manifest.takes.length,
     missingAudio: missing.length,
     unsupportedAudio: unsupported.length,
+    skippedUnfinished: takes.filter((t) => t.status === 'recording').length,
   };
 }

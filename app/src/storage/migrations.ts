@@ -45,6 +45,54 @@ export const MIGRATIONS: readonly Migration[] = [
 export const DB_VERSION = MIGRATIONS.length;
 
 /**
+ * The records of a backup manifest as parsed, before restore checks their shape (story "Restore
+ * validation and missing audio"): a record transform reads and returns this.
+ */
+export interface RecordSet {
+  takes: unknown[];
+  tabs: unknown[];
+}
+
+/** One record step: upgrades records stored at version n - 1 to version n. Pure. */
+export type RecordMigration = (records: RecordSet) => RecordSet;
+
+const unchanged: RecordMigration = (records) => records;
+
+/**
+ * The per-record twin of `MIGRATIONS` (spine AD-11), for records that arrive outside IndexedDB
+ * (a backup's manifest): `RECORD_MIGRATIONS[n - 1]` upgrades records from version n - 1 to n.
+ * It has one entry per `MIGRATIONS` entry; a migration that rewrites records adds the same
+ * rewrite here.
+ */
+export const RECORD_MIGRATIONS: readonly RecordMigration[] = [
+  // 1: the first schema; records are created at it.
+  unchanged,
+  // 2: no record change (the storage-full stop reason).
+  unchanged,
+  // 3: no record change (the WAV audio path).
+  unchanged,
+];
+
+/**
+ * `records` stored at `fromVersion` (1 … `DB_VERSION`), upgraded to `DB_VERSION` by running
+ * `RECORD_MIGRATIONS` `fromVersion + 1 … DB_VERSION` in order. Throws on a version outside that
+ * range (callers check it first).
+ */
+export function migrateRecords(
+  records: RecordSet,
+  fromVersion: number,
+  migrations: readonly RecordMigration[] = RECORD_MIGRATIONS,
+): RecordSet {
+  const target = migrations.length;
+  if (!Number.isInteger(fromVersion) || fromVersion < 1 || fromVersion > target) {
+    throw new Error(`No record migration from version ${fromVersion}`);
+  }
+  let result = records;
+  for (let v = fromVersion + 1; v <= target; v++) result = migrations[v - 1]!(result);
+  return result;
+}
+
+/**
  * Runs migrations `oldVersion + 1 … newVersion` in order. Synchronous steps run back to back
  * inside the upgrade event; an asynchronous step is awaited before the next one starts. A
  * failing step aborts the upgrade transaction, so the database stays at `oldVersion`.

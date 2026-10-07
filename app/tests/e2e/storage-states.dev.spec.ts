@@ -1,7 +1,9 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { strToU8, zipSync } from 'fflate';
+import type { Take } from '../../src/model/types';
 import { strings } from '../../src/ui/strings';
 import { collectErrors, recordButton, stopButton, timer } from './helpers';
-import { heading, list, nav, row } from './library-helpers';
+import { heading, list, nav, restoreButton, row } from './library-helpers';
 import { expectNoSeriousAxe, goLive, held } from './mic-helpers';
 import { seedTab } from './tab-helpers';
 
@@ -328,5 +330,52 @@ test('start-up re-check: less than 5% of the quota free shows the banner at load
   await expect(heading(page)).toBeVisible();
   await expect(fullBanner(page)).toBeVisible();
   await expect(fullBanner(page)).toHaveText(strings['global.storageFull']);
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('a restore that imports takes asks for persistent storage once', async ({ page }) => {
+  await stubStorage(page, { grant: false, usage: 1_000_000 });
+  const errors = collectErrors(page);
+  await page.goto('./#/library');
+  await expect(heading(page)).toBeVisible();
+  expect(await persistCalls(page)).toBe(0);
+  const take: Take = {
+    id: 'restored-1',
+    title: 'Restored take',
+    createdAt: '2026-10-01T10:00:00.000Z',
+    status: 'analyzed',
+    durationMs: 2000,
+    sampleRate: 48_000,
+    tuning: 'EADGBE',
+    micLabel: 'Mic',
+    audioMime: null,
+    trimStartMs: 0,
+    trimEndMs: null,
+    settings: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 },
+    analysisVersion: '1',
+    updatedAt: '2026-10-01T10:00:00.000Z',
+  };
+  const zip = Buffer.from(
+    zipSync({
+      'manifest.json': strToU8(
+        JSON.stringify({
+          format: 1,
+          exportedAt: '2026-10-07T10:00:00.000Z',
+          takes: [take],
+          tabs: [],
+        }),
+      ),
+    }),
+  );
+  const [chooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    restoreButton(page).click(),
+  ]);
+  await chooser.setFiles({ name: 'one.zip', mimeType: 'application/zip', buffer: zip });
+  const dialog = page.getByRole('alertdialog');
+  await expect(dialog).toContainText('Restore 1 take from one.zip?');
+  await dialog.getByRole('button', { name: 'Restore' }).click();
+  await expect(row(page, 'restored-1')).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => persistCalls(page)).toBe(1);
   expect(unexpected(errors)).toEqual([]);
 });

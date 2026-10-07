@@ -522,6 +522,9 @@ export const strings = {
   /** A toast when the backup downloaded but some takes' audio files were missing. */
   'library.backupMissing': (n: number) =>
     `Backed up — ${n} ${n === 1 ? 'recording was' : 'recordings were'} missing`,
+  /** A toast when takes still recording (unfinished) were left out of the backup. */
+  'library.backupUnfinished': (n: number) =>
+    `${n} unfinished ${n === 1 ? 'take' : 'takes'} not backed up — open ${n === 1 ? 'it' : 'them'} from Record to recover`,
   /** Restore from backup (story 6.6; EXPERIENCE.md :85, :117, mockup library.html (f·2)). */
   'library.restore': 'Restore from backup',
   /** The Restore button's label while a restore reads or imports a file. */

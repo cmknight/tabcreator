@@ -749,6 +749,7 @@ describe('Back up library', () => {
       takes: 1,
       missingAudio: 0,
       unsupportedAudio: 0,
+      skippedUnfinished: 0,
     });
     render(<Library session={session} />);
     await act(async () => fireEvent.click(button()));
@@ -767,6 +768,7 @@ describe('Back up library', () => {
       takes: 3,
       missingAudio: 0,
       unsupportedAudio: 2,
+      skippedUnfinished: 0,
     };
     session.backUp.mockResolvedValueOnce(result);
     render(<Library session={session} />);
@@ -779,6 +781,29 @@ describe('Back up library', () => {
     );
   });
 
+  it('unfinished takes left out: a toast that says how to recover them, with the other notes', async () => {
+    const session = fakeSession({ loading: false, rows: [recorded], error: null });
+    const result = {
+      blob: new Blob([]),
+      fileName: 'b.zip',
+      takes: 1,
+      missingAudio: 0,
+      unsupportedAudio: 0,
+      skippedUnfinished: 1,
+    };
+    session.backUp.mockResolvedValueOnce(result);
+    render(<Library session={session} />);
+    await act(async () => fireEvent.click(button()));
+    expect(getToast()?.message).toBe(
+      '1 unfinished take not backed up — open it from Record to recover',
+    );
+    session.backUp.mockResolvedValueOnce({ ...result, missingAudio: 1, skippedUnfinished: 2 });
+    await act(async () => fireEvent.click(button()));
+    expect(getToast()?.message).toBe(
+      'Backed up — 1 recording was missing · 2 unfinished takes not backed up — open them from Record to recover',
+    );
+  });
+
   it('missing audio files: a toast with the count', async () => {
     const session = fakeSession({ loading: false, rows: [recorded], error: null });
     session.backUp.mockResolvedValueOnce({
@@ -787,6 +812,7 @@ describe('Back up library', () => {
       takes: 3,
       missingAudio: 2,
       unsupportedAudio: 0,
+      skippedUnfinished: 0,
     });
     render(<Library session={session} />);
     await act(async () => fireEvent.click(button()));

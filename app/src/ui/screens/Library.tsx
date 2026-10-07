@@ -697,6 +697,9 @@ export function Library({
         if (result.unsupportedAudio > 0) {
           notes.push(strings['library.backupUnsupported'](result.unsupportedAudio));
         }
+        if (result.skippedUnfinished > 0) {
+          notes.push(strings['library.backupUnfinished'](result.skippedUnfinished));
+        }
         if (notes.length > 0) showToast({ message: notes.join(' · ') });
       },
       () => {

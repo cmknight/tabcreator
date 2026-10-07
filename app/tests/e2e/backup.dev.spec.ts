@@ -3,6 +3,7 @@ import { expect, test, type Download, type Page } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
 import { extensionFor } from '../../src/model/audio-format';
 import type { Tab, Take } from '../../src/model/types';
+import { DB_VERSION } from '../../src/storage/migrations';
 import { recordButton, stopButton, timer } from './helpers';
 import { backupButton, heading, nav, row } from './library-helpers';
 import { goLive } from './mic-helpers';
@@ -12,7 +13,8 @@ import { opfsFileBase64, opfsFiles, readTab, readTakes } from './storage-helpers
 // `tabcreator-backup-YYYYMMDD.zip` with `manifest.json` (every take not still recording and its
 // tab, exactly as stored) and each take's compressed audio, byte-identical (WAV included); a take
 // whose audio was deleted has no entry. "Backing up…" and a progress bar show while it runs, with
-// the button disabled.
+// the button disabled. Story "Restore validation and missing audio" (epic 7): the manifest carries
+// `schemaVersion`, and the toast says when unfinished (still recording) takes were left out.
 
 /** Errors other than the dev-only warnings the app logs on purpose. */
 const unexpected = (errors: string[]) => errors.filter((e) => !e.includes('[tabcreator]'));
@@ -156,6 +158,7 @@ test('three takes, one with its audio deleted: the zip holds the manifest as sto
   // The manifest: every take and tab exactly as stored.
   const manifest = JSON.parse(strFromU8(entries['manifest.json']!)) as {
     format: number;
+    schemaVersion: number;
     exportedAt: string;
     takes: Take[];
     tabs: Tab[];
@@ -163,6 +166,7 @@ test('three takes, one with its audio deleted: the zip holds the manifest as sto
   const { takes, tabs } = await stored(page);
   expect(takes.map((t) => t.id).sort()).toEqual([...ids].sort());
   expect(manifest.format).toBe(1);
+  expect(manifest.schemaVersion).toBe(DB_VERSION);
   expect(new Date(manifest.exportedAt).toISOString()).toBe(manifest.exportedAt);
   expect(manifest.takes).toEqual(takes);
   expect(manifest.tabs).toEqual(tabs);
@@ -241,5 +245,33 @@ test('with only a recording take, nothing to back up; once rebuilt as WAV (the e
   const { takes, tabs } = await stored(page);
   expect(manifest.takes).toEqual(takes);
   expect(manifest.tabs).toEqual(tabs);
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('an unfinished take is left out of the backup, and the toast says how to recover it', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const errors = await goLive(page);
+  const done = await recordAndAnalyse(page);
+  // Reload mid-take: the second take stays in status recording until recovered.
+  await nav(page, 'Record').click();
+  await expect(recordButton(page)).toBeEnabled();
+  await recordButton(page).click();
+  await expect(timer(page)).toHaveText('0:02', { timeout: 20_000 });
+  page.on('dialog', (dialog) => void dialog.accept());
+  await page.reload();
+  await expect(page.getByTestId('recovered-take-banner')).toHaveCount(1, { timeout: 10_000 });
+  const unfinished = (await readTakes<Take>(page)).find((t) => t.status === 'recording');
+  expect(unfinished).toBeDefined();
+
+  await openLibrary(page);
+  await expect(row(page, unfinished!.id)).toBeVisible();
+  const { entries } = await backUp(page);
+  const manifest = JSON.parse(strFromU8(entries['manifest.json']!)) as { takes: Take[] };
+  expect(manifest.takes.map((t) => t.id)).toEqual([done]);
+  await expect(page.getByTestId('toast')).toContainText(
+    '1 unfinished take not backed up — open it from Record to recover',
+  );
   expect(unexpected(errors)).toEqual([]);
 });

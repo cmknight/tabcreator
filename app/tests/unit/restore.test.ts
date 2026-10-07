@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Tab, Take } from '../../src/model/types';
+import type { StopReason, Tab, Take } from '../../src/model/types';
 import type {
   BackupEntry,
   BackupWorker,
   FromBackupWorker,
   ToBackupWorker,
 } from '../../src/storage/backup';
-import { readBackup, validateBackup } from '../../src/storage/restore';
+import { DB_VERSION } from '../../src/storage/migrations';
+import { readBackup, validateBackup, withoutMissingAudio } from '../../src/storage/restore';
 
 // Story "Restore from a backup" (6.6, US-7.3, Flow 4): `validateBackup` against every matrix row
 // (format, takes, tabs, audio entries), and `readBackup` with a fake worker. The real worker and
@@ -98,7 +99,8 @@ describe('validateBackup', () => {
       entry('audio/a.webm', [9, 8, 7]),
       entry('audio/w.wav'),
     ]);
-    expect(result.takes).toEqual([a, wav, optional]);
+    // `optional` has an audio type but no entry: restored as "Audio deleted".
+    expect(result.takes).toEqual([a, wav, { ...optional, audioMime: null }]);
     expect(result.tabs).toEqual([tab]);
     expect([...result.audio.keys()]).toEqual(['a', 'w']);
     expect(result.audio.get('a')!.type).toBe('audio/webm;codecs=opus');
@@ -110,14 +112,97 @@ describe('validateBackup', () => {
     expect(validateBackup(manifestOf([]), [])).toEqual({ takes: [], tabs: [], audio: new Map() });
   });
 
-  it('a take with an audio type but no entry is valid, restored without audio', () => {
-    const result = validateBackup(manifestOf([makeTake('a')]), []);
+  it('a take with an audio type but no entry is valid, restored with audioMime null', () => {
+    const recorded = makeTake('r', { status: 'recorded', analysisVersion: null });
+    const result = validateBackup(manifestOf([makeTake('a'), recorded]), []);
     expect(result.audio.size).toBe(0);
+    expect(result.takes.map((t) => t.audioMime)).toEqual([null, null]);
+    // A recorded take nulled by the rule is not "recorded without audio".
+    expect(result.takes[1]!.status).toBe('recorded');
   });
 
-  it('a file under another format than the take type is kept under its own extension', () => {
+  it('a file under another format than the take type is kept, the take typed by it', () => {
     const result = validateBackup(manifestOf([makeTake('a')]), [entry('audio/a.ogg')]);
     expect(result.audio.get('a')!.type).toBe('audio/ogg;codecs=opus');
+    expect(result.takes[0]!.audioMime).toBe('audio/ogg;codecs=opus');
+  });
+
+  it('a file for a take whose type is not in the table types the take by the file', () => {
+    const take = makeTake('a', { audioMime: 'audio/flac' });
+    const result = validateBackup(manifestOf([take]), [entry('audio/a.wav')]);
+    expect(result.takes[0]!.audioMime).toBe('audio/wav');
+  });
+
+  it('a take whose type matches its file keeps its type as stored', () => {
+    const take = makeTake('a', { audioMime: 'audio/webm; codecs=opus' });
+    const result = validateBackup(manifestOf([take]), [entry('audio/a.webm')]);
+    expect(result.takes[0]!.audioMime).toBe('audio/webm; codecs=opus');
+  });
+
+  it('a recorded take with audioMime null validates (a restore of a take missing its audio writes one)', () => {
+    const take = makeTake('r', { status: 'recorded', audioMime: null, analysisVersion: null });
+    expect(validateBackup(manifestOf([take]), []).takes).toEqual([take]);
+  });
+
+  it('every stop reason validates and round-trips', () => {
+    const reasons: StopReason[] = [
+      'user',
+      'max-length',
+      'mic-lost',
+      'storage-full',
+      'instance-lost',
+      'recovered',
+    ];
+    const takes = reasons.map((stopReason) => makeTake(stopReason, { stopReason }));
+    const entries = reasons.map((r) => entry(`audio/${r}.webm`));
+    expect(validateBackup(manifestOf(takes), entries).takes).toEqual(takes);
+  });
+
+  it('recorded and analyzed takes with audio validate', () => {
+    const takes = [
+      makeTake('r', { status: 'recorded', analysisVersion: null }),
+      makeTake('a', { status: 'analyzed' }),
+    ];
+    const result = validateBackup(manifestOf(takes), [
+      entry('audio/r.webm'),
+      entry('audio/a.webm'),
+    ]);
+    expect(result.takes).toEqual(takes);
+  });
+
+  it('values at the edges of their ranges are valid', () => {
+    const tab = makeTab('a');
+    const edge = {
+      ...tab,
+      notes: [{ ...tab.notes[0]!, startMs: 50, endMs: 50, fret: 24 }],
+    };
+    const take = makeTake('a', {
+      title: '🎸'.repeat(100),
+      trimStartMs: 13_000,
+      trimEndMs: 13_000,
+    });
+    expect(validateBackup(manifestOf([take], [edge]), []).takes).toHaveLength(1);
+    const full = makeTake('b', { trimStartMs: 0, trimEndMs: 13_000 });
+    expect(validateBackup(manifestOf([full]), []).takes).toHaveLength(1);
+  });
+
+  it('a manifest without schemaVersion is version 3 and restores', () => {
+    const m = manifestOf([makeTake('a')], [makeTab('a')]);
+    expect(JSON.parse(m)).not.toHaveProperty('schemaVersion');
+    expect(validateBackup(m, [entry('audio/a.webm')]).takes).toHaveLength(1);
+  });
+
+  it('a manifest at the current schemaVersion, or an earlier one, restores', () => {
+    for (let v = 1; v <= DB_VERSION; v++) {
+      const m = manifestOf([makeTake('a')], [], { schemaVersion: v });
+      expect(validateBackup(m, [entry('audio/a.webm')]).takes).toHaveLength(1);
+    }
+  });
+
+  it('a future, non-integer or nonsense schemaVersion is invalid', () => {
+    for (const schemaVersion of [DB_VERSION + 1, 2.5, '3', null, 0, -1]) {
+      invalid(manifestOf([], [], { schemaVersion }));
+    }
   });
 
   it('an older tab without deletedStartMs is valid', () => {
@@ -168,6 +253,20 @@ describe('validateBackup', () => {
       { ...makeTake('a'), countInBpm: '100' },
       { ...makeTake('a'), clipped: 1 },
       { ...makeTake('a'), stopReason: 'bored' },
+      { ...makeTake('a'), stopReason: 'constructor' },
+      { ...makeTake('a'), status: 'toString' },
+      // Values, not just types.
+      makeTake('a', { title: 'x'.repeat(101) }),
+      makeTake('a', { title: '🎸'.repeat(101) }),
+      makeTake('a', { createdAt: '2026-13-40' }),
+      makeTake('a', { createdAt: '2026-10-01' }),
+      makeTake('a', { createdAt: '2026-10-01T10:00:00Z' }),
+      makeTake('a', { createdAt: 'Thu, 01 Oct 2026 10:00:00 GMT' }),
+      makeTake('a', { trimStartMs: 5000, trimEndMs: 4000 }),
+      makeTake('a', { trimEndMs: 13_001 }),
+      makeTake('a', { trimStartMs: 13_001 }),
+      makeTake('.a'),
+      makeTake('.hidden'),
     ];
     for (const take of bad) invalid(manifestOf([take]));
   });
@@ -194,6 +293,9 @@ describe('validateBackup', () => {
       { ...tab, notes: [{ ...note, locked: 'no' }] },
       { ...tab, notes: [{ ...note, inserted: false }] },
       { ...tab, notes: [{ ...note, id: undefined }] },
+      { ...tab, notes: [{ ...note, startMs: 100, endMs: 99 }] },
+      { ...tab, notes: [{ ...note, fret: 25 }] },
+      { ...tab, notes: [{ ...note, startMs: -1, endMs: 100 }] },
     ];
     for (const t of bad) invalid(manifestOf([take], [t]));
     invalid(manifestOf([take], [makeTab('b')]));
@@ -213,6 +315,19 @@ describe('validateBackup', () => {
     invalid(m, [entry('audio/x.webm')]);
     invalid(m, [entry('audio/a.webm'), entry('audio/a.wav')]);
     invalid(m, [entry('audio/gone.webm')]);
+  });
+});
+
+describe('withoutMissingAudio', () => {
+  it('nulls the type of each take with one but no audio; leaves the rest as they are', () => {
+    const a = makeTake('a');
+    const b = makeTake('b');
+    const gone = makeTake('gone', { audioMime: null });
+    const result = withoutMissingAudio([a, b, gone], new Map([['a', new Blob([])]]));
+    expect(result[0]).toBe(a);
+    expect(result[1]).toEqual({ ...b, audioMime: null });
+    expect(result[2]).toBe(gone);
+    expect(b.audioMime).toBe('audio/webm;codecs=opus');
   });
 });
 

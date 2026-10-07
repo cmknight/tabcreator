@@ -1,23 +1,34 @@
 // Restore from a backup (story "Restore from a backup", 6.6; US-7.3, Flow 4; spine AD-11, AD-17):
 // the main-thread side of reading a backup zip. The unzip is the backup worker's `read` request
 // (`backup-worker.ts`, the only importer of fflate); what comes back is checked in full by
-// `validateBackup`, which is pure, before anything is written: the manifest (format 1, every take
-// and tab well formed, no duplicate ids, no take still recording, every tab's take present) and
-// every audio entry (`audio/{takeId}.{ext}` with a known extension, for a take of the manifest
-// that has an audio type, at most one per take). A take with an audio type may have no entry (the
-// backup reported its file missing or unsupported); it is restored without audio. Records are
-// kept as parsed, unknown fields included. Rejects only with AppError: `backup-invalid` for any
-// unreadable or invalid file, `storage-failed` when the worker itself fails.
+// `validateBackup`, which is pure, before anything is written: the manifest (format 1, its
+// `schemaVersion` — 3 when absent — at most `DB_VERSION`, its records upgraded from it by
+// `migrateRecords`; every take and tab well formed in type and value, no duplicate ids, no take
+// still recording, every tab's take present) and every audio entry (`audio/{takeId}.{ext}` with a
+// known extension, for a take of the manifest that has an audio type, at most one per take).
+// Story "Restore validation and missing audio" (epic 7) adds the value checks, the schema version,
+// and two corrections at the end: a take whose entry's extension differs from its `audioMime`
+// takes the entry's MIME, and a take with an audio type but no entry (the backup reported its
+// file missing or unsupported) is restored with `audioMime: null`, shown as "Audio deleted"
+// (`withoutMissingAudio`). Records are otherwise kept as parsed, unknown fields included. Rejects
+// only with AppError: `backup-invalid` for any unreadable or invalid file, `storage-failed` when
+// the worker itself fails.
 
-import { mimeForExtension } from '../model/audio-format';
+import { MAX_FRET_MAX } from '../model/analysis-settings';
+import { extensionFor, mimeForExtension } from '../model/audio-format';
 import { AppError } from '../model/errors';
-import type { Tab, Take } from '../model/types';
+import { TITLE_MAX } from '../model/title';
+import type { StopReason, Tab, Take, TakeStatus } from '../model/types';
 import { BACKUP_FORMAT, runBackupWorker, type BackupEntry, type BackupWorker } from './backup';
+import { DB_VERSION, migrateRecords, type RecordSet } from './migrations';
 import { AUDIO_DIR } from './paths';
 
 /** A backup checked in full: ready to import. */
 export interface ValidBackup {
-  /** The manifest's takes, in its order, as stored. */
+  /**
+   * The manifest's takes, in its order, as stored, but for `audioMime`: corrected to the entry's
+   * MIME when the extensions differ, null when the take has no entry.
+   */
   takes: Take[];
   /** The manifest's tabs, as stored. */
   tabs: Tab[];
@@ -40,19 +51,43 @@ const isNonNeg = (v: unknown) => isNum(v) && v >= 0;
 const isStr = (v: unknown): v is string => typeof v === 'string';
 const isStrOrNull = (v: unknown) => v === null || isStr(v);
 
-const TAKE_STATUSES: readonly unknown[] = ['recorded', 'analyzed'];
-const STOP_REASONS: readonly unknown[] = [
-  'user',
-  'max-length',
-  'mic-lost',
-  'storage-full',
-  'instance-lost',
-  'recovered',
-];
+/**
+ * The statuses a backed-up take may have (every `TakeStatus` but `recording`) and every
+ * `StopReason`. `satisfies Record<…>` makes each list exhaustive: a member added to the model
+ * type and not here (or a key here not in it) fails typecheck.
+ */
+const TAKE_STATUSES = { recorded: true, analyzed: true } as const satisfies Record<
+  Exclude<TakeStatus, 'recording'>,
+  true
+>;
+const STOP_REASONS = {
+  user: true,
+  'max-length': true,
+  'mic-lost': true,
+  'storage-full': true,
+  'instance-lost': true,
+  recovered: true,
+} as const satisfies Record<StopReason, true>;
 
-/** A take id usable as an OPFS file name stem: no path separator, not `.` or `..`. */
+/** Whether `v` is a key of `set` (its own, so `constructor` and the like never match). */
+const isMember = (set: object, v: unknown): boolean => isStr(v) && Object.hasOwn(set, v);
+
+/** The schema version of a backup whose manifest has none: every such backup was made at 3. */
+export const LEGACY_SCHEMA_VERSION = 3;
+
+/** A canonical ISO 8601 UTC string, as `Date.prototype.toISOString` writes it. */
+function isIsoDate(v: unknown): boolean {
+  if (!isStr(v)) return false;
+  const date = new Date(v);
+  return !Number.isNaN(date.getTime()) && date.toISOString() === v;
+}
+
+/**
+ * A take id usable as an OPFS file name stem: no path separator, not starting with a dot (`.`,
+ * `..`, and names `backupEntryNames` drops as OS files).
+ */
 const isTakeId = (v: unknown): v is string =>
-  isStr(v) && v.length > 0 && !/[/\\]/.test(v) && v !== '.' && v !== '..';
+  isStr(v) && v.length > 0 && !/[/\\]/.test(v) && !v.startsWith('.');
 
 function checkSettings(v: unknown): boolean {
   return isObj(v) && isNum(v.sensitivity) && isNum(v.minNoteMs) && isNum(v.maxFret);
@@ -62,10 +97,10 @@ function checkSettings(v: unknown): boolean {
 function takeProblem(v: unknown): string | null {
   if (!isObj(v)) return 'not an object';
   if (!isTakeId(v.id)) return 'id';
-  if (!isStr(v.title)) return 'title';
-  if (!isStr(v.createdAt)) return 'createdAt';
+  if (!isStr(v.title) || Array.from(v.title).length > TITLE_MAX) return 'title';
+  if (!isIsoDate(v.createdAt)) return 'createdAt';
   if (v.status === 'recording') return 'still recording';
-  if (!TAKE_STATUSES.includes(v.status)) return 'status';
+  if (!isMember(TAKE_STATUSES, v.status)) return 'status';
   if (!isNonNeg(v.durationMs)) return 'durationMs';
   if (!isNum(v.sampleRate) || v.sampleRate <= 0) return 'sampleRate';
   if (v.tuning !== 'EADGBE') return 'tuning';
@@ -73,6 +108,10 @@ function takeProblem(v: unknown): string | null {
   if (!isStrOrNull(v.audioMime)) return 'audioMime';
   if (!isNonNeg(v.trimStartMs)) return 'trimStartMs';
   if (v.trimEndMs !== null && !isNonNeg(v.trimEndMs)) return 'trimEndMs';
+  // 0 ≤ trimStartMs ≤ (trimEndMs ?? durationMs) ≤ durationMs.
+  const duration = v.durationMs as number;
+  const trimEnd = (v.trimEndMs as number | null) ?? duration;
+  if ((v.trimStartMs as number) > trimEnd || trimEnd > duration) return 'trim range';
   if (!checkSettings(v.settings)) return 'settings';
   if (!isStrOrNull(v.analysisVersion)) return 'analysisVersion';
   if (!isStr(v.updatedAt)) return 'updatedAt';
@@ -84,7 +123,7 @@ function takeProblem(v: unknown): string | null {
   }
   if (v.countInBpm !== undefined && !isNum(v.countInBpm)) return 'countInBpm';
   if (v.clipped !== undefined && typeof v.clipped !== 'boolean') return 'clipped';
-  if (v.stopReason !== undefined && !STOP_REASONS.includes(v.stopReason)) return 'stopReason';
+  if (v.stopReason !== undefined && !isMember(STOP_REASONS, v.stopReason)) return 'stopReason';
   return null;
 }
 
@@ -93,7 +132,9 @@ function isNote(v: unknown): boolean {
     isObj(v) &&
     isStr(v.id) &&
     isNum(v.startMs) &&
+    v.startMs >= 0 &&
     isNum(v.endMs) &&
+    v.endMs >= v.startMs &&
     isNum(v.midi) &&
     isNum(v.confidence) &&
     Number.isInteger(v.string) &&
@@ -101,6 +142,9 @@ function isNote(v: unknown): boolean {
     (v.string as number) <= 6 &&
     Number.isInteger(v.fret) &&
     (v.fret as number) >= 0 &&
+    // Any fret the engine can map to, not the take's current maxFret: that can change without
+    // re-analysis.
+    (v.fret as number) <= MAX_FRET_MAX &&
     typeof v.locked === 'boolean' &&
     typeof v.lowConfidence === 'boolean' &&
     (v.inserted === undefined || v.inserted === true)
@@ -151,13 +195,32 @@ export function validateBackup(
   }
   if (!isObj(manifest)) throw invalid('the manifest is not an object');
   if (manifest.format !== BACKUP_FORMAT) throw invalid(`format ${String(manifest.format)}`);
+  const schemaVersion =
+    manifest.schemaVersion === undefined ? LEGACY_SCHEMA_VERSION : manifest.schemaVersion;
+  if (
+    !Number.isInteger(schemaVersion) ||
+    (schemaVersion as number) < 1 ||
+    (schemaVersion as number) > DB_VERSION
+  ) {
+    throw invalid(`schemaVersion ${String(schemaVersion)}`);
+  }
   if (!isStr(manifest.exportedAt)) throw invalid('exportedAt');
   if (!Array.isArray(manifest.takes) || !Array.isArray(manifest.tabs)) {
     throw invalid('takes or tabs missing');
   }
+  // The records as this build stores them, before their shapes are checked.
+  let records: RecordSet;
+  try {
+    records = migrateRecords(
+      { takes: manifest.takes as unknown[], tabs: manifest.tabs as unknown[] },
+      schemaVersion as number,
+    );
+  } catch {
+    throw invalid('records cannot be upgraded');
+  }
 
   const takes = new Map<string, Take>();
-  for (const [i, take] of (manifest.takes as unknown[]).entries()) {
+  for (const [i, take] of records.takes.entries()) {
     const problem = takeProblem(take);
     if (problem) throw invalid(`take ${i}: ${problem}`);
     const t = take as Take;
@@ -165,7 +228,7 @@ export function validateBackup(
     takes.set(t.id, t);
   }
   const tabIds = new Set<string>();
-  for (const [i, tab] of (manifest.tabs as unknown[]).entries()) {
+  for (const [i, tab] of records.tabs.entries()) {
     const problem = tabProblem(tab);
     if (problem) throw invalid(`tab ${i}: ${problem}`);
     const takeId = (tab as Tab).takeId;
@@ -186,13 +249,41 @@ export function validateBackup(
     if (audio.has(take.id)) throw invalid(`${name}: a second file for the take`);
     // The bytes as they are, typed by the entry's own extension (writeCompressed names the file).
     audio.set(take.id, new Blob([blob], { type: mime }));
+    // The app's own backup may hold a file found under another format than the take's type
+    // (backupFiles looks for every extension): the take takes the file's type.
+    if (extensionOf(take.audioMime) !== parsed.ext)
+      takes.set(take.id, { ...take, audioMime: mime });
   }
 
   return {
-    takes: [...takes.values()],
-    tabs: manifest.tabs as Tab[],
+    takes: withoutMissingAudio([...takes.values()], audio),
+    tabs: records.tabs as Tab[],
     audio,
   };
+}
+
+/** The file extension of `mime`; null when it is not in the audio-format table. */
+function extensionOf(mime: string): string | null {
+  try {
+    return extensionFor(mime);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The missing-audio rule (pure; the last step of validation, so the Confirm plan and the import
+ * both see it, and reusable by a streaming restore): each take with an audio type but no entry in
+ * `audio` comes back with `audioMime: null`, so its record never points at audio that is not
+ * there and the Library shows "Audio deleted". Other takes come back as they are.
+ */
+export function withoutMissingAudio(
+  takes: readonly Take[],
+  audio: ReadonlyMap<string, unknown>,
+): Take[] {
+  return takes.map((take) =>
+    take.audioMime !== null && !audio.has(take.id) ? { ...take, audioMime: null } : take,
+  );
 }
 
 /**

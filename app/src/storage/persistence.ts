@@ -1,7 +1,8 @@
 // Storage protection and usage (story "Storage protection and Library states", CAP-19, CAP-25;
 // spine AD-2: only storage/ touches `navigator.storage`). Three reads and one request:
 //   requestPersistOnce()  asks the browser not to evict the library, at most once per page load,
-//                         and only when it is not already persisted (called after a take is saved)
+//                         and only when it is not already persisted (called after a take is saved
+//                         and after a restore that imported takes)
 //   persisted()           whether storage is persisted; false when the API is missing or throws
 //   estimateUsage()       the bytes used (`estimate().usage`); null when unknown
 //   hasRoom()             whether `quota − usage` is at least min(`ROOM_FRACTION` of the quota,
@@ -17,7 +18,7 @@
 // a restore never clear it. An unknown estimate neither sets nor clears it. It lives in memory for
 // the page's lifetime: it survives navigation; a reload re-checks. None of these ever throws.
 // recording-session calls `requestPersistOnce` after a take is saved, by a stop or a recovery
-// Open.
+// Open; library-session calls it after a restore that imported takes.
 
 import { devWarn } from '../model/log';
 

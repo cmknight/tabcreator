@@ -10,7 +10,8 @@
 // storage-full, read from storage/persistence.ts) and the one-time `persistNotice`. Story
 // "Storage-full status that clears when space is freed" (epic 7): `deleteAudio` reports the
 // freed space to persistence.ts (`beginFreeing`), and both deletes read the usage again once
-// their files are removed.
+// their files are removed. Story "Restore validation and missing audio" (epic 7): a restore that
+// imported takes asks for persistent storage (`requestPersist`, fire and forget).
 
 import { libraryRow, pickSize, sortRows, withTitle, type LibraryRow } from '../model/library';
 import { isAppError, type AppErrorCode } from '../model/errors';
@@ -28,6 +29,7 @@ import {
 } from '../storage/persistence';
 import { loadPrefs, updatePrefs } from '../storage/prefs';
 import { readBackup, type ValidBackup } from '../storage/restore';
+import { requestPersist } from './take-save';
 import {
   subscribe as subscribeStorage,
   type StorageEvent,
@@ -167,6 +169,11 @@ export interface LibraryDeps {
   writeCompressed(takeId: string, blob: Blob): Promise<void>;
   /** Writes whole records, skipping ids present; resolves to the number written. */
   importTakes(records: readonly ImportRecord[]): Promise<number>;
+  /**
+   * Asks the browser to keep storage (storage/persistence.ts `requestPersistOnce`), after a
+   * restore imported takes. Fire and forget.
+   */
+  requestPersist(): void;
   /** Whether storage is persisted; false when unknown. Never rejects. */
   persisted(): Promise<boolean>;
   /** The bytes used; null when unknown. Never rejects. */
@@ -583,6 +590,7 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
         }
         throw err;
       }
+      if (imported > 0) requestPersist(deps);
       return { imported, skipped: backup.takes.length - imported };
     }, 'Library: restoring failed');
   }
@@ -630,6 +638,9 @@ export const librarySession: LibrarySession = createLibrarySession({
   readBackup: (file) => readBackup(file),
   writeCompressed: (id, blob) => audioStore.writeCompressed(id, blob),
   importTakes: (records) => db.importTakes(records),
+  requestPersist: () => {
+    void persistence.requestPersistOnce();
+  },
   persisted: () => persistence.persisted(),
   estimateUsage: () => persistence.estimateUsage(),
   isStorageFull,

@@ -98,7 +98,8 @@ export async function saveTake(target: SaveTarget, id: string, save: TakeSave): 
 
 /**
  * Asks for persistent storage (storage/persistence.ts `requestPersistOnce`) after a take is
- * saved, by recording or recovery. Fire and forget: never throws into the save's outcome.
+ * saved, by recording or recovery, and after a restore that imported takes (library-session).
+ * Fire and forget: never throws into the caller's outcome.
  */
 export function requestPersist(deps: { requestPersist?: () => void }): void {
   try {

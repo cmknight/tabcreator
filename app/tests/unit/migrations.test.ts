@@ -4,7 +4,15 @@ import { openDB } from 'idb';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Take } from '../../src/model/types';
 import { createTakeDb } from '../../src/storage/db';
-import { DB_NAME, DB_VERSION, MIGRATIONS, type Migration } from '../../src/storage/migrations';
+import {
+  DB_NAME,
+  DB_VERSION,
+  MIGRATIONS,
+  RECORD_MIGRATIONS,
+  migrateRecords,
+  type Migration,
+  type RecordMigration,
+} from '../../src/storage/migrations';
 
 const NAME = 'tabcreator-migrations-test';
 
@@ -139,5 +147,39 @@ describe('migrations', () => {
     expect(raw.version).toBe(DB_VERSION);
     expect(await raw.get('takes', 'fixture-1')).toEqual(V1_TAKE);
     raw.close();
+  });
+});
+
+// Story "Restore validation and missing audio": the per-record transforms a backup's records go
+// through (restore.ts), one per database version.
+describe('record migrations', () => {
+  it('has one record transform per database migration', () => {
+    expect(RECORD_MIGRATIONS).toHaveLength(MIGRATIONS.length);
+    expect(RECORD_MIGRATIONS).toHaveLength(DB_VERSION);
+  });
+
+  it('upgrades v3 records (the oldest a backup holds) unchanged', () => {
+    const records = { takes: [V1_TAKE, V1_RECORDED], tabs: [] };
+    for (let v = 1; v <= DB_VERSION; v++) expect(migrateRecords(records, v)).toEqual(records);
+  });
+
+  it('runs only the steps after the given version, in order', () => {
+    const ran: number[] = [];
+    const step =
+      (n: number): RecordMigration =>
+      (records) => {
+        ran.push(n);
+        return { ...records, takes: [...records.takes, n] };
+      };
+    const steps = [step(1), step(2), step(3), step(4)];
+    expect(migrateRecords({ takes: [], tabs: [] }, 2, steps)).toEqual({ takes: [3, 4], tabs: [] });
+    expect(ran).toEqual([3, 4]);
+    expect(migrateRecords({ takes: [], tabs: [] }, 4, steps)).toEqual({ takes: [], tabs: [] });
+  });
+
+  it('throws on a version outside 1 … the latest', () => {
+    for (const v of [0, -1, 1.5, DB_VERSION + 1, Number.NaN]) {
+      expect(() => migrateRecords({ takes: [], tabs: [] }, v)).toThrow();
+    }
   });
 });

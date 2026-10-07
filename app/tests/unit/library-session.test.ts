@@ -119,6 +119,7 @@ function fakeLibrary() {
         takes: takes.size,
         missingAudio: 0,
         unsupportedAudio: 0,
+        skippedUnfinished: 0,
       };
     }),
     readBackup: vi.fn(async (): Promise<ValidBackup> => {
@@ -140,6 +141,7 @@ function fakeLibrary() {
       emit({ type: 'library-restored', count: n, writer: 'restore' });
       return n;
     }),
+    requestPersist: vi.fn(),
     persisted: vi.fn(async () => storage.persisted),
     estimateUsage: vi.fn(async () => storage.usage),
     isStorageFull: () => storage.full,
@@ -700,6 +702,7 @@ describe('library session backUp', () => {
       takes: 1,
       missingAudio: 0,
       unsupportedAudio: 0,
+      skippedUnfinished: 0,
     };
     run.resolve(done);
     await expect(result).resolves.toBe(done);
@@ -721,6 +724,7 @@ describe('library session backUp', () => {
       takes: 0,
       missingAudio: 0,
       unsupportedAudio: 0,
+      skippedUnfinished: 0,
     });
     await first;
     // Once it ended, another may run.
@@ -754,6 +758,7 @@ describe('library session backUp', () => {
       takes: 1,
       missingAudio: 0,
       unsupportedAudio: 0,
+      skippedUnfinished: 0,
     });
     await result;
     expect(session.getSnapshot().backup).toBeNull();
@@ -788,6 +793,7 @@ describe('library session backUp', () => {
       takes: 2,
       missingAudio: 0,
       unsupportedAudio: 0,
+      skippedUnfinished: 0,
     });
     await result;
     expect(session.getSnapshot().backup).toBeNull();
@@ -804,6 +810,7 @@ describe('library session backUp', () => {
         takes: 0,
         missingAudio: 0,
         unsupportedAudio: 0,
+        skippedUnfinished: 0,
       };
     });
     const session = createLibrarySession(lib.deps);
@@ -826,10 +833,10 @@ describe('library session restore', () => {
     updatedAt: '2026-01-01T00:00:00.000Z',
     deletedStartMs: [],
   });
-  /** A checked backup of takes a, b, c (c without audio), each with a tab. */
+  /** A checked backup of takes a, b, c (c without audio, so validation nulled its type), each with a tab. */
   function backupOf(): ValidBackup {
     return {
-      takes: [makeTake('a', T1), makeTake('b', T2), makeTake('c', T3)],
+      takes: [makeTake('a', T1), makeTake('b', T2), makeTake('c', T3, { audioMime: null })],
       tabs: [tabOf('a'), tabOf('b'), tabOf('c')],
       audio: new Map([
         ['a', new Blob(['aaa'], { type: 'audio/webm;codecs=opus' })],
@@ -927,6 +934,24 @@ describe('library session restore', () => {
     expect(lib.deps.writeCompressed).not.toHaveBeenCalled();
   });
 
+  it('a restore that imported takes requests persistent storage once; one that imported none does not', async () => {
+    const lib = fakeLibrary();
+    const session = createLibrarySession(lib.deps);
+    await session.restore(backupOf());
+    expect(lib.deps.requestPersist).toHaveBeenCalledTimes(1);
+    await expect(session.restore(backupOf())).resolves.toEqual({ imported: 0, skipped: 3 });
+    expect(lib.deps.requestPersist).toHaveBeenCalledTimes(1);
+  });
+
+  it('a throwing persistence request does not fail the restore', async () => {
+    const lib = fakeLibrary();
+    vi.mocked(lib.deps.requestPersist).mockImplementationOnce(() => {
+      throw new Error('no');
+    });
+    const session = createLibrarySession(lib.deps);
+    await expect(session.restore(backupOf())).resolves.toEqual({ imported: 3, skipped: 0 });
+  });
+
   it('a failed audio write removes the audio already written and writes no record', async () => {
     const lib = fakeLibrary();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -953,6 +978,7 @@ describe('library session restore', () => {
     await expect(session.restore(backupOf())).rejects.toMatchObject({ code: 'storage-failed' });
     expect(lib.audio.size).toBe(0);
     expect(lib.takes.size).toBe(0);
+    expect(lib.deps.requestPersist).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 
@@ -972,6 +998,7 @@ describe('library session restore', () => {
       takes: 0,
       missingAudio: 0,
       unsupportedAudio: 0,
+      skippedUnfinished: 0,
     });
     await backingUp;
 

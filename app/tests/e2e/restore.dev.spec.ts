@@ -11,7 +11,9 @@ import { opfsFileBase64, opfsFiles, readTab, readTakes } from './storage-helpers
 // audio deleted) restored into a fresh browser profile brings back every record, tab and audio
 // file byte-for-byte; restoring it again imports nothing; a truncated zip or a manifest of
 // another format shows the error banner and changes nothing. Restore from backup is enabled in
-// the empty library while Back up library is not.
+// the empty library while Back up library is not. Story "Restore validation and missing audio"
+// (epic 7): a take whose audio is missing from the zip restores as "Audio deleted" (no playback),
+// and a backup that was unzipped and re-zipped (a top-level folder, OS files) restores in full.
 
 const toast = (page: Page) => page.getByTestId('toast');
 const errorBanner = (page: Page) => page.getByTestId('restore-error');
@@ -164,12 +166,13 @@ test('cancelling the Confirm dialog changes nothing', async ({ page }) => {
   const errors = collectErrors(page);
   await page.goto('./#/library');
   await expect(heading(page)).toBeVisible();
-  // One take with no audio and no tab, so there is something new to confirm.
+  // One take with no audio and no tab, so there is something new to confirm (analysed: a
+  // recorded take always has audio).
   const take: Take = {
     id: 'cancel-1',
     title: 'Take to cancel',
     createdAt: '2026-10-01T10:00:00.000Z',
-    status: 'recorded',
+    status: 'analyzed',
     durationMs: 2000,
     sampleRate: 48_000,
     tuning: 'EADGBE',
@@ -178,7 +181,7 @@ test('cancelling the Confirm dialog changes nothing', async ({ page }) => {
     trimStartMs: 0,
     trimEndMs: null,
     settings: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 },
-    analysisVersion: null,
+    analysisVersion: '1',
     updatedAt: '2026-10-01T10:00:00.000Z',
   };
   const zip = Buffer.from(
@@ -202,5 +205,98 @@ test('cancelling the Confirm dialog changes nothing', async ({ page }) => {
   await expect(toast(page)).toHaveCount(0);
   await expect(errorBanner(page)).toHaveCount(0);
   expect(await readTakes(page)).toEqual([]);
+  expect(unexpected(errors)).toEqual([]);
+});
+
+/** A stored analysed take for a hand-built backup, with an audio type. */
+function backupTake(id: string, createdAt: string): Take {
+  return {
+    id,
+    title: `Take ${id}`,
+    createdAt,
+    status: 'analyzed',
+    durationMs: 2000,
+    sampleRate: 48_000,
+    tuning: 'EADGBE',
+    micLabel: 'Mic',
+    audioMime: 'audio/webm;codecs=opus',
+    trimStartMs: 0,
+    trimEndMs: null,
+    settings: { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 },
+    analysisVersion: '1',
+    updatedAt: createdAt,
+  };
+}
+
+function backupTab(takeId: string): Tab {
+  return {
+    takeId,
+    notes: [
+      {
+        id: `${takeId}-n1`,
+        startMs: 100,
+        endMs: 400,
+        midi: 40,
+        confidence: 0.9,
+        string: 6,
+        fret: 0,
+        locked: false,
+        lowConfidence: false,
+      },
+    ],
+    updatedAt: '2026-10-01T10:00:00.000Z',
+    deletedStartMs: [],
+  };
+}
+
+test('a re-zipped backup restores every take; a take whose audio is missing shows "Audio deleted" with no playback', async ({
+  page,
+}) => {
+  const errors = collectErrors(page);
+  await page.goto('./#/library');
+  await expect(heading(page)).toBeVisible();
+  const kept = backupTake('kept-1', '2026-10-01T10:00:00.000Z');
+  const missing = backupTake('missing-1', '2026-10-02T10:00:00.000Z');
+  const audio = new Uint8Array([1, 2, 3, 4, 5]);
+  // As an OS writes a backup it unzipped and zipped again: one top-level folder, its own files.
+  const folder = 'tabcreator-backup-20261007';
+  const zip = Buffer.from(
+    zipSync({
+      [`${folder}/manifest.json`]: strToU8(
+        JSON.stringify({
+          format: 1,
+          schemaVersion: 3,
+          exportedAt: '2026-10-07T10:00:00.000Z',
+          takes: [kept, missing],
+          tabs: [backupTab('kept-1'), backupTab('missing-1')],
+        }),
+      ),
+      [`${folder}/audio/kept-1.webm`]: audio,
+      [`${folder}/.DS_Store`]: new Uint8Array([0]),
+      [`${folder}/audio/Thumbs.db`]: new Uint8Array([0]),
+      [`__MACOSX/${folder}/._manifest.json`]: new Uint8Array([0]),
+    }),
+  );
+  await restoreFile(page, 'rezipped.zip', zip);
+  await confirmRestore(page, 2, 'rezipped.zip', 'Imported 2 takes');
+  await expect(row(page, 'kept-1')).toBeVisible();
+  await expect(row(page, 'kept-1')).not.toContainText('Audio deleted');
+  await expect(row(page, 'missing-1')).toContainText('Audio deleted');
+  const takes = await readTakes<Take>(page);
+  expect(Object.fromEntries(takes.map((t) => [t.id, t.audioMime]))).toEqual({
+    'kept-1': 'audio/webm;codecs=opus',
+    'missing-1': null,
+  });
+  expect((await opfsFiles(page)).filter((f) => f.startsWith('audio/'))).toEqual([
+    'audio/kept-1.webm',
+  ]);
+
+  // Its Tab offers no playback.
+  await row(page, 'missing-1').getByRole('link').click();
+  const play = page
+    .getByRole('group', { name: 'Playback' })
+    .getByRole('button', { name: /^(Play|Pause)$/ });
+  await expect(play).toBeDisabled();
+  await expect(play).toHaveAccessibleDescription('Audio deleted');
   expect(unexpected(errors)).toEqual([]);
 });

@@ -11,12 +11,13 @@
 //
 // Restore (story 6.6) is its second request type, `read`: it unzips the picked file in memory
 // (`unzipSync`; a file that is not a zip, or is cut short, fails) and replies with the manifest's
-// text (strict UTF-8) and every other entry as a Blob (directory and `__MACOSX/` entries dropped),
+// text (strict UTF-8) and every other entry as a Blob (named by `backupEntryNames`: what an OS
+// re-zip adds dropped, a single top-level folder stripped),
 // or `error` `backup-invalid` (`storage-failed` when it runs out of memory). It writes
 // nothing; restore.ts validates what comes back.
 
 import { strToU8, unzipSync, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
-import { MANIFEST_NAME } from './backup';
+import { backupEntryNames, MANIFEST_NAME } from './backup';
 import { AUDIO_DIR } from './paths';
 import type {
   BackupEntry,
@@ -218,7 +219,8 @@ export function createBackupHandler(
 
 /**
  * Reads a backup zip (restore's `read` request): posts `read` with the manifest's text (null when
- * there is no `manifest.json`) and every other entry but directory and `__MACOSX/` ones, or
+ * there is no `manifest.json`) and every other entry, named and filtered by `backupEntryNames`
+ * (what an OS re-zip adds dropped, a single top-level folder stripped), or
  * `error` `backup-invalid` when the file cannot be read, is not a zip (or is truncated), or its
  * manifest is not UTF-8 text; `storage-failed` when it is too large to unzip in memory
  * (RangeError).
@@ -228,9 +230,9 @@ export async function readBackupZip(file: Blob, post: PostBackup): Promise<void>
     const files = unzipSync(new Uint8Array(await file.arrayBuffer()));
     let manifest: string | null = null;
     const entries: BackupEntry[] = [];
-    for (const [name, bytes] of Object.entries(files)) {
-      // What an OS re-zip adds: directory entries and macOS resource forks.
-      if (name.endsWith('/') || name.startsWith('__MACOSX/')) continue;
+    // What an OS re-zip adds is dropped, and a single top-level folder is stripped.
+    for (const [original, name] of backupEntryNames(Object.keys(files))) {
+      const bytes = files[original]!;
       if (name === MANIFEST_NAME) {
         manifest = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
       } else {

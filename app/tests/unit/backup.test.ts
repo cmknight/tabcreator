@@ -1,7 +1,10 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { describe, expect, it, vi } from 'vitest';
 import type { Tab, Take } from '../../src/model/types';
+import { DB_VERSION } from '../../src/storage/migrations';
+import { validateBackup } from '../../src/storage/restore';
 import {
+  backupEntryNames,
   backupFileName,
   backupFiles,
   buildManifest,
@@ -100,6 +103,7 @@ describe('buildManifest', () => {
     const lib = library();
     const m = buildManifest(lib.takes, lib.tabs, '2026-10-06T12:00:00.000Z');
     expect(m.format).toBe(1);
+    expect(m.schemaVersion).toBe(DB_VERSION);
     expect(m.exportedAt).toBe('2026-10-06T12:00:00.000Z');
     expect(m.takes.map((t) => t.id)).toEqual(['wav', 'webm', 'gone', 'rec']);
     expect(m.takes[0]).toBe(lib.wav);
@@ -114,6 +118,69 @@ describe('buildManifest', () => {
     const lib = library();
     const m = buildManifest(lib.takes, lib.tabs, '2026-10-06T12:00:00.000Z');
     expect(JSON.parse(JSON.stringify(m))).toEqual(m);
+  });
+});
+
+// Story "Restore validation and missing audio": a backup unzipped and re-zipped by an OS.
+describe('backupEntryNames', () => {
+  const policy = (names: string[]) => Object.fromEntries(backupEntryNames(names));
+
+  it('keeps a backup as built unchanged', () => {
+    expect(policy(['manifest.json', 'audio/a.webm'])).toEqual({
+      'manifest.json': 'manifest.json',
+      'audio/a.webm': 'audio/a.webm',
+    });
+  });
+
+  it('drops directories, dot-segments, Thumbs.db, desktop.ini and __MACOSX/', () => {
+    expect(
+      policy([
+        'manifest.json',
+        'audio/',
+        'audio/a.webm',
+        '.DS_Store',
+        'audio/.DS_Store',
+        'audio/._a.webm',
+        '.hidden/x',
+        'Thumbs.db',
+        'audio/THUMBS.DB',
+        'desktop.ini',
+        '__MACOSX/',
+        '__MACOSX/audio/._a.webm',
+      ]),
+    ).toEqual({ 'manifest.json': 'manifest.json', 'audio/a.webm': 'audio/a.webm' });
+  });
+
+  it('strips the one top-level folder holding the manifest when the root has none', () => {
+    expect(
+      policy([
+        'tabcreator-backup-x/',
+        'tabcreator-backup-x/manifest.json',
+        'tabcreator-backup-x/audio/a.webm',
+        'tabcreator-backup-x/.DS_Store',
+        'Thumbs.db',
+        '__MACOSX/tabcreator-backup-x/._manifest.json',
+      ]),
+    ).toEqual({
+      'tabcreator-backup-x/manifest.json': 'manifest.json',
+      'tabcreator-backup-x/audio/a.webm': 'audio/a.webm',
+    });
+  });
+
+  it('strips nothing when the root has a manifest, or two folders have one, or none does', () => {
+    const rootAndFolder = ['manifest.json', 'x/manifest.json', 'x/audio/a.webm'];
+    expect([...backupEntryNames(rootAndFolder).values()]).toEqual(rootAndFolder);
+    const two = ['x/manifest.json', 'y/manifest.json', 'x/audio/a.webm'];
+    expect([...backupEntryNames(two).values()]).toEqual(two);
+    const deep = ['x/y/manifest.json', 'x/y/audio/a.webm'];
+    expect([...backupEntryNames(deep).values()]).toEqual(deep);
+  });
+
+  it('entries outside the stripped folder keep their names', () => {
+    expect(policy(['x/manifest.json', 'readme.txt'])).toEqual({
+      'x/manifest.json': 'manifest.json',
+      'readme.txt': 'readme.txt',
+    });
   });
 });
 
@@ -189,6 +256,8 @@ describe('createBackup', () => {
       takes: 4,
       missingAudio: 1,
       unsupportedAudio: 0,
+      // The take still recording is left out.
+      skippedUnfinished: 1,
     });
     expect(progress).toEqual([0, 0.25, 1]);
     expect(posted).toHaveLength(1);
@@ -572,6 +641,57 @@ describe('backup worker read', () => {
     if (reply?.type !== 'read') throw new Error('no read');
     expect(reply.manifest).toBe('{}');
     expect(reply.entries.map((e) => e.name)).toEqual(['audio/a.webm']);
+  });
+
+  it('a re-zipped backup: its top-level folder stripped, .DS_Store and Thumbs.db dropped', async () => {
+    const [reply] = await read(
+      zipOf({
+        'tabcreator-backup-x/manifest.json': strToU8('{}'),
+        'tabcreator-backup-x/audio/a.webm': bytes(10, 1),
+        'tabcreator-backup-x/.DS_Store': bytes(4, 3),
+        'tabcreator-backup-x/audio/Thumbs.db': bytes(4, 4),
+      }),
+    );
+    if (reply?.type !== 'read') throw new Error('no read');
+    expect(reply.manifest).toBe('{}');
+    expect(reply.entries.map((e) => e.name)).toEqual(['audio/a.webm']);
+    expect(new Uint8Array(await reply.entries[0]!.blob.arrayBuffer())).toEqual(bytes(10, 1));
+  });
+
+  it('a backup createBackup builds from stored takes passes validateBackup', async () => {
+    const lib = library();
+    const root = fakeRoot({
+      'wav.wav': bytes(50, 1),
+      'webm.webm': bytes(60, 2),
+      'rec.webm': bytes(70, 3),
+    });
+    const worker: BackupWorker = {
+      onmessage: null,
+      onerror: null,
+      onmessageerror: null,
+      postMessage(request) {
+        const handle = createRequestHandler(
+          async () => root,
+          (data) => worker.onmessage?.({ data } as MessageEvent<FromBackupWorker>),
+        );
+        void handle(request);
+      },
+      terminate() {},
+    };
+    const result = await createBackup(
+      {
+        listTakes: async () => lib.takes,
+        listTabs: async () => lib.tabs,
+        createWorker: () => worker,
+      },
+      () => {},
+    );
+    expect(result.missingAudio).toBe(0);
+    const [reply] = await read(result.blob);
+    if (reply?.type !== 'read') throw new Error('no read');
+    const valid = validateBackup(reply.manifest, reply.entries);
+    expect(valid.takes).toEqual([lib.wav, lib.webm, lib.gone, lib.recorded]);
+    expect([...valid.audio.keys()].sort()).toEqual(['rec', 'wav', 'webm']);
   });
 
   it('a file too large to hold in memory (RangeError) replies storage-failed', async () => {
