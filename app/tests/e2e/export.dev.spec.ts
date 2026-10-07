@@ -1,5 +1,5 @@
-import { readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
+import { clipboard, copy, download, toast, toolButton } from './export-helpers';
 import { collectErrors, recordButton, stopButton, timer } from './helpers';
 import { FIXTURE, goLive } from './mic-helpers';
 import { makeNotes, openSeededTab, seedTab } from './tab-helpers';
@@ -10,48 +10,6 @@ import { makeNotes, openSeededTab, seedTab } from './tab-helpers';
 test.beforeEach(async ({ context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
 });
-
-const toolButton = (page: Page, name: string) =>
-  page.getByRole('toolbar', { name: 'Tab tools' }).getByRole('button', { name, exact: true });
-
-const toast = (page: Page) => page.getByTestId('toast');
-
-/** The clipboard's text. */
-const clipboard = (page: Page) => page.evaluate(() => navigator.clipboard.readText());
-
-/**
- * Whether the page reports Windows (ui/platform.ts `isWindowsPlatform`). The `dev` project's
- * Desktop Chrome device reports `userAgentData.platform` "Windows", so downloads use `\r\n`
- * here; the `\n` branch (other platforms) is covered by the unit tests (platform.test.ts).
- */
-const windows = (page: Page) =>
-  page.evaluate(() => {
-    const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-    return /^win/i.test(nav.userAgentData?.platform || nav.platform || '');
-  });
-
-/**
- * Clicks Download; returns the file's suggested name and its text with `\n` line endings,
- * having checked the file's own endings: `\r\n` on Windows only (CAP-18).
- */
-async function download(page: Page): Promise<{ name: string; text: string }> {
-  const [file] = await Promise.all([
-    page.waitForEvent('download'),
-    toolButton(page, 'Download').click(),
-  ]);
-  const raw = await readFile(await file.path(), 'utf8');
-  const crlf = await windows(page);
-  if (crlf) expect(raw.replace(/\r\n/g, '')).not.toContain('\n');
-  else expect(raw).not.toContain('\r');
-  return { name: file.suggestedFilename(), text: crlf ? raw.replace(/\r\n/g, '\n') : raw };
-}
-
-/** Clicks Copy, waits for "Tab copied"; returns the clipboard's text. */
-async function copy(page: Page): Promise<string> {
-  await toolButton(page, 'Copy').click();
-  await expect(toast(page)).toHaveText('Tab copied');
-  return clipboard(page);
-}
 
 /** The export's tab systems (after the 4-line header), each as its lines. */
 function systems(text: string): string[][] {

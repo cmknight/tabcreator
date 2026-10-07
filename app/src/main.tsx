@@ -1,7 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { registerSW } from 'virtual:pwa-register';
 import './ui/theme.css';
 import { App } from './App';
+import { devWarn } from './model/log';
 import { instanceLock } from './session/instance-lock';
 import { recheckStorageFull } from './storage/persistence';
 import { strings } from './ui/strings';
@@ -40,3 +42,18 @@ createRoot(root).render(
     <App />
   </StrictMode>,
 );
+
+// The service worker that makes the app installable and work offline (CAP-20, spine AD-19).
+// Registered once the page has loaded, so its precache install does not compete with the first
+// load's own requests. In dev builds `virtual:pwa-register` is a no-op stub, so there is no dev
+// service worker. The update prompt hooks into this same call (a later story).
+if ('serviceWorker' in navigator) {
+  const register = () => {
+    registerSW({
+      immediate: true,
+      onRegisterError: (error: unknown) => devWarn('service worker registration failed', error),
+    });
+  };
+  if (document.readyState === 'complete') register();
+  else window.addEventListener('load', register, { once: true });
+}

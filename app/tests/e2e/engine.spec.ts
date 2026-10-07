@@ -14,6 +14,11 @@ const TEST_PANIC_SAMPLE_RATE = 12345;
 /** Onset tolerance for a detected note to match a ground-truth note (ms). */
 const ONSET_TOLERANCE_MS = 50;
 
+// These tests route the wasm (`page.route`). Once the app's service worker controls the page,
+// it would serve the precached wasm itself, past the route, so the worker is blocked here; the
+// service worker has its own specs (offline.prod.spec.ts, subpath.spec.ts).
+test.use({ serviceWorkers: 'block' });
+
 test('Settings shows the engine version', async ({ page }) => {
   const errors = collectErrors(page);
   await page.goto('./#/settings');

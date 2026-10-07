@@ -1,6 +1,8 @@
 /// <reference types="vitest/config" />
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
+import { pwaIcons, pwaManifest } from './build/pwa-icons.ts';
 
 /**
  * The production Content-Security-Policy (spine AD-13). Exported for the e2e tests, which
@@ -27,7 +29,30 @@ function cspMeta(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), cspMeta()],
+  plugins: [
+    react(),
+    cspMeta(),
+    pwaIcons(),
+    // The installable, offline app (CAP-20, spine AD-19). Production builds only: the dev server
+    // gets the plugin's no-op `virtual:pwa-register` stub and no service worker.
+    VitePWA({
+      // A new version waits for the player's say-so (the update toast, a later story).
+      registerType: 'prompt',
+      // main.tsx registers through `virtual:pwa-register` (bundled, external code): the plugin's
+      // inline or extra registration script is not needed, and inline script breaks the CSP.
+      injectRegister: false,
+      // From the theme tokens (AD-12); start_url, scope and id relative, like `base`.
+      manifest: pwaManifest(),
+      workbox: {
+        // The shell, every JS chunk (workers and the recorder worklet included), the CSS, the
+        // engine wasm and the icons (emitted by pwaIcons). The manifest is added by the plugin.
+        globPatterns: ['**/*.{js,wasm,css,html,png,svg}'],
+        // The first visit is controlled without a reload, so it works offline straight away.
+        // No skipWaiting: an update waits (registerType 'prompt').
+        clientsClaim: true,
+      },
+    }),
+  ],
   // Relative asset URLs, so the build works from any sub-path (e.g. GitHub Pages' /tabcreator/).
   base: './',
   build: {

@@ -239,6 +239,64 @@ jobs:
             exit 1
           fi
 
+      # CAP-20, spine AD-19: the installable, offline app. The manifest, service worker and icons
+      # are built; the service worker precaches every asset, the wasm and every worker and
+      # worklet chunk among them; index.html links the manifest and has no inline script (the
+      # service worker registers from the bundle, so the CSP needs no inline code).
+      - name: PWA manifest, service worker and precache in the production bundle
+        run: |
+          for f in manifest.webmanifest sw.js icons/icon-192.png icons/icon-512.png icons/icon-maskable-512.png; do
+            if [ ! -f "app/dist/$f" ]; then
+              echo "::error::app/dist/$f missing"
+              exit 1
+            fi
+          done
+          for pattern in 'engine_bg-*.wasm' 'engine-*.js' 'engine-worker-*.js' 'opfs-worker-*.js' 'backup-worker-*.js' 'waveform-worker-*.js' 'recorder-worklet-*.js'; do
+            # engine-*.js (the wasm glue) must not be satisfied by engine-worker-*.js.
+            exclude='engine-worker-*'
+            [ "$pattern" = "$exclude.js" ] && exclude='-'
+            if [ -z "$(find app/dist/assets -maxdepth 1 -name "$pattern" ! -name "$exclude")" ]; then
+              echo "::error::no $pattern chunk in app/dist/assets"
+              exit 1
+            fi
+          done
+          missing=0
+          for f in $(cd app/dist && find assets icons -type f | sort); do
+            if ! grep -qF "\"$f\"" app/dist/sw.js; then
+              echo "::error::app/dist/sw.js does not precache $f"
+              missing=1
+            fi
+          done
+          # index.html is also the navigation fallback, so the app opens offline at any URL.
+          for f in manifest.webmanifest index.html; do
+            if ! grep -qF "url:\"$f\"" app/dist/sw.js; then
+              echo "::error::app/dist/sw.js does not precache $f"
+              missing=1
+            fi
+          done
+          # The workbox runtime sw.js imports (as `./workbox-<hash>`, no extension) must exist.
+          workbox="$(cd app/dist && find . -maxdepth 1 -name 'workbox-*.js' | sed 's#^\./##')"
+          if [ -z "$workbox" ]; then
+            echo "::error::no workbox-*.js runtime in app/dist"
+            missing=1
+          fi
+          for f in $workbox; do
+            if ! grep -qF "\"./${f%.js}\"" app/dist/sw.js; then
+              echo "::error::app/dist/sw.js does not import $f"
+              missing=1
+            fi
+          done
+          [ "$missing" = 0 ] || exit 1
+          if ! grep -qF '<link rel="manifest" href="./manifest.webmanifest">' app/dist/index.html; then
+            echo "::error::app/dist/index.html does not link ./manifest.webmanifest"
+            exit 1
+          fi
+          # Every <script> tag, newlines stripped so a tag split across lines is seen whole.
+          if tr -d '\n\r' < app/dist/index.html | grep -oE '<script\b[^>]*>' | grep -vE '\ssrc='; then
+            echo "::error::app/dist/index.html has an inline <script>"
+            exit 1
+          fi
+
       # The dist/ checked above is what Playwright tests (its web servers serve dist/ as built when
       # CI is set) and what the deploy job publishes; only pushes to main deploy, and only once
       # every job is green.
