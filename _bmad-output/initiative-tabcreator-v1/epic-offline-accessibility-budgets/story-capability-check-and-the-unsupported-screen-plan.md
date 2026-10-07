@@ -3,7 +3,7 @@ title: 'Capability check and the unsupported screen'
 type: 'feature'
 ticket: '5'
 created: '2026-10-07'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
