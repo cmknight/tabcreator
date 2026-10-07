@@ -3,7 +3,7 @@ title: 'Restore validation and missing audio'
 type: 'bugfix'
 ticket: '2'
 created: '2026-10-07'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
