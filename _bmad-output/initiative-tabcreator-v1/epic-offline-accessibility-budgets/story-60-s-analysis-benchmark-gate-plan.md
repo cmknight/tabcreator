@@ -3,7 +3,7 @@ title: '60 s analysis benchmark gate'
 type: 'feature'
 ticket: '8'
 created: '2026-10-07'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
