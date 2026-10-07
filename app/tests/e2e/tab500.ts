@@ -1,8 +1,8 @@
-// The dev-only 500-note tab generator (story "500-note edit latency", CAP-14, AD-17): the
-// seeded notes `#/__test/tab500` (Tab500Page) seeds for the edit-latency e2e. Never shipped:
-// only the dev page (and the unit tests) import it.
+// The 500-note tab generator (story "500-note edit latency", CAP-14, AD-17): the notes the
+// edit-latency perf spec seeds (seed-helpers.ts `tab500Seed`, restored through the production
+// build's Restore from backup). Test-only: nothing in src/ imports it.
 
-import { OPEN_MIDI, type Note, type StringNo } from '../model/types';
+import { OPEN_MIDI, type Note, type StringNo } from '../../src/model/types.ts';
 
 /** Notes in the generated tab. */
 export const TAB500_COUNT = 500;

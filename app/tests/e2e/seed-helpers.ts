@@ -10,6 +10,11 @@
  *   `audio/{id}.wav` (`seedBackup(take, wav)`), or several takes, each with optional audio (named
  *   by its `audioMime`) and an optional tab (`seedBackup([{ take, audio, tab }, ...])`). A
  *   `recorded` take is analysed when its Tab screen opens.
+ * - `seedAnalysedTake` / `tab500Seed` / `library500Seed` (story "Latency gates and backup on the
+ *   production build"): `analyzed` takes with no audio and their tabs, as the latency perf specs
+ *   seed them: the 500-note tab (phrased, or one phrase) and the 500-take library with a small
+ *   tab each, from the deterministic generators `tab500Notes` and `library500Title(s)` /
+ *   `library500Notes`.
  * - `restoreSeed`: picks the zip through Restore from backup, confirms, and waits for the
  *   summary toast; any failure throws a `SeedError` naming what went wrong.
  *
@@ -19,11 +24,13 @@
 import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
 import { strToU8, zipSync } from 'fflate';
+import { LIBRARY500_COUNT, library500Notes, library500Title } from '../../src/dev/library500.ts';
 import { extensionFor } from '../../src/model/audio-format.ts';
-import type { Tab, Take } from '../../src/model/types.ts';
+import type { Note, Tab, Take } from '../../src/model/types.ts';
 import { DB_VERSION } from '../../src/storage/migrations.ts';
 import { DEFAULT_PREFS } from '../../src/storage/prefs.ts';
 import { restoreButton } from './library-helpers.ts';
+import { tab500Notes } from './tab500.ts';
 
 /** A seeding problem: the run fails with this message. */
 export class SeedError extends Error {
@@ -180,6 +187,81 @@ export function seedBackup(first: Take | readonly SeedEntry[], wav?: Uint8Array)
   const tabs = entries.flatMap((e) => (e.tab ? [e.tab] : []));
   files['manifest.json'] = strToU8(JSON.stringify(seedManifest(takes, tabs)));
   return Buffer.from(zipSync(files));
+}
+
+/** The analysis version every seeded analysed take carries (never a real engine version). */
+export const SEEDED_ANALYSIS_VERSION = 'seeded';
+
+export interface AnalysedSeedOptions {
+  /** The take id. */
+  id: string;
+  title: string;
+  /** The tab's notes; the take lasts until 1 s after the last one ends. */
+  notes: Note[];
+  /** ISO 8601. */
+  createdAt: string;
+}
+
+/**
+ * An `analyzed` take with no audio (`audioMime: null`) and its tab of `notes`: analysis version
+ * `seeded`, the app default analysis settings, at 48 kHz.
+ */
+export function seedAnalysedTake({ id, title, notes, createdAt }: AnalysedSeedOptions): SeedEntry {
+  const last = notes.at(-1);
+  const take: Take = {
+    ...seedTake({
+      id,
+      title,
+      durationMs: (last?.endMs ?? 0) + 1000,
+      sampleRate: 48_000,
+      createdAt,
+    }),
+    status: 'analyzed',
+    audioMime: null,
+    analysisVersion: SEEDED_ANALYSIS_VERSION,
+  };
+  return { take, tab: { takeId: id, notes, updatedAt: createdAt, deletedStartMs: [] } };
+}
+
+/** The take ids `tab500Seed` uses: the phrased shape (gated) and one phrase (reported). */
+export const TAB500_IDS = { phrased: 'tab500-phrased', onePhrase: 'tab500-one-phrase' } as const;
+
+/**
+ * The 500-note tab twice, as two analysed takes: the phrased shape (`TAB500_IDS.phrased`, created
+ * at `baseMs` + 1 s) and the one-phrase shape (`TAB500_IDS.onePhrase`, at `baseMs` + 2 s).
+ */
+export function tab500Seed(baseMs = Date.now() - 3000): SeedEntry[] {
+  return [
+    seedAnalysedTake({
+      id: TAB500_IDS.phrased,
+      title: '500 notes',
+      notes: tab500Notes(),
+      createdAt: new Date(baseMs + 1000).toISOString(),
+    }),
+    seedAnalysedTake({
+      id: TAB500_IDS.onePhrase,
+      title: '500 notes, one phrase',
+      notes: tab500Notes({ onePhrase: true }),
+      createdAt: new Date(baseMs + 2000).toISOString(),
+    }),
+  ];
+}
+
+/**
+ * The 500-take library: take `i` (1–500) is `library500-{iii}`, titled `library500Title(i)`, with
+ * the small tab `library500Notes(i)`, created at `baseMs` + `i` s (take 1 the oldest; by
+ * default all before now).
+ */
+export function library500Seed(baseMs = Date.now() - (LIBRARY500_COUNT + 1) * 1000): SeedEntry[] {
+  return Array.from({ length: LIBRARY500_COUNT }, (_, k) => {
+    const i = k + 1;
+    return seedAnalysedTake({
+      id: `library500-${String(i).padStart(3, '0')}`,
+      title: library500Title(i),
+      notes: library500Notes(i),
+      createdAt: new Date(baseMs + i * 1000).toISOString(),
+    });
+  });
 }
 
 /**

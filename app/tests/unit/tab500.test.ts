@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { phrases } from '../../src/model/phrase';
 import { OPEN_MIDI } from '../../src/model/types';
-import { TAB500_COUNT, TAB500_PHRASE, tab500Notes } from '../../src/dev/tab500';
+import { TAB500_COUNT, TAB500_PHRASE, tab500Notes } from '../e2e/tab500';
 
-// The dev-only 500-note generator behind `#/__test/tab500` (story "500-note edit latency").
+// The 500-note generator the edit-latency perf spec seeds (story "500-note edit latency").
 
 describe('tab500Notes', () => {
   it('is deterministic: the same notes every time', () => {

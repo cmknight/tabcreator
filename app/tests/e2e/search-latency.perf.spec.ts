@@ -1,20 +1,32 @@
 import { expect, test, type Page } from '@playwright/test';
 import { LIBRARY500_COUNT, library500Titles } from '../../src/dev/library500';
 import { searchKey } from '../../src/model/library';
-import { list } from './library-helpers';
+import { heading, list } from './library-helpers';
+import {
+  appendSummary,
+  limitLabel,
+  markdownTable,
+  percentile,
+  readLimit,
+  round,
+  withinLimit,
+} from './perf-helpers';
+import { library500Seed, restoreSeed, seedBackup } from './seed-helpers';
 
-// Story "Search 500 takes" (CAP-17): per-keystroke filter-to-paint in the Library with 500 takes.
-// The dev page `#/__test/library500` seeds the generated library (src/dev/library500.ts) and opens
-// the Library. A keystroke's time runs from its key event's `timeStamp` to the first animation
+// Story "Search 500 takes" (CAP-17), on the production build (story "Latency gates and backup on
+// the production build"): per-keystroke filter-to-paint in the Library with 500 takes. The
+// generated library (src/dev/library500.ts titles and small tabs) is seeded as 500 analysed
+// takes in a backup restored through the Library's Restore from backup (seed-helpers.ts); no dev
+// page or hook. A keystroke's time runs from its key event's `timeStamp` to the first animation
 // frame after the list reflects the filter (a MutationObserver until the shown count, the list's
 // `aria-setsize` or 0 for the no-match state, is the expected one; then the next
 // requestAnimationFrame, read in a task after it so that frame's layout and paint count), as in
-// edit-latency.dev.spec.ts. Every keystroke is chosen to change the count, so each one has a DOM
-// change to wait for. Gated at p95 ≤ 50 ms. It runs in the `perf` project
-// (playwright.config.ts): one worker, after every other project.
+// edit-latency.perf.spec.ts. Every keystroke is chosen to change the count, so each one has a DOM
+// change to wait for. Gated at p95 ≤ `searchP95Ms` (app/budgets.json; `TABCREATOR_SEARCH_P95_MS`
+// may lower it); the table goes to the log, a JSON attachment and the CI job summary, also when
+// the gate fails, with the seeding time (the restore through the UI, end to end; reported, not gated). It runs in the `perf` project
+// (playwright.config.ts): the production build, one worker, after every other project.
 
-/** The budget: p95 over every keystroke. */
-const BUDGET_MS = 50;
 /** At least this many measured keystrokes. */
 const MIN_KEYSTROKES = 20;
 /** Unmeasured warm-up keystrokes before the samples. */
@@ -39,36 +51,29 @@ const shownFor = (query: string) =>
     ? LIBRARY500_COUNT
     : keys.filter((k) => k.includes(searchKey(query.trim()))).length;
 
-/** The nearest-rank percentile `p` (0–100) of `values`. */
-function percentile(values: readonly number[], p: number): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)]!;
-}
-
-const round = (ms: number) => Math.round(ms * 10) / 10;
-
 const searchField = (page: Page) => page.getByRole('searchbox', { name: 'Search takes' });
 
 /**
- * Opens the dev page (seeding 500 takes) and waits for the Library listing them; fails at once
- * when the page reports a failed seed.
+ * Opens the Library, restores the 500 seeded takes and waits for the list of them; returns the
+ * seeding time (the restore through the UI, end to end).
  */
-async function openLibrary500(page: Page) {
-  await page.goto('./#/__test/library500');
-  const status = page.getByTestId('library500-status');
-  const deadline = Date.now() + 60_000;
-  while (!/#\/library$/.test(page.url())) {
-    const text = await status.textContent({ timeout: 500 }).catch(() => null);
-    if (text !== null && text !== 'Seeding…') throw new Error(`library500: ${text}`);
-    if (Date.now() > deadline) throw new Error('library500: seeding took over 60 s');
-    await page.waitForTimeout(100);
-  }
+async function openLibrary500(page: Page): Promise<number> {
+  await page.goto('./#/library');
+  await expect(heading(page)).toBeVisible();
+  const started = Date.now();
+  await restoreSeed(page, seedBackup(library500Seed()), {
+    name: 'library500.zip',
+    takes: LIBRARY500_COUNT,
+    timeoutMs: 60_000,
+  });
+  const restoreMs = Date.now() - started;
   await expect(list(page).getByRole('listitem').first()).toHaveAttribute(
     'aria-setsize',
     String(LIBRARY500_COUNT),
     { timeout: 30_000 },
   );
   await installProbe(page);
+  return restoreMs;
 }
 
 /**
@@ -149,8 +154,11 @@ async function measure(page: Page, key: string, expected: number, what: string):
   );
 }
 
-test('search filters 500 takes within 50 ms (p95) per keystroke', async ({ page }, testInfo) => {
+test('search filters 500 takes within the searchP95Ms limit (p95) per keystroke', async ({
+  page,
+}, testInfo) => {
   test.setTimeout(180_000);
+  const limit = readLimit('searchP95Ms');
   const plan = steps();
   // Every step must change what is shown, or there is nothing to time.
   let before = LIBRARY500_COUNT;
@@ -161,7 +169,7 @@ test('search filters 500 takes within 50 ms (p95) per keystroke', async ({ page 
   }
   expect(plan.length).toBeGreaterThanOrEqual(MIN_KEYSTROKES);
 
-  await openLibrary500(page);
+  const restoreMs = await openLibrary500(page);
   await searchField(page).focus();
   let query = '';
   for (const key of WARM_UP) {
@@ -178,24 +186,51 @@ test('search filters 500 takes within 50 ms (p95) per keystroke', async ({ page 
   await expect(searchField(page)).toHaveValue('');
 
   const times = samples.map((s) => s.ms);
+  // Before any percentile: too few samples is its own clear failure.
+  expect(times.length, 'measured keystrokes').toBeGreaterThanOrEqual(MIN_KEYSTROKES);
   const medianMs = round(percentile(times, 50));
   const p95Ms = round(percentile(times, 95));
-  const verdict = p95Ms <= BUDGET_MS ? 'ok' : 'OVER BUDGET';
+  const ok = withinLimit(p95Ms, limit);
   console.log(
-    `Search filter-to-paint, ${LIBRARY500_COUNT} takes (budget p95 ≤ ${BUDGET_MS} ms):\n` +
+    `Search filter-to-paint, ${LIBRARY500_COUNT} takes (limit p95 ≤ ${limitLabel(limit)}; seeding through the restore UI ${restoreMs} ms):\n` +
       `keystrokes  median ms  p95 ms\n` +
-      `${String(times.length).padEnd(10)}  ${medianMs.toFixed(1).padEnd(9)}  ${p95Ms.toFixed(1)}  ${verdict}`,
+      `${String(times.length).padEnd(10)}  ${medianMs.toFixed(1).padEnd(9)}  ${p95Ms.toFixed(1)}  ${ok ? 'ok' : 'OVER LIMIT'}`,
   );
   await testInfo.attach('search-latency.json', {
     body: JSON.stringify(
-      { budgetMs: BUDGET_MS, n: times.length, medianMs, p95Ms, samples },
+      {
+        limitMs: limit.ms,
+        budgetMs: limit.budgetMs,
+        restoreMs,
+        n: times.length,
+        medianMs,
+        p95Ms,
+        samples,
+      },
       null,
       2,
     ),
     contentType: 'application/json',
   });
-  expect(times.length).toBeGreaterThanOrEqual(MIN_KEYSTROKES);
-  expect(p95Ms, `p95 filter-to-paint over the ${BUDGET_MS} ms budget`).toBeLessThanOrEqual(
-    BUDGET_MS,
+  appendSummary(
+    [
+      `## Search filter-to-paint, ${LIBRARY500_COUNT} takes (gated)`,
+      '',
+      markdownTable(
+        ['Keystrokes', 'Median ms', 'p95 ms', 'Limit (p95)', 'Result'],
+        [
+          [
+            String(times.length),
+            medianMs.toFixed(1),
+            p95Ms.toFixed(1),
+            limitLabel(limit),
+            ok ? 'pass' : 'FAIL',
+          ],
+        ],
+      ),
+      '',
+      `Seeding (restore through the UI, end to end; ${LIBRARY500_COUNT} takes, reported, not a restore benchmark): ${restoreMs} ms`,
+    ].join('\n'),
   );
+  expect(ok, `p95 filter-to-paint ${p95Ms} ms over the limit ${limitLabel(limit)}`).toBe(true);
 });

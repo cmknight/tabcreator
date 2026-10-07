@@ -9,11 +9,11 @@ const SUBPATH_PORT = 4174;
 /** Specs that need dev-only code (`#/__test/*` pages) run against the dev server only. */
 const DEV_SPECS = /.*\.dev\.spec\.ts/;
 /**
- * The timing specs (stories "500-note edit latency", "Search 500 takes"): dev specs too, but in
- * their own `perf` project, run alone after every other project so parallel workers cannot
- * starve their gates.
+ * The timing specs (stories "500-note edit latency", "Search 500 takes", "Latency gates and
+ * backup on the production build"): the production build, in their own `perf` project, run alone
+ * after every other project so parallel workers cannot starve their gates.
  */
-const PERF_SPECS = /.*(edit|search)-latency\.dev\.spec\.ts/;
+const PERF_SPECS = /.*\.perf\.spec\.ts/;
 /** The sub-path spec runs against the build served under /tabcreator/, as on GitHub Pages. */
 const SUBPATH_SPECS = /.*subpath\.spec\.ts/;
 /** Specs that need a microphone in the production build run in the production-mic lane. */
@@ -56,7 +56,7 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      testIgnore: [DEV_SPECS, SUBPATH_SPECS, PROD_SPECS],
+      testIgnore: [DEV_SPECS, SUBPATH_SPECS, PROD_SPECS, PERF_SPECS],
       use: { ...devices['Desktop Chrome'], baseURL: `http://localhost:${PORT}/` },
     },
     {
@@ -81,6 +81,7 @@ export default defineConfig({
     {
       name: 'subpath',
       testMatch: SUBPATH_SPECS,
+      testIgnore: PERF_SPECS,
       use: {
         ...devices['Desktop Chrome'],
         baseURL: `http://localhost:${SUBPATH_PORT}/tabcreator/`,
@@ -89,7 +90,6 @@ export default defineConfig({
     {
       name: 'dev',
       testMatch: DEV_SPECS,
-      testIgnore: PERF_SPECS,
       use: {
         ...devices['Desktop Chrome'],
         baseURL: `http://localhost:${DEV_PORT}/`,
@@ -98,17 +98,21 @@ export default defineConfig({
       },
     },
     {
-      // Edit-to-paint and search filter-to-paint timing against the dev server, alone: one
-      // worker, after the other projects have finished (`dependencies`), so no parallel test
-      // competes for the CPU.
+      // Edit-to-paint and search filter-to-paint timing on the production build (spine AD-17),
+      // seeded through Restore from backup, alone: one worker, after the other projects have
+      // finished (`dependencies`), so no parallel test competes for the CPU; no retry, so a gate
+      // failure is never retried into a pass; no service worker, so its precache install does
+      // not compete either.
       name: 'perf',
       testMatch: PERF_SPECS,
       fullyParallel: false,
       workers: 1,
+      retries: 0,
       dependencies: ['chromium', 'prod-mic', 'subpath', 'dev'],
       use: {
         ...devices['Desktop Chrome'],
-        baseURL: `http://localhost:${DEV_PORT}/`,
+        baseURL: `http://localhost:${PORT}/`,
+        serviceWorkers: 'block',
       },
     },
   ],

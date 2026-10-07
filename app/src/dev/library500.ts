@@ -1,6 +1,7 @@
 // The dev-only 500-take library generator (story "Search 500 takes", CAP-17): the titles and
-// small tabs `#/__test/library500` (Library500Page) seeds for the search-latency e2e. Never
-// shipped: only the dev page (and the unit tests) import it.
+// small tabs `#/__test/library500` (Library500Page) seeds for library.dev.spec.ts, and the
+// search-latency perf spec restores (tests/e2e/seed-helpers.ts `library500Seed`). Never shipped:
+// only the dev page and the tests import it.
 
 import { OPEN_MIDI, type Note, type StringNo } from '../model/types';
 

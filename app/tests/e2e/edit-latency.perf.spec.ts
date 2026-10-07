@@ -1,18 +1,34 @@
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { heading } from './library-helpers';
+import {
+  appendSummary,
+  limitLabel,
+  markdownTable,
+  percentile,
+  readLimit,
+  round,
+  type Limit,
+  withinLimit,
+} from './perf-helpers';
+import { restoreSeed, seedBackup, TAB500_IDS, tab500Seed } from './seed-helpers';
 import { noteButton, noteButtons, tabArea } from './tab-helpers';
 
-// Story "500-note edit latency" (CAP-14, AD-17): edit-to-paint on a 500-note tab, per edit kind.
-// The dev page `#/__test/tab500` seeds the generated tab (src/dev/tab500.ts) and opens it. An
-// edit's time runs from its key event's `timeStamp` to the first animation frame after the tab
-// area's DOM reflects it (a MutationObserver, then the next requestAnimationFrame, read in a task
-// after it so that frame's layout and paint count): the real engine's `mapFrets` round trip (the
-// dev build's worker), React render, layout and paint included. The phrased shape (phrases of
-// 16) is gated at p95 ≤ 100 ms per kind in its own test; the one-phrase shape (`?onePhrase`,
-// one 500-note phrase) is reported only, in a separate test. It runs in the `perf` project
-// (playwright.config.ts): one worker, after every other project, so nothing competes for the CPU.
+// Story "500-note edit latency" (CAP-14, AD-17), on the production build (story "Latency gates
+// and backup on the production build"): edit-to-paint on a 500-note tab, per edit kind. The
+// generated tab (tab500.ts) is seeded as two analysed takes, the phrased shape and the one-phrase
+// shape, in a backup restored through the Library's Restore from backup (seed-helpers.ts); no
+// dev page or hook. An edit's time runs from its key event's `timeStamp` to the first animation
+// frame after the tab area's DOM reflects it (a MutationObserver, then the next
+// requestAnimationFrame, read in a task after it so that frame's layout and paint count): the
+// real engine's `mapFrets` round trip (the production worker), React render, layout and paint
+// included. The phrased shape (phrases of 16) is gated at p95 ≤ `editP95Ms` (app/budgets.json;
+// `TABCREATOR_EDIT_P95_MS` may lower it) per kind in its own test; the one-phrase shape (one
+// 500-note phrase) is reported only, in a separate test. Each test logs its table, attaches it
+// as JSON and appends it to the CI job summary, also when the gate fails; the seeding time (the
+// restore through the UI, end to end) is reported, not gated. It runs in the `perf` project
+// (playwright.config.ts): the production build at the root with the service worker blocked, one
+// worker, after every other project, so nothing competes for the CPU.
 
-/** The budget: every edit kind's p95 on the phrased shape. */
-const BUDGET_MS = 100;
 /** Measured samples per edit kind, each on a different note. */
 const SAMPLES = 20;
 /** Unmeasured warm-up edits per kind, before its samples. */
@@ -38,21 +54,22 @@ interface Row {
   gated: boolean;
 }
 
-/** The nearest-rank percentile `p` (0–100) of `values`. */
-function percentile(values: readonly number[], p: number): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)]!;
-}
-
-const round = (ms: number) => Math.round(ms * 10) / 10;
-
-/** Opens the dev page (seeding a fresh take) and waits for its 500-note tab. */
-async function openTab500(page: Page, onePhrase: boolean) {
-  await page.goto(`./#/__test/tab500${onePhrase ? '?onePhrase' : ''}`);
-  await expect(page).toHaveURL(/#\/tab\/[^/]+$/, { timeout: 15_000 });
-  await expect(tabArea(page)).toBeVisible();
+/**
+ * Restores the seeded 500-note takes, then opens one's Tab screen; returns the seeding time
+ * (the restore through the UI, end to end).
+ */
+async function openTab500(page: Page, onePhrase: boolean): Promise<number> {
+  await page.goto('./#/library');
+  await expect(heading(page)).toBeVisible();
+  const started = Date.now();
+  await restoreSeed(page, seedBackup(tab500Seed()), { name: 'tab500.zip', takes: 2 });
+  const restoreMs = Date.now() - started;
+  const id = onePhrase ? TAB500_IDS.onePhrase : TAB500_IDS.phrased;
+  await page.goto(`./#/tab/${encodeURIComponent(id)}`);
+  await expect(tabArea(page)).toBeVisible({ timeout: 15_000 });
   await expect(noteButtons(page)).toHaveCount(500);
   await installProbe(page);
+  return restoreMs;
 }
 
 /**
@@ -292,14 +309,18 @@ function rows(shape: Row['shape'], samples: Map<Kind, number[]>): Row[] {
       shape,
       kind,
       n: times.length,
-      medianMs: round(percentile(times, 50)),
-      p95Ms: round(percentile(times, 95)),
+      medianMs: times.length ? round(percentile(times, 50)) : NaN,
+      p95Ms: times.length ? round(percentile(times, 95)) : NaN,
       gated: shape === 'phrased',
     };
   });
 }
 
-function table(all: readonly Row[]): string {
+/** A row's verdict: within the limit, over it, or not gated. */
+const verdict = (r: Row, limit: Limit) =>
+  !r.gated ? 'reported' : withinLimit(r.p95Ms, limit) ? 'pass' : 'FAIL';
+
+function table(all: readonly Row[], limit: Limit): string {
   const head = ['shape', 'kind', 'n', 'median ms', 'p95 ms', ''];
   const body = all.map((r) => [
     r.shape,
@@ -307,39 +328,78 @@ function table(all: readonly Row[]): string {
     String(r.n),
     r.medianMs.toFixed(1),
     r.p95Ms.toFixed(1),
-    r.gated ? (r.p95Ms <= BUDGET_MS ? 'ok' : 'OVER BUDGET') : 'not gated',
+    r.gated ? (withinLimit(r.p95Ms, limit) ? 'ok' : 'OVER LIMIT') : 'not gated',
   ]);
   const widths = head.map((h, i) => Math.max(h.length, ...body.map((b) => b[i]!.length)));
   return [head, ...body].map((r) => r.map((c, i) => c.padEnd(widths[i]!)).join('  ')).join('\n');
 }
 
-/** Logs the shape's table and attaches it as JSON; checks every kind has its samples. */
-async function report(testInfo: TestInfo, shape: Row['shape'], result: readonly Row[]) {
+/** The job summary's section for one shape. */
+function summary(shape: Row['shape'], result: readonly Row[], limit: Limit, restoreMs: number) {
+  return [
+    `## Edit-to-paint, 500-note tab, ${shape} (${shape === 'phrased' ? 'gated' : 'reported, not gated'})`,
+    '',
+    markdownTable(
+      ['Kind', 'n', 'Median ms', 'p95 ms', 'Limit (p95)', 'Result'],
+      result.map((r) => [
+        r.kind,
+        String(r.n),
+        r.medianMs.toFixed(1),
+        r.p95Ms.toFixed(1),
+        r.gated ? limitLabel(limit) : '—',
+        verdict(r, limit),
+      ]),
+    ),
+    '',
+    `Seeding (restore through the UI, end to end; 2 takes, reported, not a restore benchmark): ${restoreMs} ms`,
+  ].join('\n');
+}
+
+/**
+ * Logs the shape's table, attaches it as JSON and appends it to the job summary; then checks
+ * every kind has its samples.
+ */
+async function report(
+  testInfo: TestInfo,
+  shape: Row['shape'],
+  result: readonly Row[],
+  limit: Limit,
+  restoreMs: number,
+) {
   const name = shape === 'phrased' ? 'edit-latency.json' : 'edit-latency-one-phrase.json';
   console.log(
-    `Edit-to-paint, 500 notes, ${shape} (budget p95 ≤ ${BUDGET_MS} ms):\n${table(result)}`,
+    `Edit-to-paint, 500 notes, ${shape} (${result[0]?.gated ? `limit p95 ≤ ${limitLabel(limit)}` : 'not gated'}; seeding through the restore UI ${restoreMs} ms):\n${table(result, limit)}`,
   );
   await testInfo.attach(name, {
-    body: JSON.stringify({ budgetMs: BUDGET_MS, rows: result }, null, 2),
+    body: JSON.stringify(
+      { limitMs: limit.ms, budgetMs: limit.budgetMs, restoreMs, rows: result },
+      null,
+      2,
+    ),
     contentType: 'application/json',
   });
+  appendSummary(summary(shape, result, limit, restoreMs));
   for (const r of result)
     expect(r.n, `${r.shape} ${r.kind}: samples`).toBeGreaterThanOrEqual(SAMPLES);
 }
 
-test('every edit kind paints within 100 ms (p95) on a phrased 500-note tab', async ({
+test('every edit kind paints within the editP95Ms limit (p95) on a phrased 500-note tab', async ({
   page,
 }, testInfo) => {
   test.setTimeout(300_000);
-  await openTab500(page, false);
+  const limit = readLimit('editP95Ms');
+  const restoreMs = await openTab500(page, false);
   const phrased = rows('phrased', await runKinds(page));
-  await report(testInfo, 'phrased', phrased);
-  const over = phrased.filter((r) => r.p95Ms > BUDGET_MS).map((r) => `${r.kind} (${r.p95Ms} ms)`);
-  expect(over, `edit kinds over the ${BUDGET_MS} ms p95 budget`).toEqual([]);
+  await report(testInfo, 'phrased', phrased, limit, restoreMs);
+  const over = phrased
+    .filter((r) => !withinLimit(r.p95Ms, limit))
+    .map((r) => `${r.kind} (p95 ${r.p95Ms} ms)`);
+  expect(over, `edit kinds over the p95 limit ${limitLabel(limit)}`).toEqual([]);
 });
 
 test('one 500-note phrase: edit-to-paint reported, not gated', async ({ page }, testInfo) => {
   test.setTimeout(300_000);
-  await openTab500(page, true);
-  await report(testInfo, 'one phrase', rows('one phrase', await runKinds(page)));
+  const limit = readLimit('editP95Ms');
+  const restoreMs = await openTab500(page, true);
+  await report(testInfo, 'one phrase', rows('one phrase', await runKinds(page)), limit, restoreMs);
 });

@@ -57,7 +57,6 @@ const DEV_PAGES: DevPages | null = import.meta.env.DEV
   ? new Map([
       ['#/__test/storage', lazy(() => import('./dev/StorageTestPage'))],
       ['#/__test/ui', lazy(() => import('./dev/UiTestPage'))],
-      ['#/__test/tab500', lazy(() => import('./dev/Tab500Page'))],
       ['#/__test/library500', lazy(() => import('./dev/Library500Page'))],
     ])
   : null;

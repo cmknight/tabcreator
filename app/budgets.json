@@ -1,6 +1,8 @@
 {
-  "$comment": "CI budgets (spine AD-17, CAP-23). Sizes are gzip -9 bytes of the production build, checked by build/size-budget.ts (pnpm size:check): initial JS = the index.html entry chunk, its static imports and index.html's classic scripts (CSS, workers, worklets and lazy chunks excluded); wasm = each dist/assets/*.wasm on its own. AD-17's '200 KB' and '1 MB' are read as 200 KiB (204800) and 1 MiB (1048576). analysis60sMs = the limit (ms) for the median of 5 timed 60 s analyses in the real engine worker, times benchmark.config.json's calibrationFactor (build/benchmark.ts, pnpm benchmark).",
+  "$comment": "CI budgets (spine AD-17, CAP-23). Sizes are gzip -9 bytes of the production build, checked by build/size-budget.ts (pnpm size:check): initial JS = the index.html entry chunk, its static imports and index.html's classic scripts (CSS, workers, worklets and lazy chunks excluded); wasm = each dist/assets/*.wasm on its own. AD-17's '200 KB' and '1 MB' are read as 200 KiB (204800) and 1 MiB (1048576). analysis60sMs = the limit (ms) for the median of 5 timed 60 s analyses in the real engine worker, times benchmark.config.json's calibrationFactor (build/benchmark.ts, pnpm benchmark). editP95Ms = the limit (ms) for every edit kind's nearest-rank p95 edit-to-paint on the phrased 500-note tab, and searchP95Ms = the limit (ms) for the p95 per-keystroke filter-to-paint over 500 takes, both measured on the production build (served at the root, service worker blocked so its precache install does not compete for the CPU) by the perf Playwright project (tests/e2e/*.perf.spec.ts, read through tests/e2e/perf-helpers.ts); TABCREATOR_EDIT_P95_MS / TABCREATOR_SEARCH_P95_MS may lower either for one run.",
   "initialJsGzipBytes": 204800,
   "wasmGzipBytes": 1048576,
-  "analysis60sMs": 2000
+  "analysis60sMs": 2000,
+  "editP95Ms": 100,
+  "searchP95Ms": 50
 }
