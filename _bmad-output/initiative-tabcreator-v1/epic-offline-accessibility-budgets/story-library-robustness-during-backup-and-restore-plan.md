@@ -3,7 +3,7 @@ title: 'Library robustness during backup and restore'
 type: 'bugfix'
 ticket: '17'
 created: '2026-10-07'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
