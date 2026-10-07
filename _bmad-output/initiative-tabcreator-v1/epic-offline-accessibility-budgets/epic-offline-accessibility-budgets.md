@@ -40,6 +40,7 @@ PWA config and service worker, `ui/a11y/`, dark mode, the capability check, CI b
 ## Notes
 
 - Waits on epic 6 because: needs every screen in place.
+- Decision: the Library and export retrospective's actions B1 (storage-full status: clear when space is freed, one source for Record and the Library, the Library banner through the announcer) and B2 (restore correctness) are entries 1–2, in that order, ahead of every other story here (user decision, 2026-10-06). For B2 the user decided: a take whose audio is missing from the backup is restored as "Audio deleted" (`audioMime: null`); restore reads the zip in pieces (streaming unzip) rather than capping backup size; restore never adds audio to a take already in the library. See `epic-library-and-export/epic-library-and-export-retrospective.md` for scope and source findings.
 - Touch points from the Tab epic split (2026-10-04):
   - `ui/a11y/overlays.ts` is built by epic Tab editing (entry 3), inside this epic's `ui/a11y/` scope;
   - epic Tab editing's 500-note edit-to-paint measurement (entry 5) feeds this epic's AD-17 CI gate;
