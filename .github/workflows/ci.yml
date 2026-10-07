@@ -178,6 +178,15 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # Spine AD-17 (CAP-23): the initial JS (entry chunk, its static imports and index.html's
+      # classic scripts) and each wasm under their gzip budgets in app/budgets.json; the sizes go
+      # to the job summary. The Vite manifest it reads (build paths, the chunk graph) is then
+      # deleted so it is never published.
+      - name: Size budgets
+        run: |
+          pnpm --filter app size:check
+          rm -rf app/dist/.vite
+
       - name: No fake mic in the production bundle
         run: |
           if grep -rE 'fakeMic|FakeMic|fake-mic-|Fake mic:|testdata' app/dist; then
@@ -294,6 +303,14 @@ jobs:
           # Every <script> tag, newlines stripped so a tag split across lines is seen whole.
           if tr -d '\n\r' < app/dist/index.html | grep -oE '<script\b[^>]*>' | grep -vE '\ssrc='; then
             echo "::error::app/dist/index.html has an inline <script>"
+            exit 1
+          fi
+
+      # The Vite build manifest is for the size check only, never the published site.
+      - name: No build manifest in the production bundle
+        run: |
+          if [ -e app/dist/.vite ]; then
+            echo "::error::app/dist/.vite (the Vite build manifest) must be deleted before publishing"
             exit 1
           fi
 

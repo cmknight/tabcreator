@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "size:check": "node build/size-budget-cli.ts dist",
     "lint": "eslint .",
     "stylelint": "stylelint \"src/**/*.css\"",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.worker.json && tsc --noEmit -p tsconfig.worklet.json && tsc --noEmit -p tsconfig.node.json",

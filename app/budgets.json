@@ -1,0 +1,5 @@
+{
+  "$comment": "CI budgets (spine AD-17, CAP-23). Sizes are gzip -9 bytes of the production build, checked by build/size-budget.ts (pnpm size:check): initial JS = the index.html entry chunk, its static imports and index.html's classic scripts (CSS, workers, worklets and lazy chunks excluded); wasm = each dist/assets/*.wasm on its own. AD-17's '200 KB' and '1 MB' are read as 200 KiB (204800) and 1 MiB (1048576).",
+  "initialJsGzipBytes": 204800,
+  "wasmGzipBytes": 1048576
+}

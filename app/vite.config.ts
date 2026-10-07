@@ -86,6 +86,9 @@ export default defineConfig({
   build: {
     // No data: URIs; every asset is a same-origin file the CSP allows (spine AD-13).
     assetsInlineLimit: 0,
+    // dist/.vite/manifest.json, read by build/size-budget.ts (the initial JS budget, spine AD-17).
+    // Not precached: the PWA glob has no json.
+    manifest: true,
     ...(E2E_BUILD ? { outDir: 'dist-update' } : {}),
   },
   // The engine worker loads the wasm glue with a dynamic import, which needs an ES module worker.
