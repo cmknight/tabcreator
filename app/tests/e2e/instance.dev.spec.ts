@@ -117,7 +117,8 @@ test('without Web Locks: only the unsupported notice, with no Use here', async (
   await expect(useHere(page)).toHaveCount(0);
   await expect(appNav(page)).toHaveCount(0);
   await expectNoSeriousAxe(page);
-  expect(errors).toEqual([]);
+  // The capability check's dev-build diagnostic is the only console output.
+  expect(errors).toEqual(['[tabcreator] unsupported browser, missing: [Web Locks]']);
 });
 
 test('Use here while the first tab records: its take is saved as instance-lost; it writes no more', async ({

@@ -5,8 +5,10 @@ import './ui/theme.css';
 import { App } from './App';
 import { devWarn } from './model/log';
 import { appUpdate } from './session/app-update';
+import { missingCapabilities } from './session/capabilities';
 import { instanceLock } from './session/instance-lock';
 import { recheckStorageFull } from './storage/persistence';
+import { InstanceScreen } from './ui/components/InstanceScreen';
 import { strings } from './ui/strings';
 
 const root = document.getElementById('root');
@@ -29,45 +31,63 @@ if (import.meta.env.DEV) {
   }
 }
 
-// The instance lock is requested before the first render: no screen that can write storage
-// mounts until it is held (story 3.10, spine AD-6).
-instanceLock.start();
+// The unsupported-browser check (CAP-22, CAP-25): a browser missing any API the app needs shows
+// only the unsupported notice, and nothing else starts (no instance lock, storage re-check or
+// service worker). Feature detection only; it runs after the dev fake mic installs.
+const missing = missingCapabilities();
+if (missing.length > 0) {
+  devWarn('unsupported browser, missing:', missing);
+  createRoot(root).render(
+    <StrictMode>
+      <InstanceScreen state="unsupported" />
+    </StrictMode>,
+  );
+} else {
+  startApp(root);
+}
 
-// The storage-full status starts from a re-check of the free space (it lives in memory, so a
-// reload would forget a full disk): too little room sets it, room clears it, an unknown estimate
-// changes nothing. Read-only, so it needs no lock.
-void recheckStorageFull();
+/** Starts the app in a browser that has every required API. */
+function startApp(root: HTMLElement) {
+  // The instance lock is requested before the first render: no screen that can write storage
+  // mounts until it is held (story 3.10, spine AD-6).
+  instanceLock.start();
 
-createRoot(root).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+  // The storage-full status starts from a re-check of the free space (it lives in memory, so a
+  // reload would forget a full disk): too little room sets it, room clears it, an unknown estimate
+  // changes nothing. Read-only, so it needs no lock.
+  void recheckStorageFull();
 
-// The service worker that makes the app installable and work offline (CAP-20, spine AD-19).
-// Registered once the page has loaded, so its precache install does not compete with the first
-// load's own requests. In dev builds `virtual:pwa-register` is a no-op stub, so there is no dev
-// service worker. A new version waits (`registerType: 'prompt'`): `onNeedRefresh` marks it
-// available for the update prompt (story "Update available prompt"), whose Reload flushes and
-// then has the waiting worker take over; its `controlling` event reloads through `onNeedReload`,
-// so the plugin's own reload path never runs. The app checks for a new version each time it
-// becomes visible and hourly.
-if ('serviceWorker' in navigator) {
-  const register = () => {
-    const updateSW = registerSW({
-      immediate: true,
-      onNeedRefresh: () => appUpdate.markAvailable(),
-      onNeedReload: () => {
-        appUpdate.controlling();
-        location.reload();
-      },
-      onRegisteredSW: (_url: string, registration: ServiceWorkerRegistration | undefined) => {
-        if (registration) appUpdate.setRegistration(registration);
-      },
-      onRegisterError: (error: unknown) => devWarn('service worker registration failed', error),
-    });
-    appUpdate.setUpdater(updateSW);
-  };
-  if (document.readyState === 'complete') register();
-  else window.addEventListener('load', register, { once: true });
+  createRoot(root).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+
+  // The service worker that makes the app installable and work offline (CAP-20, spine AD-19).
+  // Registered once the page has loaded, so its precache install does not compete with the first
+  // load's own requests. In dev builds `virtual:pwa-register` is a no-op stub, so there is no dev
+  // service worker. A new version waits (`registerType: 'prompt'`): `onNeedRefresh` marks it
+  // available for the update prompt (story "Update available prompt"), whose Reload flushes and
+  // then has the waiting worker take over; its `controlling` event reloads through `onNeedReload`,
+  // so the plugin's own reload path never runs. The app checks for a new version each time it
+  // becomes visible and hourly.
+  if ('serviceWorker' in navigator) {
+    const register = () => {
+      const updateSW = registerSW({
+        immediate: true,
+        onNeedRefresh: () => appUpdate.markAvailable(),
+        onNeedReload: () => {
+          appUpdate.controlling();
+          location.reload();
+        },
+        onRegisteredSW: (_url: string, registration: ServiceWorkerRegistration | undefined) => {
+          if (registration) appUpdate.setRegistration(registration);
+        },
+        onRegisterError: (error: unknown) => devWarn('service worker registration failed', error),
+      });
+      appUpdate.setUpdater(updateSW);
+    };
+    if (document.readyState === 'complete') register();
+    else window.addEventListener('load', register, { once: true });
+  }
 }
