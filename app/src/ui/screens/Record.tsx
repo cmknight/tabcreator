@@ -15,7 +15,7 @@ export function Record() {
     <section className={styles.screen}>
       {/* First, above the h1 and outside the gate: unfinished takes found at start (story 3.11). */}
       <RecoveredTakeBanners />
-      {/* Above the h1: shown after a take stopped because storage is full, until the next take. */}
+      {/* Above the h1: shown while storage is full, until space is freed (a delete). */}
       <StorageFullBanner />
       {/* First, above the h1 (mockup order); it renders only while the mic is live. */}
       <InputQualityBanner />

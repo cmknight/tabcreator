@@ -70,7 +70,7 @@ import { MAX_TAKE_MS, WARN_LEAD_MS, type TakeLimits } from '../model/take-limits
 import type { AnalysisSettings, StopReason, Take } from '../model/types';
 import { audioStore, type RawWriter } from '../storage/audio-store';
 import { db, type TakePatch } from '../storage/db';
-import { persistence } from '../storage/persistence';
+import { isStorageFull, persistence, subscribeStorageFull } from '../storage/persistence';
 import { loadPrefs, updatePrefs } from '../storage/prefs';
 import type { InputTransition, OpenedInput } from './input-derivation';
 import { createInputQualityWatch } from './input-quality-watch';
@@ -245,6 +245,12 @@ export interface RecordingDeps {
    * is saved, by recording or recovery; fire and forget. Absent, nothing is asked.
    */
   requestPersist?: () => void;
+  /**
+   * The storage-full status (storage/persistence.ts `isStorageFull`/`subscribeStorageFull`), which
+   * the snapshot's `storageFull` mirrors. Absent, storage never reads as full.
+   */
+  isStorageFull?: () => boolean;
+  subscribeStorageFull?: (listener: () => void) => () => void;
 }
 
 /** Recovery deps that find nothing (a store created without `recovery`). */
@@ -305,7 +311,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     countIn: loadCountIn(deps),
     nearLimit: false,
     savedSeq: 0,
-    storageFull: false,
+    storageFull: deps.isStorageFull?.() ?? false,
     recovered: [],
     handoverTake: null,
     ...levels.transition(idle),
@@ -384,8 +390,27 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
     }
   }
 
+  /**
+   * The storage-full status changed: the snapshot's `storageFull` follows it; cleared, the
+   * banner's text (`storageFullSaved`) goes with it, so a later status set elsewhere never says
+   * "saved". The store lives for the page, so it listens for good.
+   */
+  function onStorageFullChange() {
+    const full = deps.isStorageFull?.() ?? false;
+    if (full === snapshot.storageFull) return;
+    const next: RecordingSnapshot = { ...snapshot, storageFull: full };
+    if (!full) delete next.storageFullSaved;
+    notify(next);
+  }
+  deps.subscribeStorageFull?.(onStorageFullChange);
+
   /** A derivation's read publishes its fields; notifies only when one of them changes. */
   function patch(fields: Partial<RecordingSnapshot>) {
+    if ('storageFullSaved' in fields && !snapshot.storageFull) {
+      // The banner's text is kept only while storage reads as full.
+      fields = { ...fields };
+      delete fields.storageFullSaved;
+    }
     const keys = Object.keys(fields) as (keyof RecordingSnapshot)[];
     if (keys.every((k) => Object.is(fields[k], snapshot[k]))) return;
     notify({ ...snapshot, ...fields });
@@ -849,6 +874,8 @@ export const recordingSession: RecordingSession = createRecordingSession({
   writeCompressed: (takeId, blob) => audioStore.writeCompressed(takeId, blob),
   deleteTake: (id, writer) => db.deleteTake(id, writer),
   requestPersist: () => void persistence.requestPersistOnce(),
+  isStorageFull,
+  subscribeStorageFull,
   recovery: {
     listTakes: () => db.listTakes(),
     getTake: (id) => db.getTake(id),

@@ -3,7 +3,8 @@
 // (below). Two importers: storage/audio-store.ts calls `storageFullHookOn` and
 // storage/write-guard.ts calls `storageFullSaveHookOn`, each only inside `import.meta.env.DEV`
 // (write-guard's `assertDevSaveSpace` is itself called only inside that guard), so production
-// builds replace every call with dead code and tree-shake this module (the CI dist grep checks).
+// builds replace every call with dead code and tree-shake this module (the CI dist grep checks
+// `__storageFullHook`, `__storageFullSaveHook` and `assertDevSaveSpace`).
 // Read through `globalThis`, as the OPFS worker's build also compiles audio-store.ts.
 // Every export also falls back to the production behaviour (no hook) outside dev builds, so a
 // call missing its guard changes nothing in production.

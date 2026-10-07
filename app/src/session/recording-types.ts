@@ -74,14 +74,15 @@ export interface RecordingSnapshot extends LevelFields, InputQualityFields, Tune
   /** How many takes this store has saved (`recorded`); grows by one with each. */
   savedSeq: number;
   /**
-   * A take was stopped because storage is full (the Record screen's error banner); on until the
-   * next take starts.
+   * Storage is full (the Record screen's error banner): mirrors storage/persistence.ts's one
+   * storage-full status, which only freed space clears. A new take does not clear it.
    */
   storageFull: boolean;
   /**
-   * With `storageFull`: true when the take it stopped was saved. Absent or false when nothing
-   * was saved (the save failed, the take was too short, or it could not be created), so the
-   * banner never says "saved" then. Absent until a storage-full stop first sets it.
+   * With `storageFull`: true when the take a storage-full stop stopped was saved. Absent or false
+   * when nothing was saved (the save failed, the take was too short, or it could not be created)
+   * or no take was stopped (the status came from elsewhere), so the banner never says "saved"
+   * then. Absent until a storage-full stop sets it, and again once the status clears.
    */
   storageFullSaved?: boolean;
   /** Unfinished takes offered for recovery, oldest first (the Record screen's banners). */

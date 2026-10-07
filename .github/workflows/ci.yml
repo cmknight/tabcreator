@@ -192,8 +192,8 @@ jobs:
 
       - name: No dev-only test pages in the production bundle
         run: |
-          if grep -rE '__test|StorageTestPage|UiTestPage|Tab500|tab500Notes|Library500|library500|maxTakeMs|warnLeadMs|__storageFullHook|__analysisFailHook|__commitStorageFullHook|__putTabStorageFullHook|slowAnalysis|holdAnalysis|__playbackTrace|__recordingClock|__instanceTest|__encodePcmFailHook' app/dist; then
-            echo "::error::dev-only test page code or a dev hook (dev/hooks/: the take-length override, storage-full, analysis, playback trace, recording clock, instance or encode hooks) found in app/dist"
+          if grep -rE '__test|StorageTestPage|UiTestPage|Tab500|tab500Notes|Library500|library500|maxTakeMs|warnLeadMs|__storageFullHook|__analysisFailHook|__commitStorageFullHook|__putTabStorageFullHook|slowAnalysis|holdAnalysis|__playbackTrace|__recordingClock|__instanceTest|__encodePcmFailHook|__storageFullSaveHook|assertDevSaveSpace' app/dist; then
+            echo "::error::dev-only test page code or a dev hook (dev/hooks/: the take-length override, storage-full (incl. the save hook), analysis, playback trace, recording clock, instance or encode hooks) found in app/dist"
             exit 1
           fi
           if [ -n "$(find app/dist -name '*fake-mic*' -o -name '*TestPage*' -o -name '*Tab500*' -o -name '*Library500*')" ]; then

@@ -6,10 +6,14 @@ import type { Take } from '../../src/model/types';
 import { createTakeDb } from '../../src/storage/db';
 import { emit } from '../../src/storage/events';
 import {
+  beginFreeing,
   createPersistence,
   isStorageFull,
   markStorageFull,
+  recheckStorageFull,
   resetStorageFullForTests,
+  ROOM_BYTES,
+  ROOM_FRACTION,
   subscribeStorageFull,
   type StorageManagerLike,
 } from '../../src/storage/persistence';
@@ -141,49 +145,127 @@ describe('storage-full status', () => {
     expect(isStorageFull()).toBe(true);
   });
 
-  it("remembers the failing take: its own saves do not clear it, another take's do", () => {
-    toStorageError(new DOMException('full', 'QuotaExceededError'), 'Raw audio write', 'a');
-    expect(isStorageFull()).toBe(true);
-    emit({ type: 'take-put', takeId: 'a', writer: 'recording-session' });
-    emit({ type: 'tab-put', takeId: 'a', writer: 'take-session' });
-    expect(isStorageFull()).toBe(true);
-    emit({ type: 'take-put', takeId: 'b', writer: 'library-session' });
-    expect(isStorageFull()).toBe(false);
-    // Cleared, it forgets the take: a later failure of another take is not cleared by its saves.
-    markStorageFull('b');
-    emit({ type: 'take-put', takeId: 'a', writer: 'library-session' });
-    expect(isStorageFull()).toBe(false);
-    markStorageFull('b');
-    emit({ type: 'tab-put', takeId: 'b', writer: 'take-session' });
-    expect(isStorageFull()).toBe(true);
-    emit({ type: 'library-restored', count: 0, writer: 'restore' });
-    expect(isStorageFull()).toBe(false);
-  });
-
   it('is set by a storage-full AppError passing through', () => {
     toStorageError(new AppError('storage-full', 'hook'), 'Write');
     expect(isStorageFull()).toBe(true);
   });
 
-  it('is cleared by take-put, tab-put and library-restored, not by take-deleted', () => {
+  it('no storage event clears it: saves, renames, a delete event, restores (any count)', () => {
+    markStorageFull();
+    emit({ type: 'take-put', takeId: 'a', writer: 'library-session' });
+    emit({ type: 'take-put', takeId: 'b', writer: 'recording-session' });
+    emit({ type: 'tab-put', takeId: 'b', writer: 'take-session' });
+    emit({ type: 'take-deleted', takeId: 'a', writer: 'library-session' });
+    emit({ type: 'library-restored', count: 0, writer: 'restore' });
+    emit({ type: 'library-restored', count: 3, writer: 'restore' });
+    expect(isStorageFull()).toBe(true);
+  });
+
+  it('freed(true) clears it and notifies; freed(false) leaves it', async () => {
     const listener = vi.fn();
-    const off = subscribeStorageFull(listener);
+    subscribeStorageFull(listener);
     markStorageFull();
     expect(listener).toHaveBeenCalledTimes(1);
-    emit({ type: 'take-deleted', takeId: 'a', writer: 'library-session' });
+    await beginFreeing({ hasRoom: async () => null })(false);
     expect(isStorageFull()).toBe(true);
-    emit({ type: 'take-put', takeId: 'a', writer: 'library-session' });
+    await beginFreeing({ hasRoom: async () => false })(false);
+    expect(isStorageFull()).toBe(true);
+    // The clear is synchronous: the re-check is not needed for it.
+    void beginFreeing({ hasRoom: () => new Promise<boolean>(() => {}) })(true);
     expect(isStorageFull()).toBe(false);
     expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failure landing during the delete is not cleared by it', async () => {
     markStorageFull();
-    emit({ type: 'tab-put', takeId: 'a', writer: 'take-session' });
+    const freed = beginFreeing({ hasRoom: async () => null });
+    markStorageFull();
+    await freed(true);
+    expect(isStorageFull()).toBe(true);
+  });
+
+  it("after a delete, a re-check with room clears it, one without room doesn't set it", async () => {
+    markStorageFull();
+    // A removal failed, but the re-check finds room.
+    await beginFreeing({ hasRoom: async () => true })(false);
+    expect(isStorageFull()).toBe(false);
+    await beginFreeing({ hasRoom: async () => false })(true);
+    expect(isStorageFull()).toBe(false);
+  });
+
+  it('the test reset notifies, and drops every listener', () => {
+    const listener = vi.fn();
+    subscribeStorageFull(listener);
+    markStorageFull();
+    resetStorageFullForTests();
+    expect(listener).toHaveBeenCalledTimes(2);
     expect(isStorageFull()).toBe(false);
     markStorageFull();
-    emit({ type: 'library-restored', count: 0, writer: 'restore' });
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it('the start-up re-check: no room sets it, room clears it, unknown or throwing changes nothing', async () => {
+    await recheckStorageFull({ hasRoom: async () => null });
     expect(isStorageFull()).toBe(false);
-    off();
+    await recheckStorageFull({ hasRoom: async () => false });
+    expect(isStorageFull()).toBe(true);
+    await recheckStorageFull({ hasRoom: async () => null });
+    expect(isStorageFull()).toBe(true);
+    await recheckStorageFull({
+      hasRoom: async () => {
+        throw new Error('nope');
+      },
+    });
+    expect(isStorageFull()).toBe(true);
+    await recheckStorageFull({ hasRoom: async () => true });
+    expect(isStorageFull()).toBe(false);
+  });
+
+  it('a re-check showing room does not clear a failure that landed while it read', async () => {
+    let answer: (room: boolean) => void = () => {};
+    const rechecking = recheckStorageFull({
+      hasRoom: () => new Promise<boolean>((resolve) => (answer = resolve)),
+    });
     markStorageFull();
-    expect(listener).toHaveBeenCalledTimes(6);
+    answer(true);
+    await rechecking;
+    expect(isStorageFull()).toBe(true);
+  });
+});
+
+describe('hasRoom', () => {
+  const estimating = (estimate: StorageManagerLike['estimate']) =>
+    createPersistence(() => ({ estimate })).hasRoom();
+
+  it('is true from min(5% of the quota, 500 MB) free, false below', async () => {
+    expect(ROOM_FRACTION).toBe(0.05);
+    expect(ROOM_BYTES).toBe(500 * 1024 * 1024);
+    await expect(estimating(async () => ({ usage: 950, quota: 1000 }))).resolves.toBe(true);
+    await expect(estimating(async () => ({ usage: 951, quota: 1000 }))).resolves.toBe(false);
+    await expect(estimating(async () => ({ usage: 0, quota: 1000 }))).resolves.toBe(true);
+    // A large quota: 500 MB free is room although under 5%; just under it is not.
+    const quota = 100 * 1024 ** 3;
+    await expect(estimating(async () => ({ usage: quota - ROOM_BYTES, quota }))).resolves.toBe(
+      true,
+    );
+    await expect(estimating(async () => ({ usage: quota - ROOM_BYTES + 1, quota }))).resolves.toBe(
+      false,
+    );
+  });
+
+  it('is null when estimate() is missing, throws or lacks usage or quota', async () => {
+    await expect(createPersistence(() => ({})).hasRoom()).resolves.toBeNull();
+    await expect(createPersistence(() => undefined).hasRoom()).resolves.toBeNull();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(
+      estimating(async () => {
+        throw new Error('nope');
+      }),
+    ).resolves.toBeNull();
+    warn.mockRestore();
+    await expect(estimating(async () => ({ usage: 10 }))).resolves.toBeNull();
+    await expect(estimating(async () => ({ quota: 10 }))).resolves.toBeNull();
+    await expect(estimating(async () => ({ usage: 0, quota: 0 }))).resolves.toBeNull();
   });
 });
 
@@ -215,8 +297,11 @@ describe('dev storage-full save hook', () => {
     resetStorageFullForTests();
   });
 
-  it("makes patchTake and putTab reject storage-full and set the status; another take's save clears it", async () => {
-    const db = createTakeDb({ name: 'persistence-test' });
+  const freeing = () => beginFreeing({ hasRoom: async () => null });
+  const audio = () => ({ deleteAudio: vi.fn(async () => {}), deleteRaw: vi.fn(async () => {}) });
+
+  it("makes patchTake and putTab reject storage-full and set the status; no take's save clears it", async () => {
+    const db = createTakeDb({ name: 'persistence-test', audio: audio(), beginFreeing: freeing });
     await db.createTake(take);
     await db.createTake({ ...take, id: 't2' });
     hook.__storageFullSaveHook = true;
@@ -229,11 +314,49 @@ describe('dev storage-full save hook', () => {
     ).rejects.toMatchObject({ code: 'storage-full' });
     expect((await db.getTake('t1'))!.title).toBe('Take');
     delete hook.__storageFullSaveHook;
-    // The failing take's own save does not clear it; another take's does.
+    // Renames, saves, a new take and an empty restore free nothing: the status stays.
     await db.patchTake('t1', { title: 'New' }, 'library-session');
-    expect(isStorageFull()).toBe(true);
     await db.patchTake('t2', { title: 'Other' }, 'library-session');
+    await db.putTab({ takeId: 't2', notes: [], updatedAt: '', deletedStartMs: [] }, 'take-session');
+    await db.createTake({ ...take, id: 't3' });
+    await expect(db.importTakes([])).resolves.toBe(0);
+    expect(isStorageFull()).toBe(true);
+    db.close();
+  });
+
+  it('deleteTake clears it once its files are removed; a failed removal leaves it', async () => {
+    const files = audio();
+    const db = createTakeDb({
+      name: 'persistence-test-delete',
+      audio: files,
+      beginFreeing: freeing,
+    });
+    await db.createTake(take);
+    await db.createTake({ ...take, id: 't2' });
+    markStorageFull();
+    files.deleteRaw.mockRejectedValueOnce(new Error('locked'));
+    await db.deleteTake('t1', 'library-session');
+    expect(isStorageFull()).toBe(true);
+    // Cleared only after both removals ran.
+    files.deleteAudio.mockImplementationOnce(async () => {
+      expect(isStorageFull()).toBe(true);
+    });
+    await db.deleteTake('t2', 'library-session');
+    expect(files.deleteRaw).toHaveBeenCalledWith('t2');
     expect(isStorageFull()).toBe(false);
+    db.close();
+  });
+
+  it('automatic deletes (recording, recovery) and a missing take do not clear it', async () => {
+    const files = audio();
+    const db = createTakeDb({ name: 'persistence-test-auto', audio: files, beginFreeing: freeing });
+    await db.createTake(take);
+    markStorageFull();
+    await db.deleteTake('t1', 'recording-session');
+    expect(files.deleteAudio).toHaveBeenCalledWith('t1');
+    expect(isStorageFull()).toBe(true);
+    await db.deleteTake('missing', 'library-session');
+    expect(isStorageFull()).toBe(true);
     db.close();
   });
 });

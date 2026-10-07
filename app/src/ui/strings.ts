@@ -104,6 +104,12 @@ export const strings = {
   'global.inputQualityWarning':
     'This microphone may be a Bluetooth headset in call mode — accuracy will be poor. Use the built-in or a wired mic.',
   'global.dismiss': 'Dismiss',
+  /**
+   * EXPERIENCE.md's Storage full copy, which never says "saved": Record's banner when nothing was
+   * saved (or storage filled elsewhere), the Library's banner, and the Tab screen's storage-full
+   * save failures.
+   */
+  'global.storageFull': 'Storage is full — delete takes or their audio, or back up and clear',
   'global.inputQualityDismissLabel': 'Dismiss Bluetooth warning for this session',
   /** The full-screen notice while another tab runs the app (EXPERIENCE.md Open in another tab). */
   'global.instanceOtherTab': 'TabCreator is open in another tab',
@@ -172,12 +178,6 @@ export const strings = {
   /** The error banner after a take is stopped because storage is full (story 3.9). */
   'record.storageFull': 'Storage is full — recording stopped and saved',
   /**
-   * The storage-full banner when nothing was saved (the save failed, the take was too short, or
-   * it could not be created): EXPERIENCE.md's Storage full copy, which never says "saved".
-   */
-  'record.storageFullUnsaved':
-    'Storage is full — delete takes or their audio, or back up and clear',
-  /**
    * The toast when a stopped take could not be saved (story 5.2; new copy, not yet in
    * EXPERIENCE.md): the take is offered for recovery by the recovered-take banner.
    */
@@ -226,8 +226,6 @@ export const strings = {
   'tab.analysisFailed': 'Analysis failed — try again',
   /** The Analysis failed and Storage full banners' button. */
   'tab.retry': 'Retry',
-  /** The error banner when the analysis result could not be saved (EXPERIENCE.md Storage full). */
-  'tab.storageFull': 'Storage is full — delete takes or their audio, or back up and clear',
   /** An analysed take with no notes (EXPERIENCE.md No notes found), then its three tips. */
   'tab.noNotes': 'No notes found',
   /** No notes found, tip 1: the input may have been too quiet. */
@@ -549,8 +547,6 @@ export const strings = {
   'library.persistNotice':
     'Your browser may clear these takes when space runs low. Back them up regularly.',
   'library.persistNoticeDismiss': 'Dismiss storage notice',
-  /** The error banner after a save failed with storage-full (until a save succeeds). */
-  'library.storageFull': 'Storage is full — delete takes or their audio, or back up and clear',
   /** The footer: "23 takes · 41.0 MB used" (the MB from `formatMegabytes`). */
   'library.footer': (n: number, mb: string) => `${n} ${n === 1 ? 'take' : 'takes'} · ${mb} MB used`,
   'tuner.title': 'Tuner',

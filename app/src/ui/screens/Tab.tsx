@@ -177,7 +177,7 @@ function useProgressAnnouncements(analysis: TakeAnalysisState) {
 /** The banner text for a failure code. */
 function failureText(code: AppErrorCode): string {
   if (code === 'engine-unavailable') return strings['global.engineFailed'];
-  if (code === 'storage-full') return strings['tab.storageFull'];
+  if (code === 'storage-full') return strings['global.storageFull'];
   return strings['tab.analysisFailed'];
 }
 
@@ -327,7 +327,7 @@ function editText(event: Extract<EditEvent, { kind: 'edit' }>): string {
 function reanalyseFailedText(code: AppErrorCode, trim: boolean): string {
   if (code === 'audio-missing') return strings['tab.noAudioToAnalyse'];
   if (code === 'engine-unavailable') return strings['global.engineFailed'];
-  if (code === 'storage-full') return strings['tab.storageFull'];
+  if (code === 'storage-full') return strings['global.storageFull'];
   return trim ? strings['tab.trimFailed'] : strings['tab.reanalyseFailed'];
 }
 
@@ -498,7 +498,7 @@ function AnalysisSettingsPanel({
  * Tab is kept, and Retry saves it again. Announced assertively once per showing.
  */
 function EditSaveBanner({ session }: { session: TakeSession }) {
-  const text = strings['tab.storageFull'];
+  const text = strings['global.storageFull'];
   const announced = useRef(false);
   useEffect(() => {
     if (announced.current) return;

@@ -12,6 +12,7 @@ import type { ValidBackup } from '../../src/storage/restore';
 import { AppError } from '../../src/model/errors';
 import { downloadBlob, pickFile } from '../../src/ui/platform';
 import { Library } from '../../src/ui/screens/Library';
+import { strings } from '../../src/ui/strings';
 import { dismissToast, getToast } from '../../src/ui/toast';
 
 // Story "Library list (tracer)" (US-7.1): the Library screen's states and row markup, with
@@ -1075,7 +1076,7 @@ describe('storage states', () => {
     expect(session.markPersistNoticeShown).not.toHaveBeenCalled();
   });
 
-  it('storage full: an error banner (role alert) above the heading, no Dismiss, no link', () => {
+  it('storage full: the shared storage-full banner above the heading, no role, no Dismiss, no link', () => {
     const session = fakeSession({
       loading: false,
       rows: [recorded],
@@ -1084,14 +1085,46 @@ describe('storage states', () => {
     });
     render(<Library session={session} />);
     const alert = screen.getByTestId('library-storage-full');
-    expect(alert.getAttribute('role')).toBe('alert');
-    expect(alert.textContent).toBe(
-      'Storage is full — delete takes or their audio, or back up and clear',
-    );
+    // Not a live region (AD-18): the announcer speaks it.
+    expect(alert.getAttribute('role')).toBeNull();
+    expect(alert.textContent).toBe(strings['global.storageFull']);
     expect(within(alert).queryByRole('button')).toBeNull();
     expect(within(alert).queryByRole('link')).toBeNull();
     const heading = screen.getByRole('heading', { level: 1 });
     expect(alert.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('storage full: announced assertively once per showing, including on mount', () => {
+    vi.mocked(announce).mockClear();
+    let snapshot: LibrarySnapshot = {
+      ...fakeSession({ loading: false, rows: [recorded], error: null }).getSnapshot(),
+      storage: { protected: true, usageBytes: null, full: true },
+    };
+    const listeners = new Set<() => void>();
+    const session = {
+      ...fakeSession({ loading: false, rows: [recorded], error: null }),
+      subscribe: (l: () => void) => {
+        listeners.add(l);
+        return () => listeners.delete(l);
+      },
+      getSnapshot: () => snapshot,
+    };
+    const set = (next: Partial<LibrarySnapshot>) => {
+      snapshot = { ...snapshot, ...next };
+      act(() => listeners.forEach((l) => l()));
+    };
+    render(<Library session={session} />);
+    const full = () =>
+      vi.mocked(announce).mock.calls.filter(([text]) => text === strings['global.storageFull']);
+    expect(full()).toEqual([[strings['global.storageFull'], 'assertive']]);
+    // Another change while it shows: not announced again.
+    set({ storage: { protected: true, usageBytes: 5_000_000, full: true } });
+    expect(full()).toHaveLength(1);
+    set({ storage: { protected: true, usageBytes: 5_000_000, full: false } });
+    expect(screen.queryByTestId('library-storage-full')).toBeNull();
+    set({ storage: { protected: true, usageBytes: 5_000_000, full: true } });
+    expect(screen.getByTestId('library-storage-full')).toBeTruthy();
+    expect(full()).toHaveLength(2);
   });
 
   it('the footer counts every take and the usage in MB, also while searching', () => {

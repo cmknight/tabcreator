@@ -363,7 +363,7 @@ describe('Tab screen analysis states', () => {
     const { create, session } = mockSession(failed('storage-full'));
     render(<Tab takeId="t1" createSession={create} />);
     const alert = screen.getByTestId('tab-storage-full');
-    expect(announce).toHaveBeenCalledWith(strings['tab.storageFull'], 'assertive');
+    expect(announce).toHaveBeenCalledWith(strings['global.storageFull'], 'assertive');
     expect(alert.textContent).toContain(
       'Storage is full — delete takes or their audio, or back up and clear',
     );
@@ -388,10 +388,12 @@ describe('Tab screen analysis states', () => {
       const { create, session, set } = mockSession(analysed('storage-full'));
       render(<Tab takeId="t1" createSession={create} />);
       const alert = screen.getByTestId('tab-edit-storage-full');
-      expect(alert.textContent).toContain(strings['tab.storageFull']);
+      expect(alert.textContent).toContain(strings['global.storageFull']);
       expect(screen.getByRole('link', { name: strings['global.goToLibrary'] })).toBeTruthy();
       expect(screen.getByRole('application', { name: 'Tab' })).toBeTruthy(); // the tab stays
-      expect(vi.mocked(announce).mock.calls).toEqual([[strings['tab.storageFull'], 'assertive']]);
+      expect(vi.mocked(announce).mock.calls).toEqual([
+        [strings['global.storageFull'], 'assertive'],
+      ]);
       fireEvent.click(screen.getByRole('button', { name: strings['tab.retry'] }));
       expect(session.retrySave).toHaveBeenCalledTimes(1);
       expect(session.retryCommit).not.toHaveBeenCalled();
@@ -1655,7 +1657,7 @@ describe('Tab screen tab area, header and selection', () => {
       edit({ kind: 'reanalyseFailed', code: 'audio-missing' });
       expect(announce).toHaveBeenLastCalledWith('No audio to analyse', 'assertive');
       edit({ kind: 'reanalyseFailed', code: 'storage-full' });
-      expect(announce).toHaveBeenLastCalledWith(strings['tab.storageFull'], 'assertive');
+      expect(announce).toHaveBeenLastCalledWith(strings['global.storageFull'], 'assertive');
       edit({ kind: 'reanalyseFailed', code: 'analysis-failed' });
       expect(announce).toHaveBeenLastCalledWith('Re-analysis failed — try again', 'assertive');
       edit({ kind: 'undo', label: { kind: 'reanalyse' } });

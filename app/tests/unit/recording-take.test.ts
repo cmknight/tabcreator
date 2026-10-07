@@ -1,3 +1,5 @@
+import 'fake-indexeddb/auto';
+import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ANALYSER_FFT_SIZE, type Capture } from '../../src/audio/mic';
 import { AppError } from '../../src/model/errors';
@@ -15,6 +17,15 @@ import { loadPrefs, updatePrefs } from '../../src/storage/prefs';
 import { COUNT_IN_LEAD_S } from '../../src/audio/metronome';
 import { readDevLimits } from '../../src/dev/hooks/recording';
 import { MAX_TAKE_MS, WARN_LEAD_MS } from '../../src/model/take-limits';
+import {
+  isStorageFull,
+  markStorageFull,
+  resetStorageFullForTests,
+  beginFreeing,
+  subscribeStorageFull,
+} from '../../src/storage/persistence';
+import { toStorageError } from '../../src/storage/write-guard';
+import { createTakeDb } from '../../src/storage/db';
 import { deferred, flush } from './helpers';
 
 // Stories 3.4 and 3.6: record() and stop('user') in the recording store, and the count-in, with a
@@ -26,6 +37,12 @@ const ANALYSIS_DEFAULTS = { sensitivity: 0.5, minNoteMs: 40, maxFret: 24 };
 const DEVICE = { deviceId: 'mic-a', label: 'USB Interface', groupId: 'g-a' };
 /** 2026-10-02 21:14:05 local time. */
 const NOW = new Date(2026, 9, 2, 21, 14, 5).getTime();
+
+/** A `storage-full` failure as storage/ reports it: through `toStorageError`, which sets the status. */
+const fullError = (message: string) =>
+  toStorageError(new AppError('storage-full', message), 'Test write');
+
+afterEach(() => resetStorageFullForTests());
 
 /** A chunk of `n` samples, all `value`, so the raw file's order can be checked. */
 const chunk = (value: number, n = RATE) => new Float32Array(n).fill(value);
@@ -121,6 +138,8 @@ function setup(overrides: Partial<RecordingDeps> = {}, captureError?: AppError) 
     navigate: vi.fn((id: string) => log.push(`navigate ${id}`)),
     now: () => NOW,
     newId: vi.fn(() => 'take-1'),
+    isStorageFull,
+    subscribeStorageFull,
     ...overrides,
   };
   const session = createRecordingSession(deps);
@@ -359,7 +378,7 @@ describe('recording a take', () => {
   // Story 5.2 (DS3b): was "shows the error card" for a storage-full createTake, the defect.
   it('createTake failing storage-full: the storage-full banner, the mic kept live, no card', async () => {
     const t = setup({
-      createTake: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
+      createTake: vi.fn(() => Promise.reject(fullError('full'))),
     });
     await t.session.allowMic();
     await t.session.record();
@@ -378,7 +397,7 @@ describe('recording a take', () => {
 
   it('openRawWriter failing storage-full: the storage-full banner, the mic kept live, no card', async () => {
     const t = setup({
-      openRawWriter: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
+      openRawWriter: vi.fn(() => Promise.reject(fullError('full'))),
     });
     await t.session.allowMic();
     const started = t.session.record();
@@ -398,7 +417,7 @@ describe('recording a take', () => {
   // Story 5.2 (DS3): was "closes the mic and shows the error card", the defect.
   it('a save that fails storage-full: not saved, the mic live, save-failed notice, the banner', async () => {
     const t = await recording({
-      writeCompressed: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
+      writeCompressed: vi.fn(() => Promise.reject(fullError('full'))),
     });
     await t.session.stop('user');
     await flush();
@@ -432,7 +451,7 @@ describe('recording a take', () => {
     const requestPersist = vi.fn();
     const t = await recording({
       requestPersist,
-      writeCompressed: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
+      writeCompressed: vi.fn(() => Promise.reject(fullError('full'))),
     });
     await t.session.stop('user');
     await flush();
@@ -485,7 +504,7 @@ describe('failure stops', () => {
     vi.mocked(t.deps.listMics).mockResolvedValue(others);
   }
 
-  const storageFull = () => Promise.reject(new AppError('storage-full', 'quota exceeded'));
+  const storageFull = () => Promise.reject(fullError('quota exceeded'));
 
   it('unplug mid-take: saved as mic-lost, the input closed after, the default opened, stopped-saved notice', async () => {
     const t = await recording();
@@ -659,8 +678,8 @@ describe('failure stops', () => {
       storageFullSaved: true,
     });
     expect(t.session.getSnapshot().errorCode).toBeUndefined();
-    // stopping, then idle with the banner in one notify.
-    expect(listener).toHaveBeenCalledTimes(2);
+    // The banner as the append fails (the shared status), stopping, then idle with its text.
+    expect(listener).toHaveBeenCalledTimes(3);
   });
 
   it('storage full and the save fails too: the take stays recording, the banner, no error card', async () => {
@@ -684,7 +703,8 @@ describe('failure stops', () => {
     expect(t.session.getSnapshot().errorCode).toBeUndefined();
   });
 
-  it('the banner clears when the next take starts', async () => {
+  // Epic 7 (storage-full status): only freed space clears it; was "clears when the next take starts".
+  it('the banner stays when the next take starts', async () => {
     const t = await recording();
     vi.mocked(t.writer.append).mockImplementation(storageFull);
     t.emit(chunk(3));
@@ -694,16 +714,64 @@ describe('failure stops', () => {
     vi.mocked(t.writer.append).mockImplementation(async () => {});
     vi.mocked(t.deps.newId).mockReturnValue('take-2');
     const started = t.session.record();
-    expect(t.session.getSnapshot()).toMatchObject({ recording: 'starting', storageFull: false });
+    // The banner stays; the earlier stop's "saved" text goes.
+    expect(t.session.getSnapshot()).toMatchObject({
+      recording: 'starting',
+      storageFull: true,
+      storageFullSaved: false,
+    });
     await started;
-    expect(t.session.getSnapshot()).toMatchObject({ recording: 'recording', storageFull: false });
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'recording', storageFull: true });
+  });
+
+  it('the banner follows the shared status: freed space clears it and its "saved" text', async () => {
+    const t = await recording();
+    vi.mocked(t.writer.append).mockImplementation(storageFull);
+    t.emit(chunk(3));
+    await flush();
+    await flush();
+    expect(t.session.getSnapshot()).toMatchObject({ storageFull: true, storageFullSaved: true });
+    await beginFreeing({ hasRoom: async () => null })(true);
+    expect(t.session.getSnapshot().storageFull).toBe(false);
+    expect(t.session.getSnapshot().storageFullSaved).toBeUndefined();
+    // Set again elsewhere (a Library or Tab save): the banner shows, never saying "saved".
+    markStorageFull();
+    expect(t.session.getSnapshot().storageFull).toBe(true);
+    expect(t.session.getSnapshot().storageFullSaved).toBeUndefined();
+  });
+
+  it('the "saved" text is never kept while the shared status is clear', async () => {
+    const t = await recording();
+    // A storage-full that did not reach the shared status (as when it was cleared meanwhile).
+    vi.mocked(t.writer.append).mockImplementation(() =>
+      Promise.reject(new AppError('storage-full', 'not through storage/')),
+    );
+    t.emit(chunk(3));
+    await flush();
+    await flush();
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'idle', storageFull: false });
+    expect(t.session.getSnapshot().storageFullSaved).toBeUndefined();
+  });
+
+  it('a status already set when the store is created shows the banner', () => {
+    markStorageFull();
+    expect(setup().session.getSnapshot().storageFull).toBe(true);
   });
 
   it('a short storage-full take (0.2 s) is deleted with the too-short notice, and the banner on', async () => {
-    const t = setup();
+    // The production delete (db.ts) for writer `recording-session`: an automatic delete, which
+    // does not clear the storage-full status.
+    globalThis.indexedDB = new IDBFactory();
+    const db = createTakeDb({
+      name: 'short-take',
+      audio: { deleteAudio: async () => {}, deleteRaw: async () => {} },
+    });
+    const t = setup({
+      createTake: vi.fn((take: Take) => db.createTake(take)),
+      deleteTake: vi.fn((id: string, writer: 'recording-session') => db.deleteTake(id, writer)),
+    });
     await t.session.allowMic();
     const started = t.session.record();
-    t.created.resolve();
     await started;
     vi.mocked(t.capture.stop).mockImplementation(async () => {
       t.log.push('capture.stop');
@@ -718,6 +786,7 @@ describe('failure stops', () => {
     await flush();
     await flush();
     expect(t.deps.deleteTake).toHaveBeenCalledWith('take-1', 'recording-session');
+    await vi.waitFor(async () => expect(await db.getTake('take-1')).toBeNull());
     expect(t.deps.patchTake).not.toHaveBeenCalled();
     expect(t.deps.navigate).not.toHaveBeenCalled();
     expect(t.session.getSnapshot()).toMatchObject({
@@ -958,7 +1027,8 @@ describe('count-in', () => {
     expect(session.readCountInBeat()).toBeNull();
   }
 
-  it('a count-in take clears the storage-full banner: off at count-in and after beat five', async () => {
+  // Epic 7 (storage-full status): was "a count-in take clears the storage-full banner".
+  it('a count-in take keeps the storage-full banner: on at count-in and after beat five', async () => {
     const t = await live(120);
     // A take without the count-in first, stopped by a full disk.
     t.session.setCountIn({ on: false });
@@ -968,7 +1038,7 @@ describe('count-in', () => {
     await vi.advanceTimersByTimeAsync(0);
     await first;
     vi.mocked(t.writer.append).mockImplementation(() =>
-      Promise.reject(new AppError('storage-full', 'quota exceeded')),
+      Promise.reject(fullError('quota exceeded')),
     );
     t.emit(chunk(1));
     await vi.advanceTimersByTimeAsync(0);
@@ -979,11 +1049,11 @@ describe('count-in', () => {
     t.session.setCountIn({ on: true });
     const second = t.session.record();
     await vi.advanceTimersByTimeAsync(0);
-    expect(t.session.getSnapshot()).toMatchObject({ recording: 'count-in', storageFull: false });
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'count-in', storageFull: true });
     await clockTo(t, 20);
     await second;
     expect(t.deps.createTake).toHaveBeenCalledTimes(2);
-    expect(t.session.getSnapshot()).toMatchObject({ recording: 'recording', storageFull: false });
+    expect(t.session.getSnapshot()).toMatchObject({ recording: 'recording', storageFull: true });
   });
 
   it('a capture that fails to start during the count-in shows the error', async () => {
@@ -1043,7 +1113,7 @@ describe('count-in', () => {
   // Story 5.2 (DS3b): a storage-full here took the error-card path, the defect.
   it('createTake failing storage-full at beat five: the banner, the mic kept live', async () => {
     const t = await live(120, {
-      createTake: vi.fn(() => Promise.reject(new AppError('storage-full', 'full'))),
+      createTake: vi.fn(() => Promise.reject(fullError('full'))),
     });
     const started = t.session.record();
     await vi.advanceTimersByTimeAsync(0);
@@ -1926,9 +1996,7 @@ describe('take-save robustness (story 5.2)', () => {
       t.emit(chunk(1));
       t.emit(chunk(2));
       await flush();
-      vi.mocked(t.writer.append).mockImplementation(() =>
-        Promise.reject(new AppError('storage-full', 'quota')),
-      );
+      vi.mocked(t.writer.append).mockImplementation(() => Promise.reject(fullError('quota')));
       t.emit(chunk(3, RATE / 5));
       await flush();
       await flush();
@@ -1991,9 +2059,7 @@ describe('take-save robustness (story 5.2)', () => {
         writeCompressed: vi.fn(ioError),
         recovery: unfinished('take-1', RATE * 2),
       });
-      vi.mocked(t.writer.append).mockImplementation(() =>
-        Promise.reject(new AppError('storage-full', 'quota')),
-      );
+      vi.mocked(t.writer.append).mockImplementation(() => Promise.reject(fullError('quota')));
       t.emit(chunk(3));
       await flush();
       await flush();
@@ -2067,7 +2133,7 @@ describe('take-save robustness (story 5.2)', () => {
 
     it('a Stop held while a start fails settles, with nothing saved', async () => {
       const t = setup({
-        createTake: vi.fn(() => Promise.reject(new AppError('storage-full', 'x'))),
+        createTake: vi.fn(() => Promise.reject(fullError('x'))),
       });
       await t.session.allowMic();
       const rec = t.session.record();

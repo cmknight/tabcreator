@@ -130,10 +130,7 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
 
   let worker: OpfsWorker | null = null;
   let nextReqId = 1;
-  const pending = new Map<
-    number,
-    { resolve: () => void; reject: (err: AppError) => void; takeId: string }
-  >();
+  const pending = new Map<number, { resolve: () => void; reject: (err: AppError) => void }>();
 
   function failAll(message: string) {
     worker?.terminate();
@@ -153,7 +150,7 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
       if (data.type === 'done') p.resolve();
       else {
         const err = { name: data.name, message: data.message };
-        p.reject(toStorageError(err, 'Raw audio write', p.takeId));
+        p.reject(toStorageError(err, 'Raw audio write'));
       }
     };
     w.onerror = (event) => {
@@ -167,12 +164,12 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
   function request(message: DistributiveOmit<ToOpfsWorker, 'reqId'>): Promise<void> {
     const reqId = nextReqId++;
     return new Promise<void>((resolve, reject) => {
-      pending.set(reqId, { resolve, reject, takeId: message.takeId });
+      pending.set(reqId, { resolve, reject });
       try {
         getWorker().postMessage({ ...message, reqId } as ToOpfsWorker);
       } catch (err) {
         pending.delete(reqId);
-        reject(toStorageError(err, 'Raw audio write', message.takeId));
+        reject(toStorageError(err, 'Raw audio write'));
       }
     });
   }
@@ -182,7 +179,7 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
   return {
     async writeCompressed(takeId, blob) {
       assertWritable();
-      if (import.meta.env.DEV) assertDevSaveSpace('Write compressed audio', takeId);
+      if (import.meta.env.DEV) assertDevSaveSpace('Write compressed audio');
       let ext: string;
       try {
         ext = extensionFor(blob.type);
@@ -217,7 +214,7 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
           await removeIfPresent(audio, `${takeId}.${f.ext}`);
         }
       } catch (err) {
-        throw toStorageError(err, 'Write compressed audio', takeId);
+        throw toStorageError(err, 'Write compressed audio');
       }
     },
 
@@ -260,7 +257,6 @@ export function createAudioStore(options: AudioStoreOptions = {}): AudioStore {
             throw toStorageError(
               new AppError('storage-full', 'Raw audio write: quota exceeded (dev hook)'),
               'Raw audio write',
-              takeId,
             );
           }
           await request({ type: 'append', takeId, samples });

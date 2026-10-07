@@ -64,6 +64,10 @@ function fakeLibrary() {
       for (const l of [...storage.fullListeners]) l();
     },
   };
+  /** The freed-space report `beginFreeing` returns (persistence.ts's, faked). */
+  const freed = vi.fn(async (removed: boolean) => {
+    if (removed) storage.setFull(false);
+  });
   const deps: LibraryDeps = {
     listTakes: vi.fn(async () =>
       [...takes.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
@@ -96,6 +100,8 @@ function fakeLibrary() {
       if (existed) emit({ type: 'take-deleted', takeId: id, writer });
       sizes.delete(id);
       raw.delete(id);
+      // As db.deleteTake for the player's delete: the files removed, the status clears.
+      storage.setFull(false);
     }),
     deleteAudio: vi.fn(async (id: string) => {
       sizes.delete(id);
@@ -137,6 +143,7 @@ function fakeLibrary() {
     persisted: vi.fn(async () => storage.persisted),
     estimateUsage: vi.fn(async () => storage.usage),
     isStorageFull: () => storage.full,
+    beginFreeing: vi.fn((): ((removed: boolean) => Promise<void>) => freed),
     subscribeStorageFull: (l: () => void) => {
       storage.fullListeners.add(l);
       return () => {
@@ -163,7 +170,7 @@ function fakeLibrary() {
   function emit(event: StorageEvent) {
     for (const l of [...listeners]) l(event);
   }
-  return { takes, tabs, sizes, audio, raw, deps, add, emit, listeners, storage };
+  return { takes, tabs, sizes, audio, raw, deps, add, emit, listeners, storage, freed };
 }
 
 const T1 = '2026-09-27T10:00:00.000Z';
@@ -1122,5 +1129,76 @@ describe('library session: storage states (story 6.7)', () => {
     expect(session.getSnapshot().storage.full).toBe(true);
     off();
     expect(lib.storage.fullListeners.size).toBe(0);
+  });
+
+  it('deleteTake reads the usage again once its files are removed', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1), 3, 100);
+    lib.storage.usage = 2_000_000;
+    // The event's usage read lands before the files go: it still sees the old usage.
+    vi.mocked(lib.deps.deleteTake).mockImplementationOnce(async (id, writer) => {
+      lib.takes.delete(id);
+      lib.emit({ type: 'take-deleted', takeId: id, writer });
+      await flush();
+      lib.storage.usage = 1_000_000;
+    });
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    await session.deleteTake('a');
+    await flush();
+    expect(session.getSnapshot().storage.usageBytes).toBe(1_000_000);
+  });
+
+  it('deleteAudio reports the freed space after its removals, then reads the usage again', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1), 3, 100);
+    lib.add(makeTake('b', T2), 3, 100);
+    lib.storage.usage = 2_000_000;
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    lib.storage.setFull(true);
+    const order: string[] = [];
+    vi.mocked(lib.deps.deleteRaw).mockImplementationOnce(async () => {
+      order.push('deleteRaw');
+      lib.storage.usage = 1_000_000;
+    });
+    vi.mocked(lib.deps.beginFreeing).mockImplementationOnce(() => {
+      order.push('beginFreeing');
+      return async (removed) => {
+        order.push(`freed ${removed}`);
+        if (removed) lib.storage.setFull(false);
+        // A hanging re-check never holds the delete.
+        return new Promise<void>(() => {});
+      };
+    });
+    await session.deleteAudio('a');
+    await flush();
+    expect(order).toEqual(['beginFreeing', 'deleteRaw', 'freed true']);
+    expect(session.getSnapshot().storage).toMatchObject({ full: false, usageBytes: 1_000_000 });
+
+    // A failed removal: reported as such, and the status stays.
+    lib.storage.setFull(true);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(lib.deps.deleteAudio).mockRejectedValueOnce(new Error('opfs'));
+    await session.deleteAudio('b');
+    expect(lib.freed).toHaveBeenLastCalledWith(false);
+    expect(session.getSnapshot().storage.full).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('a rename and a restore of 0 takes leave the storage-full status', async () => {
+    const lib = fakeLibrary();
+    lib.add(makeTake('a', T1), 3, 100);
+    const session = createLibrarySession(lib.deps);
+    session.subscribe(() => {});
+    await flush();
+    lib.storage.setFull(true);
+    await session.rename('a', 'Renamed');
+    lib.emit({ type: 'library-restored', count: 0, writer: 'restore' });
+    await flush();
+    expect(session.getSnapshot().storage.full).toBe(true);
+    expect(lib.deps.beginFreeing).not.toHaveBeenCalled();
   });
 });

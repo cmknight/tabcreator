@@ -7,7 +7,10 @@
 // then import the takes not already present: audio first, then the records, the audio removed
 // again if the import fails); a backup and a restore never run at the same time. Story 6.3
 // (search) builds on this snapshot. Story 6.7 (storage states) adds `storage` (persisted, usage,
-// storage-full, read from storage/persistence.ts) and the one-time `persistNotice`.
+// storage-full, read from storage/persistence.ts) and the one-time `persistNotice`. Story
+// "Storage-full status that clears when space is freed" (epic 7): `deleteAudio` reports the
+// freed space to persistence.ts (`beginFreeing`), and both deletes read the usage again once
+// their files are removed.
 
 import { libraryRow, pickSize, sortRows, withTitle, type LibraryRow } from '../model/library';
 import { isAppError, type AppErrorCode } from '../model/errors';
@@ -17,7 +20,12 @@ import type { Tab, Take, TakeWriter } from '../model/types';
 import { audioStore, type CompressedFile } from '../storage/audio-store';
 import { createBackup, type BackupResult } from '../storage/backup';
 import { db, type ImportRecord } from '../storage/db';
-import { isStorageFull, persistence, subscribeStorageFull } from '../storage/persistence';
+import {
+  isStorageFull,
+  persistence,
+  beginFreeing,
+  subscribeStorageFull,
+} from '../storage/persistence';
 import { loadPrefs, updatePrefs } from '../storage/prefs';
 import { readBackup, type ValidBackup } from '../storage/restore';
 import {
@@ -54,8 +62,9 @@ export interface LibraryStorage {
   /** The bytes this origin uses (`estimate().usage`); null when unknown. */
   usageBytes: number | null;
   /**
-   * A storage write failed with `storage-full`, and no committed save of another take, or a
-   * restore, has happened since.
+   * Storage is full (storage/persistence.ts's one status): set by a `storage-full` write or the
+   * start-up re-check, cleared only once space is freed (a take or its audio deleted, or a
+   * re-check finding room).
    */
   full: boolean;
 }
@@ -165,6 +174,12 @@ export interface LibraryDeps {
   /** The storage-full status, and its change listener (returns the unsubscribe function). */
   isStorageFull(): boolean;
   subscribeStorageFull(listener: () => void): () => void;
+  /**
+   * Called as a delete of a take's audio begins; the returned call, made once the removals are
+   * done (`removed`: every removal succeeded), clears the storage-full status when they did and
+   * starts a room re-check (its promise; not awaited). Never rejects.
+   */
+  beginFreeing(): (removed: boolean) => Promise<void>;
   /** Whether the storage notice was shown on an earlier visit. */
   persistNoticeShown(): boolean;
   /** Remembers that the storage notice was shown. */
@@ -452,14 +467,19 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
 
   async function deleteTake(id: string) {
     try {
+      // Resolves once its files are removed (and the storage-full status updated, db.ts).
       await deps.deleteTake(id, WRITER);
     } catch (err) {
       devWarn(`Library: deleting take ${id} failed`, err);
       throw err;
     }
+    // The `take-deleted` event's read ran before the files went: read the usage again.
+    void readUsage();
   }
 
   async function deleteAudio(id: string) {
+    // A storage-full failure after this point is not cleared by this delete.
+    const freed = deps.beginFreeing();
     try {
       // Only an analysed take (which keeps its tab) with audio may lose it.
       const take = await deps.getTake(id);
@@ -470,12 +490,19 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
       throw err;
     }
     // Files go after the record; a failure leaves files for the start-up scan (AD-15).
+    let removed = true;
     await deps.deleteAudio(id).catch((err: unknown) => {
+      removed = false;
       devWarn(`Library: removing the compressed audio of take ${id} failed`, err);
     });
     await deps.deleteRaw(id).catch((err: unknown) => {
+      removed = false;
       devWarn(`Library: removing the raw audio of take ${id} failed`, err);
     });
+    // Space was freed: the storage-full status clears (when both removals succeeded) and is
+    // re-checked without holding the delete; the usage is read again now the files are gone.
+    void freed(removed);
+    void readUsage();
   }
 
   /** The running backup's number (0: none); a progress report from an ended run is dropped. */
@@ -607,6 +634,7 @@ export const librarySession: LibrarySession = createLibrarySession({
   estimateUsage: () => persistence.estimateUsage(),
   isStorageFull,
   subscribeStorageFull,
+  beginFreeing: () => beginFreeing(),
   persistNoticeShown: () => loadPrefs().persistNoticeShown,
   markPersistNoticeShown: () => {
     updatePrefs({ persistNoticeShown: true });

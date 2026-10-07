@@ -628,6 +628,7 @@ test('the Microphone select is disabled with its reason during the count-in and 
 const OPEN_DEVICE = 'fake-mic-open_strings';
 const LOST_TITLE = 'Microphone access was lost';
 const STORAGE_FULL = 'Storage is full — recording stopped and saved';
+const LIBRARY_STORAGE_FULL = 'Storage is full — delete takes or their audio, or back up and clear';
 const storageBanner = (page: Page) => page.getByTestId('storage-full-banner');
 
 /**
@@ -721,7 +722,8 @@ test('revoke mid-take: the take is saved as mic-lost, then the lost card', async
   expect(errors).toEqual([]);
 });
 
-test('storage full mid-take: saved as storage-full, the error banner with a Library link, mic live; the next take clears it', async ({
+// Epic 7 (storage-full status): was "the next take clears it"; only freed space clears it.
+test('storage full mid-take: saved as storage-full, the error banner with a Library link, mic live; the next take keeps it', async ({
   page,
 }) => {
   const errors = await goLive(page, held());
@@ -781,17 +783,18 @@ test('storage full mid-take: saved as storage-full, the error banner with a Libr
   await page.getByRole('link', { name: 'Record', exact: true }).click();
   await expect(page).toHaveURL(/#\/record$/);
   await expect(storageBanner(page)).toBeVisible();
+  // The Library's own banner (the same status) announces the shared text on the way.
   await expect
     .poll(() => page.evaluate(() => (window as unknown as { __assertive: string[] }).__assertive))
-    .toEqual([STORAGE_FULL]);
+    .toEqual([LIBRARY_STORAGE_FULL, STORAGE_FULL]);
 
-  // The banner shows until the next take starts.
+  // A new take does not clear it: only freed space does (a delete in the Library).
   await page.evaluate(() => {
     (window as unknown as { __storageFullHook: boolean }).__storageFullHook = false;
   });
   await recordButton(page).click();
-  await expect(storageBanner(page)).toHaveCount(0);
   await expect(timer(page)).toHaveText('0:01', { timeout: 5_000 });
+  await expect(storageBanner(page)).toBeVisible();
   await stopButton(page).click();
   await tabTakeId(page);
   expect(errors).toEqual([]);

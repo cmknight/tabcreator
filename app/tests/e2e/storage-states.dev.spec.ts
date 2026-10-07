@@ -8,7 +8,8 @@ import { seedTab } from './tab-helpers';
 // Story "Storage protection and Library states" (6.7, CAP-19, CAP-25): persistent storage is
 // asked for after the first take is saved; a refusal shows the one-time Library notice; Settings
 // shows the storage status; the Library footer shows the take count and usage; a save that failed
-// with storage-full shows the Library's storage-full banner until a save succeeds.
+// with storage-full (or a start-up re-check finding under 5% free) shows the Library's
+// storage-full banner until space is freed (epic 7: a delete; renames and saves keep it).
 // `navigator.storage.persist`/`persisted`/`estimate` are stubbed before the app loads.
 
 interface StorageStub {
@@ -180,7 +181,20 @@ test('the footer shows the take count and the usage in MB, keeping the full coun
   expect(unexpected(errors)).toEqual([]);
 });
 
-test('a save failing storage-full shows the Library banner, also after navigating; a save of another take clears it', async ({
+async function deleteTake(page: Page, id: string): Promise<void> {
+  await row(page, id)
+    .getByRole('button', { name: /^More actions for / })
+    .click();
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Delete take' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Delete take' }).click();
+  await expect(row(page, id)).toHaveCount(0);
+}
+
+const recordBanner = (page: Page): Locator => page.getByTestId('storage-full-banner');
+
+// Epic 7 (storage-full status that clears when space is freed): was "a save of another take
+// clears it". Only freed space clears it: a delete, or a re-check showing room.
+test('a save failing storage-full shows the Library banner, also after navigating; renames keep it; a delete clears it', async ({
   page,
 }) => {
   await stubStorage(page, { grant: true, usage: 1_000_000 });
@@ -198,38 +212,46 @@ test('a save failing storage-full shows the Library banner, also after navigatin
   });
   await rename(page, id, 'Never saved');
   await expect(fullBanner(page)).toBeVisible();
-  await expect(fullBanner(page)).toHaveAttribute('role', 'alert');
-  await expect(fullBanner(page)).toHaveText(strings['library.storageFull']);
+  // The shared banner: no role (announced through the announcer), no button, no link.
+  await expect(fullBanner(page)).not.toHaveAttribute('role');
+  await expect(fullBanner(page)).toHaveText(strings['global.storageFull']);
   await expect(fullBanner(page).getByRole('button')).toHaveCount(0);
   await expect(fullBanner(page).getByRole('link')).toHaveCount(0);
+  await expect(page.locator('[aria-live="assertive"]')).toHaveText(strings['global.storageFull']);
 
-  // Still there when the Library is opened again in the same page load.
-  await nav(page, 'Settings').click();
+  // Still there when the Library is opened again in the same page load; Record shows it too.
+  await nav(page, 'Record').click();
+  await expect(recordBanner(page)).toBeVisible();
+  await expect(recordBanner(page)).toHaveText(new RegExp(strings['global.storageFull']));
   await openLibrary(page);
   await expect(fullBanner(page)).toBeVisible();
   await expectNoSeriousAxe(page);
 
-  // Cleared, a save (a rename) succeeds and the banner goes.
+  // With the hook off, renames succeed, of the failing take and of another: the banner stays.
   await page.evaluate(() => {
     (window as unknown as { __storageFullSaveHook: boolean }).__storageFullSaveHook = false;
   });
-  // The failing take's own save keeps it; a save of another take clears it.
   await rename(page, id, 'Saved');
   await expect(row(page, id).getByRole('link', { name: 'Saved' })).toBeVisible();
-  await expect(fullBanner(page)).toBeVisible();
   await rename(page, other, 'Other saved');
   await expect(row(page, other).getByRole('link', { name: 'Other saved' })).toBeVisible();
+  await expect(fullBanner(page)).toBeVisible();
+
+  // Deleting a take frees space: the banner goes, here and on Record.
+  await deleteTake(page, other);
   await expect(fullBanner(page)).toHaveCount(0);
+  await nav(page, 'Record').click();
+  await expect(recordBanner(page)).toHaveCount(0);
   expect(unexpected(errors)).toEqual([]);
 });
 
-test("disk full mid-recording: the take's own save keeps the Library banner; a save of another take clears it", async ({
+test('disk full mid-recording: a rename keeps both banners; deleting a take clears them', async ({
   page,
 }) => {
   test.setTimeout(60_000);
   await stubStorage(page, { grant: true, usage: 1_000_000 });
   const errors = await goLive(page, held());
-  // Another take, seeded before the failure (its own saves come first).
+  // Another take, seeded before the failure.
   const other = await seedTab(page, undefined, 'Other take');
 
   // The raw-append hook (as record.dev.spec.ts uses): the take stops and is saved storage-full.
@@ -239,7 +261,8 @@ test("disk full mid-recording: the take's own save keeps the Library banner; a s
   await page.evaluate(() => {
     (window as unknown as { __storageFullHook: boolean }).__storageFullHook = true;
   });
-  await expect(page.getByTestId('storage-full-banner')).toBeVisible({ timeout: 5_000 });
+  await expect(recordBanner(page)).toBeVisible({ timeout: 5_000 });
+  await expect(recordBanner(page)).toHaveText(new RegExp(strings['record.storageFull']));
   await expect(recordButton(page)).toHaveAttribute('aria-pressed', 'false');
   await page.evaluate(() => {
     (window as unknown as { __storageFullHook: boolean }).__storageFullHook = false;
@@ -251,6 +274,59 @@ test("disk full mid-recording: the take's own save keeps the Library banner; a s
 
   await rename(page, other, 'Renamed');
   await expect(row(page, other).getByRole('link', { name: 'Renamed' })).toBeVisible();
+  await expect(fullBanner(page)).toBeVisible();
+  await nav(page, 'Record').click();
+  await expect(recordBanner(page)).toBeVisible();
+
+  await openLibrary(page);
+  await deleteTake(page, other);
   await expect(fullBanner(page)).toHaveCount(0);
+  await nav(page, 'Record').click();
+  await expect(recordBanner(page)).toHaveCount(0);
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('Delete audio of an analysed take clears the Library and Record banners', async ({ page }) => {
+  await stubStorage(page, { grant: true, usage: 1_000_000 });
+  const errors = collectErrors(page);
+  await page.goto('./#/library');
+  await expect(heading(page)).toBeVisible();
+  const id = await seedTab(page, undefined, 'With audio', { audioMime: 'audio/webm;codecs=opus' });
+  await expect(row(page, id)).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as unknown as { __storageFullSaveHook: boolean }).__storageFullSaveHook = true;
+  });
+  await rename(page, id, 'Never saved');
+  await expect(fullBanner(page)).toBeVisible();
+  await page.evaluate(() => {
+    (window as unknown as { __storageFullSaveHook: boolean }).__storageFullSaveHook = false;
+  });
+  await nav(page, 'Record').click();
+  await expect(recordBanner(page)).toBeVisible();
+  await openLibrary(page);
+
+  await row(page, id)
+    .getByRole('button', { name: /^More actions for / })
+    .click();
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Delete audio only' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Delete audio' }).click();
+  await expect(row(page, id)).toContainText(strings['library.audioDeleted']);
+  await expect(fullBanner(page)).toHaveCount(0);
+  await nav(page, 'Record').click();
+  await expect(recordBanner(page)).toHaveCount(0);
+  expect(unexpected(errors)).toEqual([]);
+});
+
+test('start-up re-check: less than 5% of the quota free shows the banner at load', async ({
+  page,
+}) => {
+  // quota 1e10: 9.6e9 used leaves 4% free.
+  await stubStorage(page, { grant: true, usage: 9_600_000_000 });
+  const errors = collectErrors(page);
+  await page.goto('./#/library');
+  await expect(heading(page)).toBeVisible();
+  await expect(fullBanner(page)).toBeVisible();
+  await expect(fullBanner(page)).toHaveText(strings['global.storageFull']);
   expect(unexpected(errors)).toEqual([]);
 });

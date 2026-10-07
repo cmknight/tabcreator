@@ -40,8 +40,10 @@
 // Failure stops (story 3.9, CAP-25, CAP-26): when the track of the input a take records ends,
 // the store's queued handling first runs the stop pipeline here with `stopReason: 'mic-lost'` (no
 // navigation; `inputEnded`). When a raw append rejects with `storage-full`, nothing more is
-// appended and the take is saved with `stopReason: 'storage-full'`, the snapshot's `storageFull`
-// on (the Record banner) until the next take starts. A handover saves the take as
+// appended and the take is saved with `stopReason: 'storage-full'`; the Record banner shows while
+// storage/persistence.ts's storage-full status is set (the snapshot's `storageFull`, which the
+// store mirrors), and this module sets only `storageFullSaved`, its text: whether the stopped
+// take was saved. A new take does not clear the banner. A handover saves the take as
 // `instance-lost` (`beginHandover`, `finishForHandover`). A `storage-full` while the take is
 // created or its raw writer opened shows the same banner with the mic kept live; any other
 // failed start has the host close the input and show the error card (`failInput`).
@@ -449,7 +451,7 @@ export function createTakeLifecycle(
       countIn = null;
     }
     active = null;
-    transition('idle', { storageFull: true, storageFullSaved: false });
+    transition('idle', { storageFullSaved: false });
   }
 
   /**
@@ -536,8 +538,8 @@ export function createTakeLifecycle(
       await countInThenStart(take, opened, bpm);
       return;
     }
-    // A new take: the storage-full banner of an earlier one goes.
-    transition('starting', { storageFull: false });
+    // A new take: an earlier stop's "saved" text no longer describes it (the banner stays).
+    transition('starting', { storageFullSaved: false });
     let captured: PromiseSettledResult<Capture>;
     let opening: PromiseSettledResult<RawWriter>;
     try {
@@ -609,7 +611,7 @@ export function createTakeLifecycle(
       ci.beats = schedule.beats;
       captureStart = schedule.captureStart;
       countIn = ci;
-      transition('count-in', { storageFull: false });
+      transition('count-in', { storageFullSaved: false });
       ci.cancelClicks = opened.clicks(schedule.beats);
       capturing = opened.capture(
         (samples, clipped) => onChunk(take, samples, clipped),
@@ -808,10 +810,11 @@ export function createTakeLifecycle(
           deleted = false;
         }
         active = null;
-        // A short take that hit storage-full still raises the banner: the disk is full.
+        // A short take that hit storage-full says nothing was saved, while the banner shows
+        // (its deleted files may have cleared the storage-full status).
         transition('idle', {
           notice: { kind: 'too-short', seq: host.nextNoticeSeq() },
-          ...(take.storageFull ? { storageFull: true, storageFullSaved: false } : {}),
+          ...(take.storageFull ? { storageFullSaved: false } : {}),
         });
         if (!deleted) reofferAfter(Promise.resolve(), take.id);
         return 'short';
@@ -834,7 +837,7 @@ export function createTakeLifecycle(
       active = null;
       transition('idle', {
         notice: { kind: 'save-failed', seq: host.nextNoticeSeq() },
-        ...(full ? { storageFull: true, storageFullSaved: false } : {}),
+        ...(full ? { storageFullSaved: false } : {}),
       });
       reofferAfter(closed, take.id);
       return 'failed';
@@ -844,7 +847,7 @@ export function createTakeLifecycle(
     const full = stopReason === 'storage-full';
     transition('idle', {
       savedSeq: host.snapshot().savedSeq + 1,
-      ...(full ? { storageFull: true, storageFullSaved: true } : {}),
+      ...(full ? { storageFullSaved: true } : {}),
     });
     // A stop that finishes after a handover stays put: this tab no longer runs the app.
     if ((stopReason === 'user' || stopReason === 'max-length') && !host.handedOver()) {

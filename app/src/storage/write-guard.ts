@@ -33,12 +33,11 @@ function errorName(err: unknown): string | undefined {
 /**
  * `AppError`s pass through; `QuotaExceededError` → `storage-full`; anything else → `storage-failed`.
  * Any `storage-full` result (a write's, or a read's) sets the storage-full status
- * (persistence.ts) for `takeId`, the take the operation was for when known; the next committed
- * save of another take clears it.
+ * (persistence.ts); only freed space clears it.
  */
-export function toStorageError(err: unknown, what: string, takeId?: string): AppError {
+export function toStorageError(err: unknown, what: string): AppError {
   const mapped = mapStorageError(err, what);
-  if (mapped.code === 'storage-full') markStorageFull(takeId);
+  if (mapped.code === 'storage-full') markStorageFull();
   return mapped;
 }
 
@@ -47,9 +46,9 @@ export function toStorageError(err: unknown, what: string, takeId?: string): App
  * (compressed audio, a take patch, a tab) rejects with `storage-full` as on a full disk, through
  * `toStorageError`. Production builds tree-shake the hook.
  */
-export function assertDevSaveSpace(what: string, takeId: string): void {
+export function assertDevSaveSpace(what: string): void {
   if (import.meta.env.DEV && storageFullSaveHookOn()) {
-    throw toStorageError({ name: 'QuotaExceededError', message: 'dev hook' }, what, takeId);
+    throw toStorageError({ name: 'QuotaExceededError', message: 'dev hook' }, what);
   }
 }
 

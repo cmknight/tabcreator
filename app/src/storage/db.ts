@@ -8,6 +8,7 @@ import { AppError } from '../model/errors';
 import { TAKE_FIELD_OWNERS, type Tab, type Take, type TakeWriter } from '../model/types';
 import { audioStore, type AudioStore } from './audio-store';
 import { emit, type StorageEvent } from './events';
+import { beginFreeing } from './persistence';
 import {
   DB_NAME,
   MIGRATIONS,
@@ -62,7 +63,13 @@ export interface TakeDb {
    * 6.6). Resolves to the number written and always emits one `library-restored` with it.
    */
   importTakes(records: readonly ImportRecord[]): Promise<number>;
-  /** Removes the Take and Tab in one transaction, then its audio and raw files best-effort. */
+  /**
+   * Removes the Take and Tab in one transaction, then its audio and raw files best-effort. A
+   * player's delete (writer `library-session`) of a take that existed then reports the freed
+   * space (persistence.ts `beginFreeing`): the storage-full status clears when both removals
+   * succeeded, and a room re-check starts (not awaited). Automatic deletes (recording's
+   * too-short take, recovery) leave the status alone.
+   */
   deleteTake(id: string, writer: TakeWriter): Promise<void>;
   fenceWrites(): void;
   /**
@@ -78,6 +85,8 @@ export interface TakeDbOptions {
   name?: string;
   migrations?: readonly Migration[];
   audio?: Pick<AudioStore, 'deleteAudio' | 'deleteRaw'>;
+  /** Begins a player's delete; persistence.ts `beginFreeing` when absent. */
+  beginFreeing?: () => (removed: boolean) => Promise<void>;
   now?: () => Date;
   /** Whether the dev-build ownership check runs. Defaults to `import.meta.env.DEV`. */
   checkOwnership?: boolean;
@@ -109,6 +118,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
   const migrations = options.migrations ?? MIGRATIONS;
   const version = migrations.length;
   const audio = options.audio ?? audioStore;
+  const freeing = options.beginFreeing ?? (() => beginFreeing());
   const now = options.now ?? (() => new Date());
   const checkOwnership = options.checkOwnership ?? import.meta.env.DEV;
 
@@ -123,13 +133,13 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
    * InvalidStateError of a transaction on the closed connection, by an operation that got the
    * connection before the close) is `instance-taken`, not `storage-failed`.
    */
-  function storageError(err: unknown, what: string, takeId?: string): AppError {
+  function storageError(err: unknown, what: string): AppError {
     if (closed && !(err instanceof AppError)) {
       return new AppError('instance-taken', `${what}: database closed: instance lost`, {
         cause: err,
       });
     }
-    return toStorageError(err, what, takeId);
+    return toStorageError(err, what);
   }
 
   function report(state: ConnectionState) {
@@ -198,8 +208,6 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     what: string,
     stores: S,
     fn: (tx: WriteTx<S>) => Promise<T>,
-    /** The take written, if one: a storage-full failure is remembered for it. */
-    takeId?: string,
   ): Promise<T> {
     assertWritable();
     const db = await connect();
@@ -207,7 +215,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     try {
       tx = db.transaction(stores, 'readwrite');
     } catch (err) {
-      throw storageError(err, what, takeId);
+      throw storageError(err, what);
     }
     const done = tx.done;
     done.catch(() => {
@@ -226,7 +234,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
       } catch {
         // Already aborted or finished.
       }
-      throw storageError(cause, what, takeId);
+      throw storageError(cause, what);
     }
   }
 
@@ -247,46 +255,36 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
 
     async createTake(take) {
       const record: Take = { ...take, updatedAt: stamp() };
-      await write('Create take', ['takes'], (tx) => tx.objectStore('takes').add(record), record.id);
+      await write('Create take', ['takes'], (tx) => tx.objectStore('takes').add(record));
       emit({ type: 'take-put', takeId: record.id, writer: 'recording-session' });
       return record;
     },
 
     async patchTake(id, patch, writer) {
       if (checkOwnership) assertOwnedFields(patch, writer);
-      if (import.meta.env.DEV) assertDevSaveSpace('Patch take', id);
-      const record = await write(
-        'Patch take',
-        ['takes'],
-        async (tx) => {
-          const store = tx.objectStore('takes');
-          const existing = await store.get(id);
-          if (!existing) throw notFound(id);
-          const next: Take = { ...existing, ...patch, id, updatedAt: stamp() };
-          await store.put(next);
-          return next;
-        },
-        id,
-      );
+      if (import.meta.env.DEV) assertDevSaveSpace('Patch take');
+      const record = await write('Patch take', ['takes'], async (tx) => {
+        const store = tx.objectStore('takes');
+        const existing = await store.get(id);
+        if (!existing) throw notFound(id);
+        const next: Take = { ...existing, ...patch, id, updatedAt: stamp() };
+        await store.put(next);
+        return next;
+      });
       emit({ type: 'take-put', takeId: id, writer });
       return record;
     },
 
     async putTab(tab, writer) {
-      if (import.meta.env.DEV) assertDevSaveSpace('Put tab', tab.takeId);
-      const record = await write(
-        'Put tab',
-        ['takes', 'tabs'],
-        async (tx) => {
-          if ((await tx.objectStore('takes').getKey(tab.takeId)) === undefined) {
-            throw notFound(tab.takeId);
-          }
-          const next: Tab = { ...withTabDefaults(tab), updatedAt: stamp() };
-          await tx.objectStore('tabs').put(next);
-          return next;
-        },
-        tab.takeId,
-      );
+      if (import.meta.env.DEV) assertDevSaveSpace('Put tab');
+      const record = await write('Put tab', ['takes', 'tabs'], async (tx) => {
+        if ((await tx.objectStore('takes').getKey(tab.takeId)) === undefined) {
+          throw notFound(tab.takeId);
+        }
+        const next: Tab = { ...withTabDefaults(tab), updatedAt: stamp() };
+        await tx.objectStore('tabs').put(next);
+        return next;
+      });
       emit({ type: 'tab-put', takeId: tab.takeId, writer });
       return record;
     },
@@ -294,22 +292,17 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     async commitAnalysis(takeId, tab, takePatch) {
       const writer: TakeWriter = 'take-session';
       if (checkOwnership) assertOwnedFields(takePatch, writer);
-      const result = await write(
-        'Commit analysis',
-        ['takes', 'tabs'],
-        async (tx) => {
-          const takes = tx.objectStore('takes');
-          const existing = await takes.get(takeId);
-          if (!existing) throw notFound(takeId);
-          const updatedAt = stamp();
-          const nextTab: Tab = { ...withTabDefaults(tab), takeId, updatedAt };
-          const nextTake: Take = { ...existing, ...takePatch, id: takeId, updatedAt };
-          await tx.objectStore('tabs').put(nextTab);
-          await takes.put(nextTake);
-          return { take: nextTake, tab: nextTab };
-        },
-        takeId,
-      );
+      const result = await write('Commit analysis', ['takes', 'tabs'], async (tx) => {
+        const takes = tx.objectStore('takes');
+        const existing = await takes.get(takeId);
+        if (!existing) throw notFound(takeId);
+        const updatedAt = stamp();
+        const nextTab: Tab = { ...withTabDefaults(tab), takeId, updatedAt };
+        const nextTake: Take = { ...existing, ...takePatch, id: takeId, updatedAt };
+        await tx.objectStore('tabs').put(nextTab);
+        await takes.put(nextTake);
+        return { take: nextTake, tab: nextTab };
+      });
       emit({ type: 'tab-put', takeId, writer });
       emit({ type: 'take-put', takeId, writer });
       return result;
@@ -334,6 +327,9 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
     },
 
     async deleteTake(id, writer) {
+      // Only the player's delete frees space for the storage-full status (not recording's or
+      // recovery's automatic deletes); a failure from here on keeps the status.
+      const freed = writer === 'library-session' ? freeing() : null;
       const existed = await write('Delete take', ['takes', 'tabs'], async (tx) => {
         const found = (await tx.objectStore('takes').getKey(id)) !== undefined;
         await tx.objectStore('takes').delete(id);
@@ -342,8 +338,16 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
       });
       if (existed) emit({ type: 'take-deleted', takeId: id, writer });
       // Files go after the records; a failure leaves an orphan for the start-up scan (AD-15).
-      await audio.deleteAudio(id).catch(() => {});
-      await audio.deleteRaw(id).catch(() => {});
+      let removed = true;
+      await audio.deleteAudio(id).catch(() => {
+        removed = false;
+      });
+      await audio.deleteRaw(id).catch(() => {
+        removed = false;
+      });
+      // Space was freed: the status clears once both removals succeeded; the re-check that may
+      // also clear it runs on without holding the delete.
+      if (existed && freed) void freed(removed);
     },
 
     fenceWrites,

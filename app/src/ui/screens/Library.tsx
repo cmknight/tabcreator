@@ -44,8 +44,9 @@
 // (e), .libfoot): above the heading, the one-time storage notice (a warning banner, role status,
 // when the browser has not persisted storage: Back up library starts the backup, Dismiss hides it
 // for this visit; showing it sets `prefs.persistNoticeShown` through the session, so no later
-// visit shows it) and the storage-full banner (an error banner, role alert, no Dismiss and no
-// link, shown until a save succeeds). After the list, the footer: "23 takes · 41.0 MB used", the
+// visit shows it) and the storage-full banner (`StorageFullBannerView`: no role, no Dismiss and no
+// link, announced assertively once per showing; shown while storage/persistence.ts's one status
+// is set, which only freed space clears). After the list, the footer: "23 takes · 41.0 MB used", the
 // whole library's count even while searching, with no footer for an empty library or an unknown
 // usage.
 
@@ -86,6 +87,7 @@ import {
   WarnIcon,
 } from '../components/icons';
 import { RowMenu, type RowMenuItem } from '../components/RowMenu';
+import { StorageFullBannerView } from '../components/StorageFullBannerView';
 import { formatElapsed, formatTakeDate } from '../format';
 import { downloadBlob, pickFile } from '../platform';
 import { routeToHash } from '../router';
@@ -616,6 +618,14 @@ export function Library({
   const heading = useRef<HTMLHeadingElement>(null);
   const focusHeading = useCallback(() => heading.current?.focus(), []);
 
+  // The storage-full banner is announced once each time it shows, including on mount (AD-18).
+  const fullAnnounced = useRef(false);
+  useEffect(() => {
+    if (fullAnnounced.current === storage.full) return;
+    fullAnnounced.current = storage.full;
+    if (storage.full) announce(strings['global.storageFull'], 'assertive');
+  }, [storage.full]);
+
   // The one-time storage notice: remembered as shown once it shows; Dismiss hides it this visit.
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   const noticeShown = persistNotice && !noticeDismissed;
@@ -826,14 +836,12 @@ export function Library({
         </div>
       )}
       {storage.full && (
-        <div
-          className={`${banner.banner} ${banner.error} ${libraryStyles.topBanner}`}
-          role="alert"
-          data-testid="library-storage-full"
-        >
-          <ErrorIcon className={banner.icon} />
-          <p className={banner.text}>{strings['library.storageFull']}</p>
-        </div>
+        <StorageFullBannerView
+          text={strings['global.storageFull']}
+          className={libraryStyles.topBanner}
+          testId="library-storage-full"
+          link={false}
+        />
       )}
       <h1 ref={heading} className={styles.title} tabIndex={-1}>
         {strings['library.title']}
