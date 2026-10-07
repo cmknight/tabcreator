@@ -48,7 +48,11 @@ export function Settings({ session = settingsSession }: SettingsProps = {}) {
         <div className={`${banner.banner} ${banner.error} ${settingsStyles.bannerError}`}>
           <ErrorIcon className={banner.icon} />
           <p className={banner.text}>{strings['global.engineFailed']}</p>
-          <button type="button" className={buttons.secondary} onClick={() => reloadOrExplain()}>
+          <button
+            type="button"
+            className={buttons.secondary}
+            onClick={() => void reloadOrExplain()}
+          >
             {strings['global.reload']}
           </button>
         </div>

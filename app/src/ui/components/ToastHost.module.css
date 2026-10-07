@@ -39,3 +39,27 @@
 .action:focus-visible {
   outline-color: var(--color-surface);
 }
+
+/* A persistent toast's close (×) button: a square, borderless control after the action. */
+.close {
+  flex: none;
+  width: var(--size-control);
+  height: var(--size-control);
+  padding: 0;
+  background: transparent;
+  color: var(--color-surface);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.close:focus-visible {
+  outline-color: var(--color-surface);
+}
+
+.closeIcon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  margin: auto;
+}

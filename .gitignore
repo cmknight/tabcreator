@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# The e2e update test's second build (TABCREATOR_E2E_BUILD=B).
+dist-update/
 test-results/
 playwright-report/
 coverage/

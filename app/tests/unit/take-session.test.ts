@@ -7,6 +7,7 @@ import {
   activeTakeSession,
   createTakeSession,
   hasAudio,
+  hasHeldTabs,
   hasUnsavedEdits,
   isTabShown,
   onPageHide,
@@ -57,6 +58,7 @@ function harness(take: Take | null, tab: Tab | null = null) {
     });
   const finish = (outcome: AnalysisOutcome) => runs.at(-1)!.resolve(outcome);
   const fail = (err: unknown) => runs.at(-1)!.reject(err);
+  const flushes = new Set<() => Promise<void>>();
   const deps: TakeSessionDeps = {
     db: {
       getTake: vi.fn(async () => take),
@@ -96,9 +98,18 @@ function harness(take: Take | null, tab: Tab | null = null) {
     putTab: vi.fn(async (t: Tab) => t),
     mapFrets: vi.fn(async () => []),
     onPageHide: vi.fn(() => () => {}),
+    registerFlush: vi.fn((flush: () => Promise<void>) => {
+      flushes.add(flush);
+      return () => {
+        flushes.delete(flush);
+      };
+    }),
   };
   return {
     deps,
+    /** The session's registrations with the app-wide flush (`session/flush.ts`). */
+    flushes,
+    flushAll: () => Promise.all([...flushes].map((f) => f())),
     progress: (p: number) => listeners.forEach((l) => l(p)),
     saving: () => savers.forEach((l) => l()),
     finish,
@@ -1959,6 +1970,74 @@ describe('take session edits', () => {
     write.resolve(session.getSnapshot().tab!);
     await tick(0);
     expect(hasUnsavedEdits()).toBe(false);
+  });
+
+  // Story "Update available prompt" (spine AD-16): an app reload awaits `flushAll()`.
+  it('the app-wide flush waits for a queued edit, then saves it', async () => {
+    const { h, session } = await open();
+    expect(h.flushes.size).toBe(1);
+    const frets = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+    vi.mocked(h.deps.mapFrets).mockReturnValueOnce(frets.promise);
+    const order: string[] = [];
+    vi.mocked(h.deps.putTab).mockImplementationOnce(async (tab: Tab) => {
+      order.push(`put fret ${tab.notes.find((n) => n.id === 'b')?.fret}`);
+      return tab;
+    });
+    void session.setFret('b', 5);
+    await tick(0);
+    const flushed = h.flushAll().then(() => order.push('flushed'));
+    await tick(0);
+    expect(h.deps.putTab).not.toHaveBeenCalled(); // the edit still waits on the engine
+    frets.resolve(fakeMap(vi.mocked(h.deps.mapFrets).mock.calls.at(-1)![1]));
+    await flushed;
+    // Saved at once by the flush, not after the 300 ms debounce.
+    expect(order).toEqual(['put fret 5', 'flushed']);
+    expect(hasUnsavedEdits()).toBe(false);
+  });
+
+  it('stays registered with the app-wide flush until its last save settles after dispose', async () => {
+    const { h, session } = await open();
+    const write = deferred<Tab>();
+    vi.mocked(h.deps.putTab).mockReturnValueOnce(write.promise);
+    await session.setFret('b', 5);
+    session.dispose();
+    await tick(0);
+    expect(h.deps.putTab).toHaveBeenCalledTimes(1);
+    expect(h.flushes.size).toBe(1);
+    write.resolve(session.getSnapshot().tab!);
+    await tick(0);
+    expect(h.flushes.size).toBe(0);
+  });
+
+  it('the app-wide flush retries a failed save; a storage-full edit left behind is held', async () => {
+    const { h, session } = await open();
+    vi.mocked(h.deps.putTab).mockRejectedValueOnce(new AppError('storage-full', 'quota'));
+    await session.setFret('b', 5);
+    await tick(300);
+    expect(session.getSnapshot().saveFailed).toBe('storage-full');
+    expect(hasHeldTabs()).toBe(true);
+    await h.flushAll(); // saves it again
+    expect(h.deps.putTab).toHaveBeenCalledTimes(2);
+    expect(hasUnsavedEdits()).toBe(false);
+    expect(hasHeldTabs()).toBe(false);
+  });
+
+  it('an edit landing after dispose keeps the session in the app-wide flush until it is saved', async () => {
+    const { h, session } = await open();
+    const frets = deferred<Awaited<ReturnType<TakeSessionDeps['mapFrets']>>>();
+    vi.mocked(h.deps.mapFrets).mockReturnValueOnce(frets.promise);
+    void session.setFret('b', 5);
+    await tick(0);
+    session.dispose();
+    await tick(0);
+    expect(h.flushes.size).toBe(1); // the queued edit has not landed
+    frets.resolve(fakeMap(vi.mocked(h.deps.mapFrets).mock.calls.at(-1)![1]));
+    await tick(0);
+    expect(h.flushes.size).toBe(1); // landed: its save is pending
+    await h.flushAll();
+    expect(h.deps.putTab).toHaveBeenCalledTimes(1);
+    await tick(0);
+    expect(h.flushes.size).toBe(0);
   });
 
   it('a clock stepping backward between two digits never merges them', async () => {

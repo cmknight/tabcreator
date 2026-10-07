@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ToastHost } from '../../src/ui/components/ToastHost';
 import { Settings } from '../../src/ui/screens/Settings';
@@ -54,22 +54,22 @@ function clickReload() {
   return reload;
 }
 
-it('engine failed and a take recording: Reload is refused with the reloadBusy toast', () => {
+it('engine failed and a take recording: Reload is refused with the reloadBusy toast', async () => {
   stores.recording = true;
   const reload = clickReload();
+  expect((await screen.findByTestId('toast')).textContent).toContain(strings['global.reloadBusy']);
   expect(reload).not.toHaveBeenCalled();
-  expect(screen.getByTestId('toast').textContent).toContain(strings['global.reloadBusy']);
 });
 
-it('engine failed and a take analysing: Reload is refused with the reloadBusy toast', () => {
+it('engine failed and a take analysing: Reload is refused with the reloadBusy toast', async () => {
   stores.analysing = true;
   const reload = clickReload();
+  expect((await screen.findByTestId('toast')).textContent).toContain(strings['global.reloadBusy']);
   expect(reload).not.toHaveBeenCalled();
-  expect(screen.getByTestId('toast').textContent).toContain(strings['global.reloadBusy']);
 });
 
-it('engine failed and the app not busy: Reload reloads, with no toast', () => {
+it('engine failed and the app not busy: Reload reloads (after the flush), with no toast', async () => {
   const reload = clickReload();
-  expect(reload).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
   expect(screen.queryByTestId('toast')).toBeNull();
 });

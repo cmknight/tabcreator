@@ -28,10 +28,34 @@ function cspMeta(): Plugin {
   };
 }
 
+/**
+ * The e2e update test's second build (story "Update available prompt"): with
+ * `TABCREATOR_E2E_BUILD=B` the build is a new version of the app (its `index.html`, and so its
+ * service worker's precache manifest, differ) and goes to `dist-update/`, never `dist/`.
+ */
+const E2E_BUILD = process.env.TABCREATOR_E2E_BUILD;
+
+/** Marks the e2e second build's `index.html` with `<meta name="tabcreator-build">`. */
+function e2eBuildMeta(build: string | undefined): Plugin {
+  return {
+    name: 'tabcreator-e2e-build-meta',
+    apply: 'build',
+    transformIndexHtml(html) {
+      if (!build) return html;
+      if (!/^[A-Za-z0-9]+$/.test(build)) throw new Error(`TABCREATOR_E2E_BUILD: bad ${build}`);
+      return html.replace(
+        '</head>',
+        `  <meta name="tabcreator-build" content="${build}" />\n  </head>`,
+      );
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
     react(),
     cspMeta(),
+    e2eBuildMeta(E2E_BUILD),
     pwaIcons(),
     // The installable, offline app (CAP-20, spine AD-19). Production builds only: the dev server
     // gets the plugin's no-op `virtual:pwa-register` stub and no service worker.
@@ -58,6 +82,7 @@ export default defineConfig({
   build: {
     // No data: URIs; every asset is a same-origin file the CSP allows (spine AD-13).
     assetsInlineLimit: 0,
+    ...(E2E_BUILD ? { outDir: 'dist-update' } : {}),
   },
   // The engine worker loads the wasm glue with a dynamic import, which needs an ES module worker.
   worker: {

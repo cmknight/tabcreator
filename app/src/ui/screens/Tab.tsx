@@ -201,7 +201,7 @@ function FailureBanner({ code, session }: { code: AppErrorCode; session: TakeSes
       <div className={className} data-testid="tab-engine-failed">
         <ErrorIcon className={banner.icon} />
         <p className={banner.text}>{text}</p>
-        <button type="button" className={buttons.secondary} onClick={() => reloadOrExplain()}>
+        <button type="button" className={buttons.secondary} onClick={() => void reloadOrExplain()}>
           {strings['global.reload']}
         </button>
       </div>

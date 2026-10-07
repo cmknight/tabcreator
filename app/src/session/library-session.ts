@@ -45,6 +45,7 @@ import { loadPrefs, updatePrefs } from '../storage/prefs';
 import { readBackup, type ValidBackup } from '../storage/restore';
 import { beginRestore, isRestoreRunning } from '../storage/restore-state';
 import { devHoldBackup } from '../dev/hooks/backup';
+import { registerFlush } from './flush';
 import { requestPersist } from './take-save';
 import {
   subscribe as subscribeStorage,
@@ -214,6 +215,16 @@ export interface LibrarySession {
    * shows it. A failed write is logged; the notice may then show again on a later visit.
    */
   markPersistNoticeShown(): void;
+  /**
+   * Whether a backup or restore is running (this session's, or any restore holding storage's
+   * signal): an app reload would cut it short (story "Update available prompt").
+   */
+  isBusy(): boolean;
+  /**
+   * Resolves once the rename and delete writes in flight have settled (never rejects): the
+   * app-wide flush (`session/flush.ts`) before a reload.
+   */
+  flush(): Promise<void>;
 }
 
 export interface LibraryDeps {
@@ -783,6 +794,8 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
       };
     },
     getSnapshot: () => snapshot,
+    isBusy: () => backupRun !== 0 || restoreRunning || deps.isRestoreRunning(),
+    flush: writesSettled,
   };
 }
 
@@ -825,3 +838,7 @@ export const librarySession: LibrarySession = createLibrarySession({
     updatePrefs({ persistNoticeShown: true });
   },
 });
+
+// An app reload awaits the Library's writes in flight (spine AD-16). Registered for the app's
+// lifetime: the session outlives the Library screen.
+registerFlush(() => librarySession.flush());

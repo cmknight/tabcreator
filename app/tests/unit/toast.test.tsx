@@ -146,6 +146,39 @@ describe('toast', () => {
     expect(toast()).toBeNull();
   });
 
+  // Story "Update available prompt": the update toast stays until its action or a replacement.
+  it('a persistent toast has no timer, and still announces', () => {
+    act(() => showToast({ message: 'Update available', persistent: true }));
+    act(() => vi.advanceTimersToNextFrame());
+    expect(polite()?.textContent).toBe('Update available');
+    advance(TOAST_MS * 10);
+    expect(toast()?.textContent).toBe('Update available');
+    act(() => showToast({ message: 'Tab copied' }));
+    advance(TOAST_MS);
+    expect(toast()).toBeNull();
+  });
+
+  it('a persistent toast has a close button: it removes the toast and runs its close', () => {
+    const run = vi.fn();
+    act(() =>
+      showToast({
+        message: 'Update available',
+        persistent: true,
+        close: { label: 'Close it', run },
+      }),
+    );
+    act(() => screen.getByRole('button', { name: 'Close it' }).click());
+    expect(toast()).toBeNull();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('a plain toast has no close button; a silent toast is not announced', () => {
+    act(() => showToast({ message: 'Quiet', silent: true }));
+    expect(screen.queryByRole('button')).toBeNull();
+    act(() => vi.advanceTimersToNextFrame());
+    expect(polite()?.textContent ?? '').not.toBe('Quiet');
+  });
+
   it('replaces a toast with an identical one and still restarts the timer', () => {
     act(() => showToast({ message: 'Saved' }));
     advance(3000);

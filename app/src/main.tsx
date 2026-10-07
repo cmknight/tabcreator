@@ -4,6 +4,7 @@ import { registerSW } from 'virtual:pwa-register';
 import './ui/theme.css';
 import { App } from './App';
 import { devWarn } from './model/log';
+import { appUpdate } from './session/app-update';
 import { instanceLock } from './session/instance-lock';
 import { recheckStorageFull } from './storage/persistence';
 import { strings } from './ui/strings';
@@ -46,13 +47,26 @@ createRoot(root).render(
 // The service worker that makes the app installable and work offline (CAP-20, spine AD-19).
 // Registered once the page has loaded, so its precache install does not compete with the first
 // load's own requests. In dev builds `virtual:pwa-register` is a no-op stub, so there is no dev
-// service worker. The update prompt hooks into this same call (a later story).
+// service worker. A new version waits (`registerType: 'prompt'`): `onNeedRefresh` marks it
+// available for the update prompt (story "Update available prompt"), whose Reload flushes and
+// then has the waiting worker take over; its `controlling` event reloads through `onNeedReload`,
+// so the plugin's own reload path never runs. The app checks for a new version each time it
+// becomes visible and hourly.
 if ('serviceWorker' in navigator) {
   const register = () => {
-    registerSW({
+    const updateSW = registerSW({
       immediate: true,
+      onNeedRefresh: () => appUpdate.markAvailable(),
+      onNeedReload: () => {
+        appUpdate.controlling();
+        location.reload();
+      },
+      onRegisteredSW: (_url: string, registration: ServiceWorkerRegistration | undefined) => {
+        if (registration) appUpdate.setRegistration(registration);
+      },
       onRegisterError: (error: unknown) => devWarn('service worker registration failed', error),
     });
+    appUpdate.setUpdater(updateSW);
   };
   if (document.readyState === 'complete') register();
   else window.addEventListener('load', register, { once: true });

@@ -10,6 +10,19 @@ export interface ToastAction {
 export interface Toast {
   message: string;
   action?: ToastAction;
+  /**
+   * Stays until its action, a replacement or `dismissToast` (no timer). Only the update prompt
+   * (ui/update-prompt.ts), which must wait for the player and be offered again (spine AD-19);
+   * every other toast auto-dismisses (DESIGN.md Toast).
+   */
+  persistent?: boolean;
+  /**
+   * A persistent toast's close (×) button: its accessible name (default `global.dismiss`) and
+   * what closing it does besides removing it.
+   */
+  close?: { label: string; run: () => void };
+  /** Shown without announcing it (an update prompt offered again; ui/update-prompt.ts). */
+  silent?: boolean;
 }
 
 /** A shown toast; `id` changes on every `showToast`, so a repeat restarts the timer. */

@@ -36,13 +36,14 @@ if (!existsSync(MIC_FIXTURE)) throw new Error(`prod-mic fixture missing: ${MIC_F
 
 /**
  * Locally, build the engine wasm (so Rust edits are never served stale), the test-only
- * `test-panic` engine that engine.spec.ts routes in, and the app first. In
+ * `test-panic` engine that engine.spec.ts routes in, the app, and the app again as a new version
+ * into dist-update/ (`TABCREATOR_E2E_BUILD=B`, for update.prod.spec.ts) first. In
  * CI, serve the dist/ the workflow already built, checked and uploaded for Pages, so the
- * browser tests run against exactly the published bytes.
+ * browser tests run against exactly the published bytes (and the dist-update/ it built after).
  */
 const BUILD = process.env.CI
   ? ''
-  : 'pnpm -w run build:engine && pnpm -w run build:engine:test-panic && pnpm exec vite build && ';
+  : 'pnpm -w run build:engine && pnpm -w run build:engine:test-panic && pnpm exec vite build && TABCREATOR_E2E_BUILD=B pnpm exec vite build && ';
 
 export default defineConfig({
   testDir: './tests/e2e',

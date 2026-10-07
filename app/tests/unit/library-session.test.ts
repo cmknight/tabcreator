@@ -918,6 +918,53 @@ describe('library session: busy refusals and the pending download (story 7.17)',
     expect(lib.takes.get('a')!.title).toBe('New');
   });
 
+  // Story "Update available prompt": an app reload is refused while a backup or restore runs,
+  // and its flush awaits the writes in flight.
+  it('isBusy: true while a backup or restore runs, or storage holds the restore signal', async () => {
+    const { lib, session } = await loaded();
+    expect(session.isBusy()).toBe(false);
+    const run = deferred<BackupResult>();
+    vi.mocked(lib.deps.createBackup).mockImplementationOnce(() => run.promise);
+    const backingUp = session.backUp();
+    expect(session.isBusy()).toBe(true);
+    run.resolve(result('x.zip'));
+    await backingUp;
+    expect(session.isBusy()).toBe(false);
+
+    const read = deferred<ValidBackup>();
+    vi.mocked(lib.deps.readBackup).mockImplementationOnce(() => read.promise);
+    const reading = session.readBackup(new Blob([]));
+    expect(session.isBusy()).toBe(true);
+    read.reject(new AppError('backup-invalid', 'x'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(reading).rejects.toMatchObject({ code: 'backup-invalid' });
+    warn.mockRestore();
+    expect(session.isBusy()).toBe(false);
+
+    lib.storage.restoreRunning = true;
+    expect(session.isBusy()).toBe(true);
+    lib.storage.restoreRunning = false;
+  });
+
+  it('flush resolves once the writes in flight have settled, failed ones included', async () => {
+    const { lib, session } = await loaded();
+    const renaming = deferred<void>();
+    const realPatch = lib.deps.patchTake;
+    vi.mocked(lib.deps.patchTake).mockImplementationOnce(async (id, patch, writer) => {
+      await renaming.promise;
+      return realPatch(id, patch, writer);
+    });
+    const order: string[] = [];
+    const renamed = session.rename('a', 'New').then(() => order.push('renamed'));
+    const flushed = session.flush().then(() => order.push('flushed'));
+    await flush();
+    expect(order).toEqual([]);
+    renaming.resolve();
+    await Promise.all([renamed, flushed]);
+    expect(order).toEqual(['renamed', 'flushed']);
+    await expect(session.flush()).resolves.toBeUndefined();
+  });
+
   it('during a restore read or import: the writes reject library-busy (restore)', async () => {
     const { lib, session } = await loaded();
     const read = deferred<ValidBackup>();

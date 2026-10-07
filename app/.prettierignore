@@ -1,4 +1,5 @@
 dist
+dist-update
 test-results
 playwright-report
 coverage

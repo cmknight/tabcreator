@@ -25,6 +25,7 @@ import { Settings } from './ui/screens/Settings';
 import { Tab } from './ui/screens/Tab';
 import { Tuner } from './ui/screens/Tuner';
 import { strings } from './ui/strings';
+import { UpdatePrompt } from './ui/update-prompt';
 
 const NAV = [
   { route: { name: 'record' }, label: strings['global.navRecord'] },
@@ -165,6 +166,7 @@ function Shell({
       <MicNotices />
       <RecordingAnnouncer />
       <ToastHost />
+      <UpdatePrompt />
     </>
   );
 }

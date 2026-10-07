@@ -77,11 +77,20 @@ export const strings = {
   'global.ms': 'ms',
   'global.highestFret': 'Highest fret',
   /**
-   * The toast when a Reload (Settings' or the Tab screen's engine banner) is refused because a
-   * take is being recorded or saved, or a recovered take rebuilt (story 5.2), or a take analysed
-   * (story 5.6); new copy, not yet in EXPERIENCE.md.
+   * The update prompt's toast, with the action `global.reload` (EXPERIENCE.md "Update available":
+   * Toast "Update available — Reload"); never shown while the app is busy.
    */
-  'global.reloadBusy': "Can't reload while a recording is in progress, being saved or analysed",
+  'global.updateAvailable': 'Update available',
+  /**
+   * The toast when a Reload (Settings', the Tab screen's engine banner or the update toast's) is
+   * refused: a take is being recorded or saved, or a recovered take rebuilt (story 5.2), a take
+   * analysed (story 5.6), a Tab edit could not be saved (or is held for Retry), or a library
+   * backup or restore runs (story "Update available prompt"); new copy, not yet in EXPERIENCE.md.
+   */
+  'global.reloadBusy':
+    "Can't reload while TabCreator is recording, analysing, saving or backing up",
+  /** The persistent update toast's close button's accessible name. */
+  'global.updateDismiss': 'Dismiss update notice',
   'global.microphone': 'Microphone',
   /** The option text for an input the browser gives no label. */
   'global.microphoneUnnamed': (n: number) => `Microphone ${n}`,

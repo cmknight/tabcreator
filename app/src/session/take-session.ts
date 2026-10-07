@@ -114,6 +114,7 @@ import { db, type TakeDb } from '../storage/db';
 import { toStorageError } from '../storage/write-guard';
 import { subscribe as subscribeStorage, type StorageListener } from '../storage/events';
 import { analysis as appAnalysis, type Analysis, type AnalysisOutcome } from './analysis';
+import { registerFlush as appRegisterFlush } from './flush';
 
 /**
  * `cancelled`: the player cancelled the run (the screen offers Analyse). `failed`: the screen
@@ -257,6 +258,11 @@ export interface TakeSessionDeps {
   now?: () => number;
   /** A new note's id, for an insert (default `crypto.randomUUID`). */
   newId?: () => string;
+  /**
+   * Registers the session's flush with the app-wide `flushAll` (default `session/flush.ts`
+   * `registerFlush`); returns its removal. Registered while active (spine AD-16).
+   */
+  registerFlush?: (flush: () => Promise<void>) => () => void;
 }
 
 export interface TakeSession {
@@ -408,6 +414,14 @@ export function hasUnsavedEdits(): boolean {
   return unsavedSessions.size > 0;
 }
 
+/**
+ * Whether an edited Tab whose save failed `storage-full` is held for a later session's Retry
+ * (`heldTabs`): a reload would drop it (story "Update available prompt").
+ */
+export function hasHeldTabs(): boolean {
+  return heldTabs.size > 0;
+}
+
 export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSession {
   let snapshot: TakeSnapshot = {
     take: null,
@@ -445,6 +459,13 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
   let pendingDigit: { noteId: string; digit: number; at: number; key: string } | null = null;
   let digitSeq = 0;
   let removePageHide: (() => void) | null = null;
+  /** Removes this session's entry from the app-wide flush (`flushAll`); null while inactive. */
+  let unregisterFlush: (() => void) | null = null;
+  /** After deactivation, the removal from the app-wide flush still to run (`maybeUnregisterFlush`). */
+  let pendingUnregister: (() => void) | null = null;
+  /** After deactivation, whether the edit queue's tail (and the saves then) has settled. */
+  let queueSettled = false;
+  const registerFlush = deps.registerFlush ?? appRegisterFlush;
   /** Unsaved-edit bookkeeping for `hasUnsavedEdits`. */
   const unsavedKey = {};
   let active = false;
@@ -706,6 +727,10 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     active = true;
     unsubscribeStorage = deps.subscribeStorage(onStorage);
     removePageHide = deps.onPageHide(() => void flush());
+    // An app reload (update prompt, engine Reload) awaits the queued edits, then their save.
+    pendingUnregister?.();
+    pendingUnregister = null;
+    unregisterFlush = registerFlush(flushQueue);
     trackUnsaved();
     if (!loadStarted) void load();
     else maybeAnalyse();
@@ -718,6 +743,11 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     unsubscribeStorage = null;
     removePageHide?.();
     removePageHide = null;
+    // Still flushed by an app reload until the queued edits and their saves have settled.
+    pendingUnregister = unregisterFlush;
+    unregisterFlush = null;
+    queueSettled = false;
+    settleQueue();
     trackUnsaved();
     if (attached) {
       deps.analysis.detach(takeId, onProgress);
@@ -789,6 +819,35 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     } else {
       unsavedSessions.delete(unsavedKey);
     }
+    maybeUnregisterFlush();
+  }
+
+  /**
+   * After deactivation: removes this session from the app-wide flush once the queued edits have
+   * settled (`queueSettled`) and no save is pending or in flight. Re-checked on every change of
+   * the save state (`trackUnsaved`), so an edit that lands after dispose is still flushed.
+   */
+  function maybeUnregisterFlush() {
+    if (active || !pendingUnregister || !queueSettled) return;
+    if (saveTimer !== null || savesInFlight > 0) return;
+    const unregister = pendingUnregister;
+    pendingUnregister = null;
+    unregister();
+  }
+
+  /** Waits for the queue's tail and the saves then, again while more was queued meanwhile. */
+  function settleQueue() {
+    const tail = queue;
+    void tail
+      .then(() => saving)
+      .then(() => {
+        if (queue !== tail) {
+          settleQueue();
+          return;
+        }
+        queueSettled = true;
+        maybeUnregisterFlush();
+      });
   }
 
   /** Forgets the history, the pending save and the digit (a take loaded or re-analysed, or deleted). */
@@ -856,6 +915,14 @@ export function createTakeSession(takeId: string, deps: TakeSessionDeps): TakeSe
     }
     trackUnsaved();
     return saving;
+  }
+
+  /**
+   * Waits for the edit queue's tail (an edit waiting on the engine, then its reduce), then saves
+   * the Tab now (`flush`). The app-wide flush (`flushAll`) for this session.
+   */
+  function flushQueue(): Promise<void> {
+    return queue.then(flush);
   }
 
   /** Runs `task` after everything queued before it; dropped if the take is deleted meanwhile. */

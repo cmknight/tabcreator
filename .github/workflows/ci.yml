@@ -306,6 +306,13 @@ jobs:
         with:
           path: app/dist
 
+      # The e2e update test's second build (update.prod.spec.ts): the same app as a new version, in
+      # app/dist-update/, built after the Pages upload so the published bytes stay app/dist.
+      - name: Build e2e update build
+        run: pnpm --filter app exec vite build
+        env:
+          TABCREATOR_E2E_BUILD: B
+
       - name: Install Playwright Chromium
         run: pnpm --filter app exec playwright install --with-deps chromium
 

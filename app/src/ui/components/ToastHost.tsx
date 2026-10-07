@@ -7,6 +7,8 @@ import {
   type FocusEvent,
 } from 'react';
 import { announce } from '../a11y/announcer';
+import { strings } from '../strings';
+import { CloseIcon } from './icons';
 import { dismissToast, getToast, subscribeToast, TOAST_MS, type ShownToast } from '../toast';
 import styles from './ToastHost.module.css';
 
@@ -40,18 +42,24 @@ function ToastView({ toast }: { toast: ShownToast }) {
   }, []);
 
   // The toast element carries no aria-live (spine AD-18): its text goes through the announcer.
-  useEffect(() => announce(toast.message), [toast.message]);
-
-  // Counts down only while neither hovered nor focused (WCAG 2.2.1), keeping the time left.
+  // A silent toast (an update prompt offered again) is shown without announcing it.
+  const silent = toast.silent === true;
   useEffect(() => {
-    if (hovered || focused) return;
+    if (!silent) announce(toast.message);
+  }, [toast.message, silent]);
+
+  // Counts down only while neither hovered nor focused (WCAG 2.2.1), keeping the time left. A
+  // persistent toast has no timer.
+  const persistent = toast.persistent === true;
+  useEffect(() => {
+    if (persistent || hovered || focused) return;
     const started = Date.now();
     const timer = setTimeout(dismissToast, Math.max(0, remaining.current));
     return () => {
       clearTimeout(timer);
       remaining.current -= Date.now() - started;
     };
-  }, [hovered, focused]);
+  }, [persistent, hovered, focused]);
 
   const onFocus = (e: FocusEvent<HTMLDivElement>) => {
     const from = e.relatedTarget;
@@ -65,7 +73,7 @@ function ToastView({ toast }: { toast: ShownToast }) {
     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setFocused(false);
   };
 
-  const { action } = toast;
+  const { action, close } = toast;
   return (
     <div
       ref={element}
@@ -87,6 +95,19 @@ function ToastView({ toast }: { toast: ShownToast }) {
           }}
         >
           {action.label}
+        </button>
+      )}
+      {persistent && (
+        <button
+          type="button"
+          className={styles.close}
+          aria-label={close?.label ?? strings['global.dismiss']}
+          onClick={() => {
+            dismissToast();
+            close?.run();
+          }}
+        >
+          <CloseIcon className={styles.closeIcon} />
         </button>
       )}
     </div>
