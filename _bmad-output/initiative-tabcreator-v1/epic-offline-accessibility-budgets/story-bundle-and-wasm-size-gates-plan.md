@@ -3,7 +3,7 @@ title: 'Bundle and wasm size gates'
 type: 'feature'
 ticket: '7'
 created: '2026-10-07'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
