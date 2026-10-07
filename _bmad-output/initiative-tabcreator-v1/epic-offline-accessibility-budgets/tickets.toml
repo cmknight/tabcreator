@@ -1,0 +1,211 @@
+# tickets.toml — a container's agreed children. tickets.py reads it.
+# The order of the tables is the build order: move a table to reorder. `id` names a child for good and is never reused.
+# Status never lives here: an entry's plan beside it carries `status`.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Storage-full status that clears when space is freed"
+description = "Lands Library retro B1: storage/persistence.ts clears the storage-full status only when space is actually freed (a take deleted, a take's audio deleted, or an estimate() re-check showing room), never on a rename, a createTake or a restore that imported nothing, and re-checks estimate() at startup so a full disk shows again after a reload; the footer usage is re-read after the files are removed; Record and the Library read one storage-full source (take-lifecycle's own flag goes); the Library banner is built on StorageFullBannerView and announced through the announcer (AD-18), with one string for the three identical texts; story 11's any-screen notice reads this same source; the CI dist grep gains __storageFullSaveHook and assertDevSaveSpace (Library retro B4)."
+verify = "Vitest on persistence pins the new clear rules (delete take and delete audio clear, rename, createTake and a 0-take restore do not) and dev e2e shows the Library banner clearing after Delete take and staying after a rename, with Record's banner following the same status; axe passes on the Library banner."
+covers = ["CAP-25"]
+after = ["6.9"]
+hitl = false
+risk = "medium"
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-library-and-export/epic-library-and-export-retrospective.md, action B1 and findings DS1, DS2, AV3, DM1, PD2", "architecture — ARCHITECTURE-SPINE.md, AD-5, AD-18"]
+
+[[entry]]
+id = 2
+type = "story"
+title = "Restore validation and missing audio"
+description = "Lands the first half of Library retro B2 with the user's decisions: a take whose audio is missing from the zip is imported with audioMime null (shown as Audio deleted), restore never adds audio to a take already in the library, persistence is requested after a restore that imported takes, the manifest gains schemaVersion (DB_VERSION) and import runs the record migrations from it, the validator's status and stop-reason lists satisfy the model unions with domain checks (title cap, trim range, createdAt, note endMs ≥ startMs, fret range, recorded-without-audio, extension vs audioMime), re-zipped backups (a top-level folder, dotfiles, Thumbs.db) are accepted, and the backup toast reports skipped unfinished takes; story 16 then makes the read streaming, and story 9 seeds its production gates through this Restore path."
+verify = "Vitest covers every stop reason and status round-tripping, each domain rejection, a re-zipped backup, missing audio restoring as audioMime null and schemaVersion migration; dev e2e shows a missing-audio take as Audio deleted and the skipped-unfinished count in the backup toast."
+covers = ["CAP-19"]
+after = [1]
+hitl = false
+risk = "high"
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-library-and-export/epic-library-and-export-retrospective.md, action B2, findings DS3–DS8, DM3, and the user's answers in Open questions", "architecture — ARCHITECTURE-SPINE.md, AD-11, AD-14, AD-15"]
+
+[[entry]]
+id = 16
+type = "story"
+title = "Streaming restore and restore races"
+description = "Lands the second half of Library retro B2: restore reads the zip in pieces with fflate's streaming Unzip in the backup worker (user decision: no backup size cap), writing each audio entry as it arrives after the manifest has validated, so any backup that can be made can be restored; audio written for ids that importTakes then skips is removed; the recovery scan cannot delete restored audio while a restore runs, through a \"restore is running\" signal this story owns and story 17 also reads; a rollback under the write fence reports honestly instead of \"nothing was changed\"; it builds on story 2's validator and schemaVersion."
+verify = "Vitest covers the skipped-id cleanup, the scan race and the fenced rollback message; a dev e2e (or a worker test on a multi-hundred-MB synthetic zip) restores a backup larger than the old in-memory path allowed with peak memory well under the file size."
+covers = ["CAP-19"]
+after = [2]
+hitl = false
+risk = "high"
+unknown = "fflate's streaming Unzip API inside the backup worker, and whether the manifest can be validated before the audio entries arrive (zip entry order)."
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-library-and-export/epic-library-and-export-retrospective.md, action B2, findings DS6–DS8, and the user's answers in Open questions", "architecture — ARCHITECTURE-SPINE.md, AD-11, AD-14, AD-15"]
+
+[[entry]]
+id = 17
+type = "story"
+title = "Library robustness during backup and restore"
+description = "Lands Library retro B3: library-session refuses or queues rename, delete take and delete audio while a backup or restore runs (not only the row menu), reading story 16's \"restore is running\" signal, the backup worker treats an entry that vanishes mid-read as missing rather than failing the whole backup, ui/platform.ts keeps a large download's object URL alive long enough (a longer revoke delay or revoke on pagehide), pickFile always settles (a timeout or visibilitychange when neither cancel nor focus fires) and a late change still resolves, and a backup finishing after the player left the Library is offered on return instead of downloading unannounced."
+verify = "Vitest covers the session refusing writes during a backup and restore, a vanished entry, the revoke timing and pickFile settling without cancel or focus; dev e2e shows a delete attempted during a backup refused with its reason."
+covers = ["CAP-19"]
+after = [16]
+hitl = false
+risk = "medium"
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-library-and-export/epic-library-and-export-retrospective.md, action B3, findings DS9, DS14"]
+
+[[entry]]
+id = 3
+type = "story"
+title = "Installable offline app (tracer)"
+description = "Adds vite-plugin-pwa (AD-19: registerType prompt, registered through an external script per AD-13, relative base so scope and start_url work under /tabcreator/), a manifest named TabCreator (standalone, theme colours generated from theme.css tokens per AD-12, icons 192, 512 and maskable from a simple token-coloured glyph the builder generates as SVG and rasterises, user decision, replaceable later), and a precache of the shell, JS, CSS, fonts, icons, every worker and worklet chunk and the .wasm; it proves the whole path with the network off: after one online visit, a prod-mic Playwright run records, analyses, edits and exports offline; ci.yml checks dist for the manifest and service worker; story 4 adds the update prompt on top of this registration."
+verify = "Prod-mic Playwright: the manifest validates, the service worker is registered and controls the page, Chromium reports the app installable, and with context.setOffline(true) and a reload the player records a take, it analyses, a note is edited and the tab is copied and downloaded; the same install check passes on the subpath project, and csp.spec still reports no violations."
+covers = ["CAP-20"]
+after = [17]
+hitl = false
+risk = "high"
+unknown = "Whether vite-plugin-pwa 1.3.0 (spine Stack) supports Vite 8.3.1 and the inline-script ban without a manual virtual:pwa-register; and whether the precache glob can include the .wasm and every worker chunk without listing hashes."
+references = ["stories — TabCreator-User-Stories.md, US-8.1", "architecture — ARCHITECTURE-SPINE.md, AD-12, AD-13, AD-19, Stack", "design — DESIGN.md (colours)"]
+
+[[entry]]
+id = 4
+type = "story"
+title = "Update available prompt"
+description = "Shows the global toast \"Update available — Reload\" when story 3's registration finds a waiting service worker, only while session/app-reload.ts isAppBusy() is false (recording, analysing and unsaved edits; re-offered when it becomes false), with Reload going through session/app-reload.ts, which now awaits a flushAll() across stores with pending writes before reloading (AD-16); the update-blocked screen stays the path when a DB upgrade is blocked by another tab; story 13 maps its two-build test as the update-available state."
+verify = "Prod Playwright serves build A, then build B: the toast appears once idle, not during a recording (it appears after Stop), and Reload lands on build B with no lost edit; Vitest covers the idle gate and flushAll ordering."
+covers = ["CAP-20", "CAP-25"]
+after = [3]
+hitl = false
+risk = "medium"
+unknown = "How to serve two builds in one Playwright run so a real service-worker update is detected."
+references = ["stories — TabCreator-User-Stories.md, US-8.1", "architecture — ARCHITECTURE-SPINE.md, AD-16, AD-19", "experience — EXPERIENCE.md, State Patterns: update available, update blocked"]
+
+[[entry]]
+id = 5
+type = "story"
+title = "Capability check and the unsupported screen"
+description = "Adds a pure capability check (AudioWorklet, OPFS getDirectory, WebAssembly, Web Locks, BroadcastChannel, MediaRecorder, IndexedDB and module Workers, user decision; no user-agent sniffing) run in main.tsx before the instance lock starts, rendering the unsupported screen with EXPERIENCE's copy \"TabCreator needs a recent desktop Chrome\" (no top bar, centred, DESIGN.md) when any is missing; instance-lock's own unsupported paths (no locks, no BroadcastChannel, a SecurityError) route to the same screen and copy; story 13 maps its per-API tests as the unsupported state; it follows story 4 because both change the shell's top-level routing in main.tsx and App.tsx."
+verify = "Vitest runs the check with each API removed in turn; prod Playwright with an init script deleting each API shows the unsupported screen with no app shell and passes axe, and a full browser starts normally."
+covers = ["CAP-22", "CAP-25"]
+after = [4]
+hitl = false
+risk = "low"
+references = ["stories — TabCreator-User-Stories.md, US-8.3 (capability detection)", "architecture — ARCHITECTURE-SPINE.md, AD-6, map (capability check in main.tsx)", "design — DESIGN.md, unsupported screen"]
+
+[[entry]]
+id = 6
+type = "story"
+title = "Theme toggle"
+description = "Applies the stored theme pref (system, light, dark) as data-theme on the root in main.tsx before first render (AD-12), and adds the Appearance segmented control to Settings (DESIGN.md) through settings-session, so dark mode follows the system or the player's choice; stories 10 and 12 run their both-theme checks through this data-theme."
+verify = "Dev e2e: choosing Dark sets data-theme and the dark tokens, survives a reload with no light flash (the attribute is set before the root renders), System follows emulated prefers-color-scheme, and axe passes on Settings in both themes; Vitest covers the pref mapping."
+covers = ["CAP-21"]
+after = [5]
+hitl = false
+risk = "low"
+references = ["architecture — ARCHITECTURE-SPINE.md, AD-12", "design — DESIGN.md, dark mode (:181), Settings Appearance (:269-275)"]
+
+[[entry]]
+id = 7
+type = "story"
+title = "Bundle and wasm size gates"
+description = "Adds a CI step and script that fail the build when the gzip size of the entry chunk plus every chunk it imports statically (user decision: CSS, workers, worklets and lazy chunks excluded) exceeds 200 KB, or the .wasm exceeds 1 MB gz, reading limits from one budgets config that stories 8 and 9 also use, and printing the measured sizes in the job summary (AD-17); it follows story 4 so every playwright.config.ts and ci.yml change stays on one path."
+verify = "The script reports today's sizes (about 135 KB and 103 KB gz) and passes; a test or a CI dry run with the limits lowered below them fails with the offending number."
+covers = ["CAP-23"]
+after = [4]
+hitl = false
+risk = "low"
+references = ["stories — TabCreator-User-Stories.md, US-8.3", "architecture — ARCHITECTURE-SPINE.md, AD-17"]
+
+[[entry]]
+id = 8
+type = "story"
+title = "60 s analysis benchmark gate"
+description = "Adds tools/benchmark.ts (AD-17, US-8.3): it analyses c_major_scale_pos1 looped to 60 s in the real engine worker in Chromium against the production build, one warm-up then the median of 5 runs, scaled by a calibration factor in benchmark.config.json, and fails CI above the 2.0 s limit read from story 7's budgets config; it owns the production seeding helper (a fixture backup restored through the real Restore path) that stories 9 and 13 reuse; it also reports the cold first analysis and the peak memory of a 5-minute take (Detection retro WK2) without gating them."
+verify = "CI runs the benchmark on every change and passes with the measured median, cold time and peak memory in the job summary; lowering the limit below the measured median fails the job."
+covers = ["CAP-23"]
+after = [7]
+hitl = false
+risk = "medium"
+unknown = "The calibration factor between the CI runner and the spec's 2022 mid-range laptop (1.0 until the owner measures it in story 14); and how to read peak memory without cross-origin isolation (e.g. CDP heap metrics)."
+references = ["stories — TabCreator-User-Stories.md, US-8.3", "architecture — ARCHITECTURE-SPINE.md, AD-17", "retrospective — _bmad-output/initiative-tabcreator-v1/epic-detection-engine/epic-detection-engine-retrospective.md, WK2"]
+
+[[entry]]
+id = 9
+type = "story"
+title = "Latency gates and backup on the production build"
+description = "Moves the edit-to-paint p95 (500-note tab, ≤ 100 ms) and the 500-take search gates from the dev server to the production build (user decision), seeding them with story 8's production seeding helper (a fixture backup restored through the real Restore path) instead of the stripped dev pages, with limits from story 7's budgets config; it also runs backup and restore against the production build (CSP, the backup-worker chunk, the /tabcreator/ sub-path; Library retro B4), and story 13 reuses story 8's seeding."
+verify = "The perf project runs against the built app and both gates pass with p95 in the job summary; with the limits lowered they fail; no dev-only page or hook is needed in dist."
+covers = ["CAP-23", "CAP-19"]
+after = [8, "8.5"]
+hitl = false
+risk = "medium"
+references = ["architecture — ARCHITECTURE-SPINE.md, AD-17", "ticket — _bmad-output/initiative-tabcreator-v1/epic-tab-editing/tickets.toml, entry 5 (500-note edit latency)"]
+
+[[entry]]
+id = 10
+type = "story"
+title = "Shell reflow, focus and shortcuts help"
+description = "Makes the shell nav wrap so no screen scrolls sideways at 320 px (user decision, WCAG 1.4.10), moves focus to each screen's h1 on route change, adds the ? shortcuts dialog rendered by ui/a11y/shortcuts.ts (AD-18), also opened from a Keyboard shortcuts link in Settings' About panel (EXPERIENCE :34) and returning focus to where it was on Esc (:89), and lets Esc cancel a count-in while focus is in a text field (Recording retro A4)."
+verify = "Dev e2e at 320 px wide on every screen shows no horizontal scroll, a route change focuses the h1, ? and the Settings link open the dialog listing every registered shortcut with focus trapped and Esc closing it and restoring focus, and Esc in the tempo field cancels a count-in; axe passes on the dialog in both themes."
+covers = ["CAP-21"]
+after = [6]
+hitl = false
+risk = "medium"
+references = ["experience — EXPERIENCE.md, Accessibility Floor (:152-162), shortcuts", "architecture — ARCHITECTURE-SPINE.md, AD-18", "retrospective — _bmad-output/initiative-tabcreator-v1/epic-recording/epic-recording-retrospective.md, action A4"]
+
+[[entry]]
+id = 11
+type = "story"
+title = "Announcements and the Tab toolbar"
+description = "Gives the Tab toolbar roving tabindex with arrow-key navigation (one Tab stop), announces analysis done and take not found on the Tab screen, caps and expires the polite announcement queue and drains it in a hidden tab, stops count-in beats overwriting an assertive error, and announces failure-stop and storage-full notices on any screen from the shell, reading story 1's storage-full source (Recording retro A4)."
+verify = "Dev e2e: arrow keys move across the toolbar with one Tab stop, analysis done and take not found are announced, a storage-full stop while on the Tuner is announced; Vitest covers the queue cap, expiry, hidden-tab drain and error priority over beats."
+covers = ["CAP-21", "CAP-25"]
+after = [10]
+hitl = false
+risk = "medium"
+references = ["architecture — ARCHITECTURE-SPINE.md, AD-18", "retrospective — _bmad-output/initiative-tabcreator-v1/epic-recording/epic-recording-retrospective.md, action A4 and DS10", "experience — EXPERIENCE.md, Accessibility Floor"]
+
+[[entry]]
+id = 12
+type = "story"
+title = "Accessibility sweep: axe in both themes and keyboard-only flow"
+description = "Adds one axe matrix over every screen and its states (Record, Tuner, Tab, Library, Settings, dialogs, mic cards, instance and unsupported screens) in light and dark (using story 6's data-theme) with no serious or critical violations, fixing what it finds, and a keyboard-only prod-mic Playwright run of record → analyse → edit → export with no mouse."
+verify = "The axe matrix and the keyboard-only run pass in CI on the production build."
+covers = ["CAP-21"]
+after = [9, 11]
+hitl = false
+risk = "medium"
+references = ["stories — TabCreator-User-Stories.md, US-8.2", "experience — EXPERIENCE.md, Accessibility Floor"]
+
+[[entry]]
+id = 13
+type = "story"
+title = "CAP-25 states sweep"
+description = "Adds a checklist mapping every EXPERIENCE.md State Patterns row, plus SPEC's player-left-during-analysis (user decision), to a test that reaches it, and fills the gaps: offline (no indicator), update available, unsupported per API, the upgrade-blocked render, a reload mid-analysis on the production build; it also closes the remaining Recording retro A5 tests (Stop latency and Space in a text input on the production lane, ≤ 5,000,000 bytes, a production recovery check, the onHeld scan-delay wiring) and Library retro B4's CRLF export; it maps story 4's two-build update test and story 5's per-API tests rather than redoing them, and reuses story 8's production seeding (the WAV-in-a-real-browser item of A5 was done by Tab view entry 12)."
+verify = "A unit test fails when a State Patterns row has no mapped test, and every mapped test passes in CI."
+covers = ["CAP-25"]
+after = [12]
+hitl = false
+risk = "medium"
+references = ["experience — EXPERIENCE.md, State Patterns (:91-122)", "spec — SPEC.md, CAP-25", "retrospective — _bmad-output/initiative-tabcreator-v1/epic-recording/epic-recording-retrospective.md, action A5", "retrospective — _bmad-output/initiative-tabcreator-v1/epic-library-and-export/epic-library-and-export-retrospective.md, action B4"]
+
+[[entry]]
+id = 14
+type = "story"
+title = "Screen reader check"
+description = "The owner runs NVDA on Windows and VoiceOver on macOS through record → analyse → edit → export and the note list, recording what was heard and any problems in this story's plan; they also check by hand that Ctrl/⌘+Shift+C copies the tab in Chrome, Edge and Firefox (Library retro DS10) and that the installed app opens standalone (CAP-20), and runs tools/benchmark.ts on a 2022 mid-range laptop to set story 8's calibration factor in benchmark.config.json; each problem, including a shortcut that clashes and needs a rebind, becomes a bug ticket (US-8.2)."
+verify = "The plan records both runs with pass or the bug tickets raised."
+covers = ["CAP-21"]
+after = [12]
+hitl = true
+risk = "low"
+references = ["stories — TabCreator-User-Stories.md, US-8.2, US-8.3 (calibration)", "spec — SPEC.md, CAP-20 (standalone)", "retrospective — _bmad-output/initiative-tabcreator-v1/epic-library-and-export/epic-library-and-export-retrospective.md, action B4 and DS10"]
+
+[[entry]]
+id = 15
+type = "story"
+title = "Refactor sweep"
+description = "Cleans up what the build records and deferred review findings of stories 1 to 14, 16 and 17 name, plus Library retro B5 and Recording retro A8 sweep items, after grepping every plan's triage log for sweep routings; scope is set when it starts and takes cleanup only."
+verify = "CI stays green and every item in the sweep's agreed scope is closed or explicitly deferred in its plan's frontmatter."
+covers = []
+after = [1, 2, 16, 17, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+hitl = false
+risk = "low"
+references = ["retrospective — _bmad-output/initiative-tabcreator-v1/epic-library-and-export/epic-library-and-export-retrospective.md, action B5", "retrospective — _bmad-output/initiative-tabcreator-v1/epic-recording/epic-recording-retrospective.md, action A8"]

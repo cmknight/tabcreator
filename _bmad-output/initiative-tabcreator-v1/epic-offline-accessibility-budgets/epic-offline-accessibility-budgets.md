@@ -2,10 +2,11 @@
 type: epic
 title: "Offline, accessibility and budgets"
 parent: initiative-tabcreator-v1
-covers: [CAP-20, CAP-21, CAP-22, CAP-23, CAP-25]
+covers: [CAP-19, CAP-20, CAP-21, CAP-22, CAP-23, CAP-25]
 after: []
 assignee: ""
 risk: medium
+status: in-progress
 ---
 
 # Offline, accessibility and budgets
@@ -27,12 +28,12 @@ The finished app works for everyone, anywhere, at the speed the spec promises.
 
 ## Boundaries
 
-PWA config and service worker, `ui/a11y/`, dark mode, the capability check, CI budgets, and the final CAP-25 sweep across screens. CAP-23: the analysis-speed, editor-latency and bundle gates (AD-17); the accuracy measures and gates belong to epic Detection engine. US-4.2's 1.2 s pYIN sub-budget is dropped; the 60 s analysis ≤ 2 s gate stands (decided at Detection engine inception, 2026-10-03).
+PWA config and service worker, `ui/a11y/`, the storage-full status and restore correctness carried from epic Library and export (retro B1–B3: `storage/persistence.ts`, `storage/restore.ts`, `storage/backup*.ts`, `session/library-session.ts`, `ui/platform.ts`), dark mode, the capability check, CI budgets, and the final CAP-25 sweep across screens. CAP-23: the analysis-speed, editor-latency and bundle gates (AD-17); the accuracy measures and gates belong to epic Detection engine. US-4.2's 1.2 s pYIN sub-budget is dropped; the 60 s analysis ≤ 2 s gate stands (decided at Detection engine inception, 2026-10-03).
 
 ## References
 
-- spec — _bmad-output/specs/spec-tabcreator/SPEC.md, CAP-20, CAP-21, CAP-22, CAP-25
-- architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-12, AD-13, AD-17, AD-18, AD-19
+- spec — _bmad-output/specs/spec-tabcreator/SPEC.md, CAP-19, CAP-20, CAP-21, CAP-22, CAP-23, CAP-25
+- architecture — _bmad-output/planning-artifacts/architecture/architecture-tabcreator-2026-09-28/ARCHITECTURE-SPINE.md, AD-5, AD-6, AD-11, AD-12, AD-13, AD-14, AD-15, AD-16, AD-17, AD-18, AD-19
 - experience — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/EXPERIENCE.md, Accessibility Floor, State Patterns
 - design — _bmad-output/planning-artifacts/ux-designs/ux-tabcreator-2026-09-27/DESIGN.md
 - stories — TabCreator-User-Stories.md, US-8.1–US-8.3
@@ -50,3 +51,14 @@ PWA config and service worker, `ui/a11y/`, dark mode, the capability check, CI b
   - the Tab screen's state changes (analysis done, failed, take not found) are not announced and the progress bar has no aria-valuetext (story 5.6);
   - the polite announcement queue has no cap or expiry (Recording retro, story 3.3).
 - Carried from story 8.4's review (2026-10-05): the Tab toolbar declares role="toolbar" but has no arrow-key navigation; every button is a Tab stop (now six or so).
+- Decision: inception (user approved, 2026-10-07). Build order as in tickets.toml: B1 (1), restore validation (2), streaming restore (16) and Library robustness/B3 (17) open the epic; the tracer is entry 3 (installable offline app, record → analyse → edit → export with the network off); the budgets lane 7 → 8 → 9 and the accessibility lane 6 → 10 → 11 meet at the axe sweep (12); the CAP-25 sweep (13), the hitl screen-reader check (14) and the refactor sweep (15) close it. Built unattended with no plan or done checkpoints; the loop stops at the hitl entry 14.
+- Decision (user, 2026-10-07): the CAP-25 checklist is EXPERIENCE.md's State Patterns plus SPEC's "player left during analysis".
+- Decision (user, 2026-10-07): the 60 s analysis gate runs the wasm engine in Chromium on the production build, one warm-up then the median of 5, scaled by a calibration factor (1.0 until the owner measures it in entry 14); cold start and 5-minute peak memory are reported, not gated.
+- Decision (user, 2026-10-07): the latency gates (edit p95, search, 60 s analysis) run on the production build, seeded through a fixture backup restored by the real Restore path.
+- Decision (user, 2026-10-07): the app reflows at 320 px (WCAG 1.4.10) despite EXPERIENCE's desktop-only line.
+- Decision (user, 2026-10-07): the capability check requires every API the app uses (AudioWorklet, OPFS, WebAssembly, Web Locks, BroadcastChannel, MediaRecorder, IndexedDB, module Workers), run in main.tsx before the instance lock.
+- Decision (user, 2026-10-07): "initial JS" is the gzip size of the entry chunk plus its static imports; CSS, workers, worklets and lazy chunks are excluded.
+- Decision (user, 2026-10-07): the manual NVDA/VoiceOver check is hitl entry 14, which also carries the Ctrl/⌘+Shift+C check, the standalone-window check and the benchmark calibration.
+- Decision (user, 2026-10-07): Library retro B3 is entry 17, right after the restore stories; the builder generates the PWA icons (a token-coloured glyph, replaceable later).
+- Decision (2026-10-07, inception): focus moves to each screen's h1 on route change (entry 10) as standard accessibility practice; no spec line requires it.
+- Recording retro A5's "WAV fallback in a real browser" was done by epic Tab view entry 12 and is not repeated here.
