@@ -3,7 +3,7 @@ title: 'Latency gates and backup on the production build'
 type: 'feature'
 ticket: '9'
 created: '2026-10-07'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
