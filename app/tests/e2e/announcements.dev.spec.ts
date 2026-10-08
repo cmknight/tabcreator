@@ -147,7 +147,7 @@ test('an unknown take announces "Take not found"', async ({ page }) => {
   await page.goto('./#/library');
   await expect(page.getByRole('navigation', { name: 'Main' })).toBeVisible();
   await page.goto('./#/tab/unknown');
-  await expect(page.getByText(strings['tab.notFound'])).toBeVisible();
+  await expect(page.locator('main').getByText(strings['tab.notFound'])).toBeVisible();
   await expect(politeRegion(page)).toHaveText(strings['tab.notFound']);
 });
 
