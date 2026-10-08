@@ -16,11 +16,10 @@ export const toast = (page: Page) => page.getByTestId('toast');
 export const clipboard = (page: Page) => page.evaluate(() => navigator.clipboard.readText());
 
 /**
- * Whether the page reports Windows (ui/platform.ts `isWindowsPlatform`). The Desktop Chrome
- * device reports `userAgentData.platform` "Windows", so downloads use `\r\n` there; the `\n`
- * branch (other platforms) is covered by the unit tests (platform.test.ts).
+ * Whether the page reports Windows (ui/platform.ts `isWindowsPlatform`). Downloads use `\r\n`
+ * there; export.spec.ts forces each platform with an init script (`reportPlatform`).
  */
-const windows = (page: Page) =>
+export const windows = (page: Page) =>
   page.evaluate(() => {
     const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
     return /^win/i.test(nav.userAgentData?.platform || nav.platform || '');

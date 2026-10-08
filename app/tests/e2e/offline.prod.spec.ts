@@ -1,4 +1,4 @@
-import { expect, test, type Response } from '@playwright/test';
+import { expect, test, type Page, type Response } from '@playwright/test';
 import { readTokens } from '../../build/pwa-icons';
 import { copy, download } from './export-helpers';
 import { collectErrors, recordButton, stopButton, timer } from './helpers';
@@ -11,6 +11,51 @@ import { noteButton, noteButtons } from './tab-helpers';
 // Story "Installable offline app" (CAP-20, US-8.1, spine AD-19), in the production-mic lane
 // (`prod-mic` project): the production build at the root, with Chromium's fake capture device
 // as the microphone.
+
+/** Words an offline indicator would use (EXPERIENCE State Patterns, Offline: "No indicator"). */
+const OFFLINE_WORDS = /offline|no connection|network/i;
+
+/**
+ * The announcer's two regions (ui/a11y/announcer.ts): the polite `status` and the assertive
+ * `alert`. Nothing else in the app sets `aria-live`.
+ */
+const ANNOUNCER = '[role="status"][aria-live="polite"], [role="alert"][aria-live="assertive"]';
+
+/**
+ * Banners and alerts by their stable hooks: every error banner's test id, the Library's notices,
+ * and any `role="alert"` but the announcer's assertive region.
+ */
+const BANNERS = [
+  '[data-testid$="banner"]',
+  '[data-testid$="-failed"]',
+  '[data-testid$="storage-full"]',
+  '[data-testid="restore-error"]',
+  '[data-testid="persist-notice"]',
+  '[role="alert"]:not([aria-live="assertive"])',
+].join(', ');
+
+/**
+ * CAP-25 states sweep: offline shows no indicator. No shown text outside the announcer's two
+ * regions mentions being offline or the network, and no banner or alert shows.
+ */
+async function expectNoOfflineIndicator(p: Page): Promise<void> {
+  const texts = await p.evaluate((announcer) => {
+    const found: string[] = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const parent = n.parentElement;
+      if (!parent || parent.closest(`${announcer}, script, style, noscript`)) continue;
+      // Hidden nodes (display: none, the hidden attribute, visibility: hidden) show nothing.
+      if (!parent.checkVisibility({ visibilityProperty: true })) continue;
+      const text = n.textContent?.trim();
+      if (text) found.push(text);
+    }
+    return found;
+  }, ANNOUNCER);
+  expect(texts.length).toBeGreaterThan(0);
+  expect(texts.filter((t) => OFFLINE_WORDS.test(t))).toEqual([]);
+  await expect(p.locator(BANNERS)).toHaveCount(0);
+}
 
 test('the manifest is valid, from the tokens, and Chrome reports the app installable', async ({
   page,
@@ -80,10 +125,13 @@ test('offline after one visit: the app loads from the service worker; record, an
   await page.reload();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Record');
   expect(await page.evaluate(() => navigator.onLine)).toBe(false);
+  await expectNoOfflineIndicator(page);
 
   // Everything the page loaded came from the service worker: the navigation and its assets.
   const origin = new URL(baseURL!).origin;
-  const own = responses.filter((r) => new URL(r.url()).origin === origin);
+  const own = responses.filter(
+    (r) => !r.url().startsWith('blob:') && new URL(r.url()).origin === origin,
+  );
   const navigation = own.find((r) => r.request().isNavigationRequest());
   expect(navigation?.fromServiceWorker()).toBe(true);
   expect(own.some((r) => /\/assets\/index-[\w-]+\.js$/.test(r.url()))).toBe(true);
@@ -129,6 +177,7 @@ test('offline after one visit: the app loads from the service worker; record, an
   expect(text.startsWith('TabCreator — ')).toBe(true);
 
   expect(errors).toEqual([]);
+  await expectNoOfflineIndicator(page);
 
   // A fresh page, still offline, opens from the service worker too: at the start URL and at a
   // deep link to the recorded take, which shows the edited note. Each page is closed before the
@@ -143,7 +192,9 @@ test('offline after one visit: the app loads from the service worker; record, an
     return { fresh, loaded, freshErrors };
   };
   const expectFromServiceWorker = (loaded: Response[]) => {
-    const own = loaded.filter((r) => new URL(r.url()).origin === origin);
+    const own = loaded.filter(
+      (r) => !r.url().startsWith('blob:') && new URL(r.url()).origin === origin,
+    );
     expect(own.find((r) => r.request().isNavigationRequest())?.fromServiceWorker()).toBe(true);
     expect(own.some((r) => /\/assets\/index-[\w-]+\.js$/.test(r.url()))).toBe(true);
     expect(own.filter((r) => !r.fromServiceWorker()).map((r) => r.url())).toEqual([]);
@@ -152,12 +203,14 @@ test('offline after one visit: the app loads from the service worker; record, an
   const start = await openOffline('./');
   await expect(start.fresh.getByRole('heading', { level: 1 })).toHaveText('Record');
   expectFromServiceWorker(start.loaded);
+  await expectNoOfflineIndicator(start.fresh);
   expect(start.freshErrors).toEqual([]);
   await start.fresh.close();
 
   const deep = await openOffline(`./#/tab/${encodeURIComponent(takeId)}`);
   await expect(noteButton(deep.fresh, target.id)).toHaveAttribute('aria-label', /, fret 5, /);
   expectFromServiceWorker(deep.loaded);
+  await expectNoOfflineIndicator(deep.fresh);
   expect(deep.freshErrors).toEqual([]);
   await deep.fresh.close();
 

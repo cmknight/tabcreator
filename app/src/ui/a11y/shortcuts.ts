@@ -60,6 +60,11 @@
 // arrows (TrimStrip).
 
 import { useEffect } from 'react';
+import {
+  CAPTURE_START_MARK,
+  CAPTURE_STOP_MARK,
+  RECORD_KEYDOWN_MARK,
+} from '../../model/latency-marks';
 import { recordingSession, type RecordingSession } from '../../session/recording-session';
 import type { RecordingSnapshot } from '../../session/recording-types';
 import { activePlayback, type PlaybackController } from '../../session/playback';
@@ -121,7 +126,7 @@ export function isMacPlatform(): boolean {
 }
 
 /** The latency mark set at a handled Space keydown on Record (story 3.5, Done when 1). */
-export const RECORD_KEYDOWN_MARK = 'record-keydown';
+export { RECORD_KEYDOWN_MARK };
 
 /** Elements Space activates natively (links do not: Space on a link only scrolls). */
 const SPACE_ACTION = 'button, summary, [role="button"], [role="checkbox"], [role="switch"]';
@@ -159,12 +164,10 @@ export function guarded(target: EventTarget | null, key: string, textFieldOk = f
   return false;
 }
 
-/** The recorder's capture-start mark (audio/recorder.ts CAPTURE_START_MARK; ui/ may not import audio/). */
-const CAPTURE_START_MARK = 'record-capture-start';
-
 /**
- * Sets the `record-keydown` mark. `restart` (a keydown that starts a take) first clears both
- * latency marks, so the pair always belongs to the latest start. Never throws: the marks are
+ * Sets the `record-keydown` mark. `restart` (a keydown that starts a take) first clears every
+ * latency mark (keydown, capture start, capture stop), so the marks always belong to the latest
+ * take. Never throws: the marks are
  * only a measurement and must not stop the shortcut.
  */
 function markKeydown(restart: boolean): void {
@@ -172,6 +175,7 @@ function markKeydown(restart: boolean): void {
     if (restart) {
       performance.clearMarks(RECORD_KEYDOWN_MARK);
       performance.clearMarks(CAPTURE_START_MARK);
+      performance.clearMarks(CAPTURE_STOP_MARK);
     }
     performance.mark(RECORD_KEYDOWN_MARK);
   } catch {

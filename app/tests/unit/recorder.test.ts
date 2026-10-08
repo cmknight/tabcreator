@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createCompressedOutput, startCapture } from '../../src/audio/recorder';
+import { CAPTURE_STOP_MARK, createCompressedOutput, startCapture } from '../../src/audio/recorder';
 import { isAppError } from '../../src/model/errors';
 import { CLIP_LEVEL } from '../../src/model/level-warnings';
 
@@ -8,11 +8,17 @@ import { CLIP_LEVEL } from '../../src/model/level-warnings';
 
 const posted: Record<string, unknown>[] = [];
 
+/** Every fake worklet's port, newest last. */
+const ports: FakeWorkletNode['port'][] = [];
+
 class FakeWorkletNode {
   port = {
     onmessage: null as ((e: MessageEvent) => void) | null,
     postMessage: (msg: Record<string, unknown>) => posted.push(msg),
   };
+  constructor() {
+    ports.push(this.port);
+  }
 }
 
 class FakeMediaRecorder {
@@ -51,7 +57,10 @@ function fakeContext() {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   posted.length = 0;
+  ports.length = 0;
+  performance.clearMarks(CAPTURE_STOP_MARK);
 });
 
 describe('startCapture', () => {
@@ -62,6 +71,43 @@ describe('startCapture', () => {
     const start = posted.find((m) => m.type === 'start');
     expect(start).toMatchObject({ type: 'start', clipLevel: CLIP_LEVEL });
     expect(CLIP_LEVEL).toBeCloseTo(0.891251, 6);
+    capture.abort();
+  });
+
+  // CAP-25 states sweep: the stop-latency mark, set when the worklet's `stopped` message arrives.
+  it('marks record-capture-stop when the worklet reports stopped, not before', async () => {
+    vi.stubGlobal('AudioWorkletNode', FakeWorkletNode);
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder);
+    const capture = await startCapture(fakeContext(), node() as unknown as AudioNode, () => {});
+    const port = ports.at(-1)!;
+    port.onmessage!({ data: { type: 'started' } } as MessageEvent);
+    expect(performance.getEntriesByName(CAPTURE_STOP_MARK)).toHaveLength(0);
+    port.onmessage!({ data: { type: 'stopped' } } as MessageEvent);
+    expect(performance.getEntriesByName(CAPTURE_STOP_MARK)).toHaveLength(1);
+    capture.abort();
+  });
+
+  it('a throwing performance.mark still settles the stop (capped resolves)', async () => {
+    vi.stubGlobal('AudioWorkletNode', FakeWorkletNode);
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder);
+    const mark = vi.spyOn(performance, 'mark').mockImplementation(() => {
+      throw new Error('no user timing');
+    });
+    // With a cap, `capped` resolves once the worklet reports it has stopped.
+    const capture = await startCapture(
+      fakeContext(),
+      node() as unknown as AudioNode,
+      () => {},
+      undefined,
+      1000,
+    );
+    ports.at(-1)!.onmessage!({ data: { type: 'stopped' } } as MessageEvent);
+    expect(mark).toHaveBeenCalledWith(CAPTURE_STOP_MARK);
+    const settled = await Promise.race([
+      capture.capped.then(() => 'capped'),
+      new Promise((resolve) => setTimeout(() => resolve('timeout'), 500)),
+    ]);
+    expect(settled).toBe('capped');
     capture.abort();
   });
 });

@@ -15,6 +15,7 @@
 
 import workletUrl from './recorder-worklet.ts?worker&url';
 import { AppError } from '../model/errors';
+import { CAPTURE_START_MARK, CAPTURE_STOP_MARK } from '../model/latency-marks';
 import { CLIP_LEVEL } from '../model/level-warnings';
 import { quietlySync as quietly } from '../model/quietly';
 import { resumeWithin, within } from './context-resume';
@@ -71,18 +72,32 @@ export function loadRecorderWorklet(ctx: BaseAudioContext): Promise<void> {
 }
 
 /**
- * The latency mark set when the main thread receives the worklet's `started` message (posted
- * from the render quantum that copies the first frame), so it trails the actual start by the
- * port's delivery time (story 3.5, Done when 1: Space to capture start within 100 ms, read
- * against `record-keydown`). Set in every build; nothing in the app reads it.
+ * The latency mark (`CAPTURE_START_MARK`) set when the main thread receives the worklet's
+ * `started` message (posted from the render quantum that copies the first frame), so it trails
+ * the actual start by the port's delivery time (story 3.5, Done when 1: Space to capture start
+ * within 100 ms, read against `record-keydown`). Set in every build; nothing in the app reads it.
  */
-export const CAPTURE_START_MARK = 'record-capture-start';
+export { CAPTURE_START_MARK, CAPTURE_STOP_MARK };
 
 function markCaptureStart(): void {
   try {
     performance.mark(CAPTURE_START_MARK);
   } catch {
     // No User Timing (never in the supported Chrome): the mark is only a measurement.
+  }
+}
+
+/**
+ * Sets `CAPTURE_STOP_MARK` when the main thread receives the worklet's `stopped` message (posted
+ * from the render quantum that passes the stop frame), so it includes the stop's scheduling
+ * lookahead and trails the actual stop by the port's delivery time (CAP-25 states sweep: Space to
+ * capture stop, read against the second `record-keydown`).
+ */
+function markCaptureStop(): void {
+  try {
+    performance.mark(CAPTURE_STOP_MARK);
+  } catch {
+    // No User Timing: the mark is only a measurement.
   }
 }
 
@@ -194,7 +209,10 @@ export async function startCapture(
       const { type, samples, clipped } = event.data;
       if (type === 'chunk' && samples) onChunk(samples, clipped ?? 0);
       else if (type === 'started') markCaptureStart();
-      else if (type === 'stopped') resolveStopped();
+      else if (type === 'stopped') {
+        markCaptureStop();
+        resolveStopped();
+      }
     };
     gate = ctx.createGain();
     gate.gain.value = 0;

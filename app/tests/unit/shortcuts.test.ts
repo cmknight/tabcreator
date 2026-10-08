@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CAPTURE_START_MARK, CAPTURE_STOP_MARK } from '../../src/model/latency-marks';
 import type { RecordingSnapshot } from '../../src/session/recording-types';
 import {
   cancelCountIn,
@@ -326,12 +327,14 @@ describe('Space on Record', () => {
       return { toggle, record, stop };
     };
 
-    it('a start clears stale marks, then sets one record-keydown', () => {
+    it('a start clears stale marks (keydown, capture start and stop), then sets one record-keydown', () => {
       performance.mark(RECORD_KEYDOWN_MARK);
-      performance.mark('record-capture-start');
+      performance.mark(CAPTURE_START_MARK);
+      performance.mark(CAPTURE_STOP_MARK);
       toggleWith('idle').toggle();
       expect(performance.getEntriesByName(RECORD_KEYDOWN_MARK)).toHaveLength(1);
-      expect(performance.getEntriesByName('record-capture-start')).toHaveLength(0);
+      expect(performance.getEntriesByName(CAPTURE_START_MARK)).toHaveLength(0);
+      expect(performance.getEntriesByName(CAPTURE_STOP_MARK)).toHaveLength(0);
     });
 
     it('a stop adds its mark without clearing', () => {
