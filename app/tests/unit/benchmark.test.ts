@@ -117,7 +117,7 @@ describe('readConfig', () => {
   it('reads the real budgets and config files', () => {
     expect(readConfig(BUDGETS_PATH, CONFIG_PATH)).toEqual({
       analysis60sMs: 2000,
-      calibrationFactor: 1,
+      calibrationFactor: 1.14,
     });
   });
 

@@ -1,4 +1,4 @@
 {
-  "$comment": "The analysis benchmark's runner calibration (build/benchmark.ts, spine AD-17, US-8.3): the gate is median(5 runs of a 60 s analysis) × calibrationFactor ≤ budgets.json analysis60sMs. factor = laptop time / runner time for the same benchmark, so the gated value is the time on the reference laptop. 1.0 until the owner calibrates it (story 14) by running `pnpm --filter app benchmark` on the laptop and on the CI runner.",
-  "calibrationFactor": 1.0
+  "$comment": "The analysis benchmark's runner calibration (build/benchmark.ts, spine AD-17, US-8.3): the gate is median(5 runs of a 60 s analysis) × calibrationFactor ≤ budgets.json analysis60sMs. factor = laptop time / runner time for the same benchmark, so the gated value is the time on the reference laptop. Calibrated 2026-10-08 (story 14): the owner's Windows laptop (AMD Ryzen 7 5800H, WSL2, `pnpm --filter app benchmark`) median 1351 ms; the CI runner's median over four runs on main 839, 1193, 1203 and 1492 ms (mean 1182 ms); factor 1351 / 1182 ≈ 1.14. The CI runner varies by about ±30% between runs, so the gated value moves with it.",
+  "calibrationFactor": 1.14
 }
