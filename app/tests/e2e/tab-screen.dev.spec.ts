@@ -313,18 +313,18 @@ test('toolbar focus: arrows and Esc with focus in the toolbar change no selectio
 }) => {
   await openSeededTab(page);
   await noteButton(page, second).click();
-  // The toolbar has no buttons yet (later stories): add one to hold focus.
+  // Story "Announcements and the Tab toolbar": the arrows move focus across the toolbar's
+  // enabled buttons (roving tabindex), never the selection.
   const toolbar = page.getByRole('toolbar', { name: 'Tab tools' });
-  await toolbar.evaluate((el) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = 'Probe';
-    el.append(button);
-  });
-  await toolbar.getByRole('button', { name: 'Probe' }).focus();
-  for (const key of ['ArrowRight', 'ArrowLeft', 'Escape']) await page.keyboard.press(key);
+  const insert = toolbar.getByRole('button', { name: 'Insert' });
+  await insert.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(toolbar.getByRole('button', { name: 'Delete' })).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(insert).toBeFocused();
+  await page.keyboard.press('Escape');
   expect(await selectedNote(page)).toBe(second);
-  await expect(toolbar.getByRole('button', { name: 'Probe' })).toBeFocused();
+  await expect(insert).toBeFocused();
 });
 
 test('axe: the analysed tab has no serious or critical violations, light and dark', async ({

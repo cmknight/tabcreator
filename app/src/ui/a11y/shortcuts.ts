@@ -539,10 +539,22 @@ export function helpShortcut(
 
 /**
  * Listing-only entries (no handler): shortcuts handled elsewhere, registered so the `?` dialog
- * lists every shortcut in EXPERIENCE.md: the overlays' Esc and the Trim handles' nudges.
+ * lists every shortcut in EXPERIENCE.md: the overlays' Esc, the Tab toolbar's arrows and Home /
+ * End, and the Trim handles' nudges.
  */
 export const LISTING_ONLY: readonly Shortcut[] = [
   { key: 'Escape', route: 'global', description: strings['global.shortcutCloseOverlay'] },
+  // The Tab toolbar's own keys (its roving tabindex, in Tab.tsx's `onKeyDown`).
+  ...['ArrowLeft', 'ArrowRight'].map((key): Shortcut => ({
+    key,
+    route: 'tab',
+    description: strings['tab.shortcutToolbarMove'],
+  })),
+  ...['Home', 'End'].map((key): Shortcut => ({
+    key,
+    route: 'tab',
+    description: strings['tab.shortcutToolbarEnds'],
+  })),
   ...['ArrowLeft', 'ArrowRight'].map((key): Shortcut => ({
     key,
     route: 'tab',
@@ -602,6 +614,8 @@ const KEY_NAMES: Readonly<Record<string, string>> = {
   ArrowRight: strings['global.keyRight'],
   ArrowUp: strings['global.keyUp'],
   ArrowDown: strings['global.keyDown'],
+  Home: strings['global.keyHome'],
+  End: strings['global.keyEnd'],
 };
 
 /** A shortcut's key as the dialog shows it, with its modifiers: "Ctrl+Shift+Z", "⌘+Z", "N". */

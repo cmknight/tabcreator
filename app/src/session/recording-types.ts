@@ -3,6 +3,7 @@
 
 import type { MicDevice } from '../audio/mic';
 import type { AppErrorCode } from '../model/errors';
+import type { StopReason } from '../model/types';
 import type { InputQualityFields } from './input-quality-watch';
 import type { LevelFields } from './level-watch';
 import type { RecoveredTake } from './recording-recovery';
@@ -73,6 +74,12 @@ export interface RecordingSnapshot extends LevelFields, InputQualityFields, Tune
   nearLimit: boolean;
   /** How many takes this store has saved (`recorded`); grows by one with each. */
   savedSeq: number;
+  /**
+   * Why the take last saved (`savedSeq`) stopped, set with `savedSeq` (read-only for the shell's
+   * announcements: a storage-full stop is announced as one whatever storage reads later).
+   * Absent until a take is saved.
+   */
+  lastStopReason?: StopReason;
   /**
    * Storage is full (the Record screen's error banner): mirrors storage/persistence.ts's one
    * storage-full status, which only freed space clears. A new take does not clear it.

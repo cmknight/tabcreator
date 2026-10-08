@@ -68,6 +68,12 @@
 // run's progress and Cancel show in the strip. Notes outside the trim are hidden: the tab area,
 // note labels, status line, warnings, playback and the popover see only the visible notes
 // (`session/take-session.ts` `shownNotes`).
+//
+// Story "Announcements and the Tab toolbar": the toolbar is one Tab stop (the ARIA toolbar
+// pattern's roving tabindex: ← / → move across its enabled buttons, wrapping, Home / End go to
+// the ends; the stop follows focus and clicks, and moves to the nearest enabled button when its
+// own is disabled or goes away). The first analysis finishing ("Analysis done — 12 notes", or
+// "No notes found") and the take missing ("Take not found") are announced politely.
 
 import {
   useEffect,
@@ -78,6 +84,8 @@ import {
   useState,
   useSyncExternalStore,
   type FocusEvent,
+  type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   type Ref,
 } from 'react';
@@ -148,6 +156,76 @@ function focusTabArea() {
   document.getElementById(TAB_AREA_ID)?.querySelector<HTMLElement>('button[tabindex="0"]')?.focus();
 }
 
+/**
+ * The toolbar's buttons (`data-tool`), in their rendered order: its roving Tab stop is one of
+ * them, and "nearest" follows this order (a unit test holds it to the DOM's).
+ */
+export const TOOLS = [
+  'undo',
+  'redo',
+  'insert',
+  'delete',
+  'copy',
+  'download',
+  'trim',
+  'barLines',
+  'settings',
+] as const;
+type ToolKey = (typeof TOOLS)[number];
+
+function isToolKey(value: string | undefined): value is ToolKey {
+  return (TOOLS as readonly string[]).includes(value ?? '');
+}
+
+/**
+ * The toolbar's Tab stop: `wanted` while it is shown and enabled (in `enabled`), else the
+ * nearest one that is (after it first, then before it), or the first with none wanted. Null
+ * while no button is enabled.
+ */
+function toolbarStop(wanted: ToolKey | null, enabled: ReadonlySet<ToolKey>): ToolKey | null {
+  if (wanted === null) return TOOLS.find((t) => enabled.has(t)) ?? null;
+  const i = TOOLS.indexOf(wanted);
+  for (let d = 0; d < TOOLS.length; d++) {
+    const after = TOOLS[i + d];
+    if (after !== undefined && enabled.has(after)) return after;
+    const before = TOOLS[i - d];
+    if (before !== undefined && enabled.has(before)) return before;
+  }
+  return null;
+}
+
+/** The toolbar button an event came from (its `data-tool`), if any. */
+function toolOf(target: EventTarget | null): ToolKey | null {
+  const tool =
+    target instanceof Element
+      ? target.closest<HTMLElement>('[data-tool]')?.dataset.tool
+      : undefined;
+  return isToolKey(tool) ? tool : null;
+}
+
+/**
+ * ← / → move focus to the previous / next enabled toolbar button, wrapping; Home / End to the
+ * first / last (the ARIA toolbar pattern). The shortcut registry leaves these keys to the
+ * toolbar.
+ */
+function onToolbarKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const buttons = [
+    ...event.currentTarget.querySelectorAll<HTMLButtonElement>('button[data-tool]:not(:disabled)'),
+  ];
+  const last = buttons.length - 1;
+  if (last < 0) return;
+  const at = buttons.findIndex((b) => b === document.activeElement);
+  let to: number;
+  if (event.key === 'Home') to = 0;
+  else if (event.key === 'End') to = last;
+  else if (event.key === 'ArrowRight') to = at < 0 || at === last ? 0 : at + 1;
+  else to = at <= 0 ? last : at - 1;
+  event.preventDefault();
+  buttons[to]?.focus();
+}
+
 /** The whole percentage shown for a progress fraction (the epsilon absorbs float error). */
 function percentOf(progress: number): number {
   return Math.floor(progress * 100 + 1e-9);
@@ -172,6 +250,47 @@ function useProgressAnnouncements(analysis: TakeAnalysisState) {
     announced.current = quarter;
     announce(strings['tab.analysingAnnounce'](quarter * 25));
   }, [running, quarter]);
+}
+
+/**
+ * Announces politely the first analysis finishing (it left `running` for `idle` with a tab):
+ * "Analysis done — 12 notes", or "No notes found" with none; and the take missing (on load or
+ * deleted), "Take not found", once each time it goes missing. A re-analysis keeps the analysis
+ * `idle` and announces its own outcome. `noteCount`: the shown notes' count, undefined with no
+ * tab.
+ */
+function useOutcomeAnnouncements(
+  analysis: TakeAnalysisState,
+  missing: boolean,
+  noteCount: number | undefined,
+) {
+  // Set while a first analysis runs; its outcome is announced when it ends (the commit sets the
+  // tab and leaves `running` in one snapshot).
+  const pending = useRef(false);
+  useEffect(() => {
+    if (analysis.kind === 'running') {
+      pending.current = true;
+      return;
+    }
+    if (!pending.current) return;
+    // Whatever the run ended in, it is announced now or never: a later, unrelated tab load
+    // never says a stale "Analysis done".
+    pending.current = false;
+    if (analysis.kind !== 'idle' || missing || noteCount === undefined) return;
+    announce(noteCount === 0 ? strings['tab.noNotes'] : strings['tab.analysisDone'](noteCount));
+  }, [analysis.kind, missing, noteCount]);
+
+  // The ref survives StrictMode's effect re-run: announced once.
+  const missingAnnounced = useRef(false);
+  useEffect(() => {
+    if (!missing) {
+      missingAnnounced.current = false;
+      return;
+    }
+    if (missingAnnounced.current) return;
+    missingAnnounced.current = true;
+    announce(strings['tab.notFound']);
+  }, [missing]);
 }
 
 /** The banner text for a failure code. */
@@ -256,6 +375,8 @@ export function commandLabelText(label: CommandLabel): string {
  * as for the disabled Play button.
  */
 function ToolButton({
+  tool,
+  tabStop,
   icon,
   label,
   tooltip,
@@ -267,6 +388,10 @@ function ToolButton({
   expanded,
   controls,
 }: {
+  /** Its key in the toolbar's roving Tab stop. */
+  tool: ToolKey;
+  /** Whether it is the toolbar's Tab stop (`tabIndex` 0; the others -1). */
+  tabStop: boolean;
   icon: ReactNode;
   label: string;
   tooltip: string | null;
@@ -288,6 +413,8 @@ function ToolButton({
         type="button"
         className={`${buttons.secondary} ${expanded !== undefined ? buttons.toggle : ''} ${tabStyles.toolButton}`}
         disabled={disabled}
+        data-tool={tool}
+        tabIndex={tabStop ? 0 : -1}
         aria-expanded={expanded}
         aria-controls={controls}
         aria-describedby={tooltip !== null ? tooltipId : undefined}
@@ -656,6 +783,8 @@ export function Tab({
     [allNotes, trimStartMs, trimEndMs],
   );
   const labels = useMemo(() => (notes ? noteLabels(notes) : []), [notes]);
+  // The note count the status line shows: the first analysis's outcome says it.
+  useOutcomeAnnouncements(analysis, !!missing, notes?.length);
   // `take` is set whenever the tab is shown; checked here too so the render below can use it.
   const showTab = isTabShown(snapshot) && !!tab && !!take;
   const playback = usePlayback({
@@ -780,6 +909,33 @@ export function Tab({
     if (active !== from && active !== null && active !== document.body) return;
     to.focus();
   }, [canUndo, canRedo, showToolbar]);
+  // The toolbar's roving Tab stop (ARIA toolbar pattern): one enabled button has tabIndex 0.
+  const undoDisabled = !canUndo;
+  const redoDisabled = !canRedo;
+  const insertDisabled = !editable;
+  const deleteDisabled = !editable || selectedNoteId === null;
+  const exportDisabled = !showTab;
+  const trimDisabled = !audio || reanalysis !== null;
+  const settingsDisabled = trimRun;
+  const showBarLines = showTab && take?.countInBpm !== undefined;
+  const [wantedStop, setWantedStop] = useState<ToolKey | null>(null);
+  const enabledTools = new Set<ToolKey>();
+  if (!undoDisabled) enabledTools.add('undo');
+  if (!redoDisabled) enabledTools.add('redo');
+  if (!insertDisabled) enabledTools.add('insert');
+  if (!deleteDisabled) enabledTools.add('delete');
+  if (!exportDisabled) enabledTools.add('copy').add('download');
+  if (!trimDisabled) enabledTools.add('trim');
+  if (showBarLines) enabledTools.add('barLines');
+  if (!settingsDisabled) enabledTools.add('settings');
+  const toolStop = showToolbar ? toolbarStop(wantedStop, enabledTools) : null;
+  // The stop's button disabled or gone: the stop moves to the nearest enabled one for good.
+  if (toolStop !== null && toolStop !== wantedStop) setWantedStop(toolStop);
+  /** Focus on, or a click on, a toolbar button makes it the stop. */
+  const takeToolStop = (event: FocusEvent<HTMLElement> | MouseEvent<HTMLElement>) => {
+    const tool = toolOf(event.target);
+    if (tool !== null) setWantedStop(tool);
+  };
   const onTravelBlur = (event: FocusEvent<HTMLButtonElement>) => {
     // Focus leaving for another element releases it; a blur to nothing (the button disabled)
     // keeps it, for the effect above.
@@ -905,7 +1061,6 @@ export function Tab({
   // A popover whose note went away (an undo, a re-analysis) stays closed if the note comes back;
   // a re-analysis starting closes it too (its edits would do nothing).
   if (popover !== null && (popoverNote === null || reanalysis !== null)) setPopover(null);
-  const showBarLines = showTab && take?.countInBpm !== undefined;
 
   return (
     <section
@@ -954,8 +1109,17 @@ export function Tab({
         titleRef={titleRef}
       />
       {showToolbar && (
-        <div className={tabStyles.toolbar} role="toolbar" aria-label={strings['tab.toolbar']}>
+        <div
+          className={tabStyles.toolbar}
+          role="toolbar"
+          aria-label={strings['tab.toolbar']}
+          onKeyDown={onToolbarKeyDown}
+          onFocus={takeToolStop}
+          onClick={takeToolStop}
+        >
           <ToolButton
+            tool="undo"
+            tabStop={toolStop === 'undo'}
             buttonRef={undoButton}
             icon={<UndoIcon className={tabStyles.toolIcon} />}
             label={strings['tab.undo']}
@@ -964,7 +1128,7 @@ export function Tab({
                 ? strings['tab.undoAction'](snapshot.undoLabel)
                 : strings['tab.nothingToUndo']
             }
-            disabled={!canUndo}
+            disabled={undoDisabled}
             onClick={() => void session.undo()}
             onFocus={() => {
               travelFocus.current = 'undo';
@@ -972,6 +1136,8 @@ export function Tab({
             onBlur={onTravelBlur}
           />
           <ToolButton
+            tool="redo"
+            tabStop={toolStop === 'redo'}
             buttonRef={redoButton}
             icon={<RedoIcon className={tabStyles.toolIcon} />}
             label={strings['tab.redo']}
@@ -980,7 +1146,7 @@ export function Tab({
                 ? strings['tab.redoAction'](snapshot.redoLabel)
                 : strings['tab.nothingToRedo']
             }
-            disabled={!canRedo}
+            disabled={redoDisabled}
             onClick={() => void session.redo()}
             onFocus={() => {
               travelFocus.current = 'redo';
@@ -988,13 +1154,17 @@ export function Tab({
             onBlur={onTravelBlur}
           />
           <ToolButton
+            tool="insert"
+            tabStop={toolStop === 'insert'}
             icon={<InsertIcon className={tabStyles.toolIcon} />}
             label={strings['tab.insert']}
             tooltip={showTab ? null : strings['tab.noNotesYet']}
-            disabled={!editable}
+            disabled={insertDisabled}
             onClick={() => void session.insert()}
           />
           <ToolButton
+            tool="delete"
+            tabStop={toolStop === 'delete'}
             icon={<DeleteIcon className={tabStyles.toolIcon} />}
             label={strings['tab.delete']}
             tooltip={
@@ -1004,28 +1174,34 @@ export function Tab({
                   ? strings['tab.selectToDelete']
                   : null
             }
-            disabled={!editable || selectedNoteId === null}
+            disabled={deleteDisabled}
             onClick={() => void session.deleteSelected()}
           />
           <ToolButton
+            tool="copy"
+            tabStop={toolStop === 'copy'}
             icon={<CopyIcon className={tabStyles.toolIcon} />}
             label={strings['tab.copy']}
             tooltip={showTab ? null : strings['tab.noNotesToCopy']}
-            disabled={!showTab}
+            disabled={exportDisabled}
             onClick={() => {
               if (notes) void copyTab(tabExportText(take, notes, barLines));
             }}
           />
           <ToolButton
+            tool="download"
+            tabStop={toolStop === 'download'}
             icon={<DownloadIcon className={tabStyles.toolIcon} />}
             label={strings['tab.download']}
             tooltip={showTab ? null : strings['tab.noNotesToDownload']}
-            disabled={!showTab}
+            disabled={exportDisabled}
             onClick={() => {
               if (notes) downloadTab(take.title, tabExportText(take, notes, barLines));
             }}
           />
           <ToolButton
+            tool="trim"
+            tabStop={toolStop === 'trim'}
             buttonRef={trimToggle}
             icon={<TrimIcon className={tabStyles.toolIcon} />}
             label={strings['tab.trim']}
@@ -1038,7 +1214,7 @@ export function Tab({
                     ? strings['tab.busyReanalysing']
                     : null
             }
-            disabled={!audio || reanalysis !== null}
+            disabled={trimDisabled}
             expanded={showTrim}
             controls={showTrim ? TRIM_ID : undefined}
             onClick={() => setOpenPanel(showTrim ? null : 'trim')}
@@ -1048,6 +1224,8 @@ export function Tab({
               type="button"
               className={`${buttons.secondary} ${buttons.toggle} ${tabStyles.toolButton}`}
               aria-pressed={barLines}
+              data-tool="barLines"
+              tabIndex={toolStop === 'barLines' ? 0 : -1}
               onClick={() => settings.setBarLines(!barLines)}
             >
               <BarLinesIcon className={tabStyles.toolIcon} />
@@ -1055,12 +1233,14 @@ export function Tab({
             </button>
           )}
           <ToolButton
+            tool="settings"
+            tabStop={toolStop === 'settings'}
             buttonRef={panelToggle}
             icon={<SettingsIcon className={tabStyles.toolIcon} />}
             label={strings['tab.analysisSettings']}
             // While a trim runs its strip stays open, so the panel cannot open.
             tooltip={trimRun ? strings['tab.busyTrimming'] : null}
-            disabled={trimRun}
+            disabled={settingsDisabled}
             expanded={showPanel}
             controls={showPanel ? PANEL_ID : undefined}
             // While a re-analysis runs the panel stays open: its progress and Cancel are there.

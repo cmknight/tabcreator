@@ -21,6 +21,7 @@ import { InstanceScreen } from './ui/components/InstanceScreen';
 import { MicErrorAnnouncer } from './ui/components/MicErrorAnnouncer';
 import { MicNotices } from './ui/components/MicNotices';
 import { RecordingAnnouncer } from './ui/components/RecordingAnnouncer';
+import { StorageNoticeAnnouncer } from './ui/components/StorageNoticeAnnouncer';
 import { ShortcutsDialogHost } from './ui/components/ShortcutsDialog';
 import { ToastHost } from './ui/components/ToastHost';
 import { parseRoute, routeToHash, useHash, useRoute, type Route } from './ui/router';
@@ -216,6 +217,7 @@ function Shell({
       <MicErrorAnnouncer />
       <MicNotices />
       <RecordingAnnouncer />
+      <StorageNoticeAnnouncer />
       <ToastHost />
       <ShortcutsDialogHost />
       <UpdatePrompt />

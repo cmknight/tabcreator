@@ -9,7 +9,8 @@ import styles from './RecordButton.module.css';
 
 /**
  * The count-in's beat number (4, 3, 2, 1), read from the store each animation frame while it
- * runs; each new beat re-renders and is announced assertively (latest wins). Null otherwise.
+ * runs; each new beat re-renders and is announced assertively as a minor message, so it never
+ * overwrites an error announced just before. Null otherwise.
  */
 function useCountInBeat(counting: boolean): number | null {
   const [beat, setBeat] = useState<number | null>(null);
@@ -22,7 +23,9 @@ function useCountInBeat(counting: boolean): number | null {
       if (next !== shown) {
         shown = next;
         setBeat(next);
-        if (next !== null) announce(strings['record.countInBeat'](next), 'assertive');
+        if (next !== null) {
+          announce(strings['record.countInBeat'](next), 'assertive', { minor: true });
+        }
       }
       frame = requestAnimationFrame(tick);
     };

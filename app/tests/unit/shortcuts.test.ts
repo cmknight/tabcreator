@@ -1445,6 +1445,10 @@ describe('story "Shell reflow, focus and shortcuts help"', () => {
     const listed = SHORTCUTS.filter((s) => !s.handler);
     expect(listed.map((s) => [s.key, s.mod ?? null, s.group ?? s.route, s.description])).toEqual([
       ['Escape', null, 'global', 'Close dialog, popover or panel'],
+      ['ArrowLeft', null, 'tab', 'Move between toolbar buttons'],
+      ['ArrowRight', null, 'tab', 'Move between toolbar buttons'],
+      ['Home', null, 'tab', 'First / last toolbar button'],
+      ['End', null, 'tab', 'First / last toolbar button'],
       ['ArrowLeft', null, 'trim', 'Nudge 10 ms'],
       ['ArrowRight', null, 'trim', 'Nudge 10 ms'],
       ['ArrowLeft', 'shift', 'trim', 'Nudge 100 ms'],
@@ -1490,6 +1494,8 @@ describe('story "Shell reflow, focus and shortcuts help"', () => {
         ['I', 'Insert note after selection'],
         ['Enter', 'Confirm selected note (clears flag, locks it)'],
         ['Ctrl+Shift+C', 'Copy tab'],
+        ['← / →', 'Move between toolbar buttons'],
+        ['Home / End', 'First / last toolbar button'],
       ],
       'Trim handle': [
         ['← / →', 'Nudge 10 ms'],

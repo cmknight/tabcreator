@@ -803,6 +803,16 @@ test('storage full mid-take: saved as storage-full, the error banner with a Libr
 
   // Record remounting with the banner showing announces it again: via its link to the Library
   // and back.
+  // Past the announcer's repeat window first: it drops a text repeated within it (story
+  // "Announcements and the Tab toolbar"), and the stop was just announced.
+  const hold = await page.evaluate(async () => {
+    const path = '/src/ui/a11y/announcer.ts';
+    const { ASSERTIVE_REPEAT_MS } = (await import(
+      /* @vite-ignore */ path
+    )) as typeof import('../../src/ui/a11y/announcer');
+    return ASSERTIVE_REPEAT_MS;
+  });
+  await page.waitForTimeout(hold + 200);
   await page.evaluate(() => {
     const w = window as unknown as { __assertive: string[] };
     w.__assertive = [];

@@ -19,7 +19,7 @@ import {
   type SystemViewProps,
 } from '../../src/ui/components/TabArea';
 import styles from '../../src/ui/components/TabArea.module.css';
-import { REFIT_FADE_MS, REFIT_HOLD_MS, Tab } from '../../src/ui/screens/Tab';
+import { REFIT_FADE_MS, REFIT_HOLD_MS, Tab, TOOLS } from '../../src/ui/screens/Tab';
 import { announce } from '../../src/ui/a11y/announcer';
 import { reloadOrExplain } from '../../src/ui/reload-or-explain';
 import { dispatchShortcut } from '../../src/ui/a11y/shortcuts';
@@ -1087,6 +1087,242 @@ describe('Tab screen tab area, header and selection', () => {
     expect(del.parentElement!.hasAttribute('title')).toBe(false);
     fireEvent.click(del);
     expect(session.deleteSelected).toHaveBeenCalledTimes(1);
+  });
+
+  // Story "Announcements and the Tab toolbar": the toolbar is one Tab stop (roving tabindex).
+  describe('toolbar roving Tab stop', () => {
+    const UNDO: CommandLabel = { kind: 'delete' };
+    const toolButtons = () =>
+      [
+        ...screen.getByRole('toolbar', { name: 'Tab tools' }).querySelectorAll('button'),
+      ] as HTMLButtonElement[];
+    const stops = () => toolButtons().filter((b) => b.tabIndex === 0);
+    const button = (name: string) => screen.getByRole('button', { name }) as HTMLButtonElement;
+    const key = (k: string) =>
+      fireEvent.keyDown(document.activeElement ?? document.body, { key: k });
+
+    it('exactly one enabled button is the Tab stop; the others are -1', () => {
+      const { create } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      // Undo and Redo are disabled: the first enabled button, Insert, is the stop.
+      expect(stops()).toEqual([button('Insert')]);
+      expect(
+        toolButtons()
+          .filter((b) => b.tabIndex !== 0)
+          .every((b) => b.tabIndex === -1),
+      ).toBe(true);
+      // The controls outside the toolbar keep their own stops.
+      expect(button(strings['tab.noteList']).tabIndex).toBe(0);
+    });
+
+    it('← / → move across the enabled buttons, skipping disabled ones and wrapping; Home / End', () => {
+      const { create } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      act(() => button('Insert').focus());
+      key('ArrowRight'); // Delete is disabled (nothing selected)
+      expect(document.activeElement).toBe(button('Copy'));
+      expect(stops()).toEqual([button('Copy')]);
+      key('End');
+      expect(document.activeElement).toBe(button('Analysis settings'));
+      key('ArrowRight'); // wraps to the first enabled
+      expect(document.activeElement).toBe(button('Insert'));
+      key('ArrowLeft'); // wraps to the last
+      expect(document.activeElement).toBe(button('Analysis settings'));
+      key('ArrowLeft');
+      expect(document.activeElement).toBe(button('Trim'));
+      key('Home');
+      expect(document.activeElement).toBe(button('Insert'));
+      expect(stops()).toEqual([button('Insert')]);
+    });
+
+    it('→ from Undo skips a disabled Redo', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ undoLabel: UNDO });
+      act(() => button('Undo').focus());
+      expect(stops()).toEqual([button('Undo')]);
+      key('ArrowRight');
+      expect(document.activeElement).toBe(button('Insert'));
+    });
+
+    it('a click makes the clicked button the stop', () => {
+      const { create } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      fireEvent.click(button('Download'));
+      expect(stops()).toEqual([button('Download')]);
+    });
+
+    it('the stop disabled moves to the nearest enabled button, and stays there', () => {
+      const { create, set } = analysed('n3');
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ undoLabel: UNDO });
+      fireEvent.click(button('Undo'));
+      expect(stops()).toEqual([button('Undo')]);
+      set({ undoLabel: null });
+      expect(stops()).toEqual([button('Insert')]);
+      set({ undoLabel: UNDO });
+      expect(stops()).toEqual([button('Insert')]);
+      // Delete as the stop, then nothing selected: the stop moves on to Copy (after it).
+      fireEvent.click(button('Delete'));
+      expect(stops()).toEqual([button('Delete')]);
+      set({ selectedNoteId: null });
+      expect(stops()).toEqual([button('Copy')]);
+    });
+
+    describe('with a count-in take (Bar lines shown)', () => {
+      const COUNT_IN: Take = { ...TAKE, countInBpm: 100 };
+      const counted = () =>
+        mockSession({ take: COUNT_IN, tab: TAB40, loading: false, analysis: { kind: 'idle' } });
+      const noPeaks = () => new Promise<never>(() => {});
+
+      it('the stop order (TOOLS) is the rendered order, Bar lines included', () => {
+        const { create, set } = counted();
+        render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+        // Every button enabled, so all render (Undo and Redo with a step each).
+        set({ undoLabel: UNDO, redoLabel: UNDO, selectedNoteId: 'n3' });
+        expect(toolButtons().map((b) => b.dataset.tool)).toEqual([...TOOLS]);
+      });
+
+      it('← from Analysis settings reaches Bar lines; a click on Bar lines makes it the stop', () => {
+        const { create } = counted();
+        render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+        act(() => button('Analysis settings').focus());
+        key('ArrowLeft');
+        expect(document.activeElement).toBe(button('Bar lines'));
+        act(() => button('Insert').focus());
+        fireEvent.click(button('Bar lines'));
+        expect(stops()).toEqual([button('Bar lines')]);
+      });
+
+      it('Bar lines removed while the stop: the stop moves to the nearest enabled button', () => {
+        const { create, set } = counted();
+        render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+        fireEvent.click(button('Bar lines'));
+        expect(stops()).toEqual([button('Bar lines')]);
+        set({ take: TAKE }); // no count-in: no Bar lines
+        expect(screen.queryByRole('button', { name: 'Bar lines' })).toBeNull();
+        expect(stops()).toEqual([button('Analysis settings')]);
+      });
+
+      it('Esc from the Analysis panel and the Trim strip returns to their toggle, the stop', () => {
+        const { create } = counted();
+        render(<Tab takeId="t1" createSession={create} loadPeaks={noPeaks} />);
+        fireEvent.click(button('Analysis settings'));
+        const slider = screen.getByRole('slider', { name: 'Sensitivity' });
+        act(() => slider.focus());
+        act(() => {
+          slider.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+          );
+        });
+        expect(document.activeElement).toBe(button('Analysis settings'));
+        expect(stops()).toEqual([button('Analysis settings')]);
+        fireEvent.click(button('Trim'));
+        const start = screen.getByRole('slider', { name: 'Trim start' });
+        act(() => start.focus());
+        fireEvent.keyDown(start, { key: 'Escape' });
+        expect(document.activeElement).toBe(button('Trim'));
+        expect(stops()).toEqual([button('Trim')]);
+      });
+    });
+
+    it('Undo then Redo travel focus still works with the roving stop', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ undoLabel: UNDO });
+      act(() => button('Undo').focus());
+      set({ undoLabel: null, redoLabel: UNDO });
+      expect(document.activeElement).toBe(button('Redo'));
+      expect(stops()).toEqual([button('Redo')]);
+    });
+  });
+
+  // Story "Announcements and the Tab toolbar".
+  describe('analysis done and not found announcements', () => {
+    const RECORDED: Take = { ...TAKE, status: 'recorded' };
+    const tabOf = (n: number): TabRecord => ({ ...TAB40, notes: notes.slice(0, n) });
+
+    it('the first analysis finishing announces its note count once', () => {
+      const { create, set } = mockSession({
+        take: RECORDED,
+        tab: null,
+        loading: false,
+        analysis: { kind: 'running', progress: 0.5 },
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ analysis: { kind: 'running', progress: 1, saving: true } });
+      vi.mocked(announce).mockClear();
+      set({ take: TAKE, tab: tabOf(12), analysis: { kind: 'idle' } });
+      set({ selectedNoteId: 'n2' });
+      expect(vi.mocked(announce).mock.calls).toEqual([[strings['tab.analysisDone'](12)]]);
+      expect(strings['tab.analysisDone'](12)).toBe('Analysis done — 12 notes');
+    });
+
+    it('a first analysis with no notes announces "No notes found"', () => {
+      const { create, set } = mockSession({
+        take: RECORDED,
+        tab: null,
+        loading: false,
+        analysis: { kind: 'running', progress: 0.5 },
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      vi.mocked(announce).mockClear();
+      set({ take: TAKE, tab: tabOf(0), analysis: { kind: 'idle' } });
+      expect(vi.mocked(announce).mock.calls).toEqual([[strings['tab.noNotes']]]);
+    });
+
+    it('an analysed take opened, a re-analysis, a cancel or a failure: no "Analysis done"', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ reanalysis: { progress: 0.5 } });
+      set({ reanalysis: null, tab: tabOf(5) });
+      set({ analysis: { kind: 'running', progress: 0 } });
+      set({ analysis: { kind: 'cancelled' } });
+      set({ analysis: { kind: 'idle' } });
+      set({ analysis: { kind: 'running', progress: 0 } });
+      set({ analysis: { kind: 'failed', code: 'analysis-failed' } });
+      const done = vi
+        .mocked(announce)
+        .mock.calls.filter(([m]) => m.startsWith('Analysis done') || m === strings['tab.noNotes']);
+      expect(done).toEqual([]);
+    });
+
+    it('an analysis that ends without a tab clears the pending "Analysis done"', () => {
+      const { create, set } = mockSession({
+        take: RECORDED,
+        tab: null,
+        loading: false,
+        analysis: { kind: 'running', progress: 0.5 },
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      vi.mocked(announce).mockClear();
+      // The run ends with no tab (e.g. a reload's loading state); the tab arrives later.
+      set({ analysis: { kind: 'idle' }, loading: true });
+      set({ take: TAKE, tab: tabOf(12), loading: false });
+      expect(vi.mocked(announce).mock.calls).toEqual([]);
+    });
+
+    it('"Take not found" is announced once when the take is missing on load', () => {
+      const { create, set } = mockSession({
+        take: null,
+        tab: null,
+        loading: false,
+        analysis: { kind: 'idle' },
+        missing: true,
+      });
+      render(<Tab takeId="t1" createSession={create} />);
+      set({ loading: false });
+      expect(vi.mocked(announce).mock.calls).toEqual([[strings['tab.notFound']]]);
+    });
+
+    it('"Take not found" is announced once when the take is deleted', () => {
+      const { create, set } = analysed();
+      render(<Tab takeId="t1" createSession={create} />);
+      vi.mocked(announce).mockClear();
+      set({ take: null, tab: null, missing: true });
+      set({ selectedNoteId: null });
+      expect(vi.mocked(announce).mock.calls).toEqual([[strings['tab.notFound']]]);
+    });
   });
 
   // Story "Undo and redo controls".

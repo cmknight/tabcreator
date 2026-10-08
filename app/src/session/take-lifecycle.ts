@@ -847,6 +847,7 @@ export function createTakeLifecycle(
     const full = stopReason === 'storage-full';
     transition('idle', {
       savedSeq: host.snapshot().savedSeq + 1,
+      lastStopReason: stopReason,
       ...(full ? { storageFullSaved: true } : {}),
     });
     // A stop that finishes after a handover stays put: this tab no longer runs the app.

@@ -26,8 +26,9 @@ export function MicNotices() {
         return;
       }
       if (notice.kind === 'save-failed') {
-        // Never the only place: the take is offered again by the recovered-take banner.
-        showToast({ message: strings['record.saveFailed'] });
+        // Never the only place: the take is offered again by the recovered-take banner. Silent:
+        // the shell's StorageNoticeAnnouncer announces it (one owner).
+        showToast({ message: strings['record.saveFailed'], silent: true });
         return;
       }
       // An unlabelled input is named as the Microphone select names it.

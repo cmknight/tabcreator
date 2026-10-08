@@ -18,7 +18,8 @@ export function MicErrorAnnouncer() {
       previous = next;
       if (!entered) return;
       const code = micErrorCode(next.errorCode) ?? 'mic-failed';
-      announce(strings[micErrorKey(code, 'Title')], 'assertive');
+      // Each entry is a new failure, even the same one again on a Try again: never a duplicate.
+      announce(strings[micErrorKey(code, 'Title')], 'assertive', { repeat: true });
     });
   }, []);
   return null;

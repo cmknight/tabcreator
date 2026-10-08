@@ -448,6 +448,7 @@ export function createRecordingSession(deps: RecordingDeps): RecordingSession {
       countIn: snapshot.countIn,
       nearLimit: take.nearLimit(),
       savedSeq: snapshot.savedSeq,
+      ...(snapshot.lastStopReason !== undefined ? { lastStopReason: snapshot.lastStopReason } : {}),
       storageFull: snapshot.storageFull,
       ...(snapshot.storageFullSaved !== undefined
         ? { storageFullSaved: snapshot.storageFullSaved }

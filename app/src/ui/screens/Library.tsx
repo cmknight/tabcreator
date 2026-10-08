@@ -48,9 +48,9 @@
 // for this visit; showing it sets `prefs.persistNoticeShown` through the session, so no later
 // visit shows it) and the storage-full banner (`StorageFullBannerView`: no role, no Dismiss and no
 // link, announced assertively once per showing; shown while storage/persistence.ts's one status
-// is set, which only freed space clears). After the list, the footer: "23 takes · 41.0 MB used", the
-// whole library's count even while searching, with no footer for an empty library or an unknown
-// usage.
+// is set, which only freed space clears). After the list, the footer: "23 takes · 41.0 MB
+// used", the whole library's count even while searching, with no footer for an empty library or
+// an unknown usage.
 //
 // Story "Library robustness during backup and restore" (7.17): a row write library-session refuses
 // while a backup or restore runs (`LibraryBusyError`, e.g. a rename field blurred after Back up)
@@ -693,6 +693,8 @@ export function Library({
   }, [ready]);
 
   // The storage-full banner is announced once each time it shows, including on mount (AD-18).
+  // Storage filling while here is also announced by the shell's StorageNoticeAnnouncer: the
+  // announcer drops the same text repeated within its repeat window, so it is heard once.
   const fullAnnounced = useRef(false);
   useEffect(() => {
     if (fullAnnounced.current === storage.full) return;

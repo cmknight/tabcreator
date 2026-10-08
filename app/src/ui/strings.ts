@@ -245,6 +245,8 @@ export const strings = {
   'global.keyRight': '→',
   'global.keyUp': '↑',
   'global.keyDown': '↓',
+  'global.keyHome': 'Home',
+  'global.keyEnd': 'End',
   'global.keyCtrl': 'Ctrl',
   'global.keyCmd': '⌘',
   'global.keyShift': 'Shift',
@@ -270,6 +272,8 @@ export const strings = {
   'tab.analyse': 'Analyse',
   /** The error banner when the analysis failed (EXPERIENCE.md Analysis failed, spine AD-10). */
   'tab.analysisFailed': 'Analysis failed — try again',
+  /** Announced politely when the first analysis finishes with notes (none: `tab.noNotes`). */
+  'tab.analysisDone': (n: number) => `Analysis done — ${n} ${n === 1 ? 'note' : 'notes'}`,
   /** The Analysis failed and Storage full banners' button. */
   'tab.retry': 'Retry',
   /** An analysed take with no notes (EXPERIENCE.md No notes found), then its three tips. */
@@ -478,6 +482,9 @@ export const strings = {
   /** The Ctrl/⌘+Shift+C shortcut, as the `?` dialog lists it. */
   'tab.shortcutCopy': 'Copy tab',
   /** The Trim handles' arrow keys, as the `?` dialog lists them (TrimStrip handles them). */
+  /** The `?` dialog's rows for the Tab toolbar's own keys (its roving tabindex). */
+  'tab.shortcutToolbarMove': 'Move between toolbar buttons',
+  'tab.shortcutToolbarEnds': 'First / last toolbar button',
   'tab.shortcutTrimNudge': 'Nudge 10 ms',
   'tab.shortcutTrimNudgeBig': 'Nudge 100 ms',
   /** Insert's and Delete's tooltip with no notes (No notes found). */

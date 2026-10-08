@@ -13,6 +13,8 @@ import { StorageFullBannerView } from './StorageFullBannerView';
  * their audio can be deleted; no Dismiss. Not a live region (AD-18): it announces its text
  * assertively through the shared announcer each time it appears, including when it mounts
  * showing, and again when its text changes while it shows (a storage-full stop that saved).
+ * The shell's StorageNoticeAnnouncer announces the same stop on every screen; the announcer
+ * drops the same text repeated within its repeat window, so it is heard once.
  */
 export function StorageFullBanner() {
   const { storageFull, storageFullSaved } = useSyncExternalStore(
