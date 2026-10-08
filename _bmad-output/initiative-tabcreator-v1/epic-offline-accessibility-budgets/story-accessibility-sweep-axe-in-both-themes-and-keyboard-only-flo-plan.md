@@ -3,7 +3,7 @@ title: 'Accessibility sweep: axe in both themes and keyboard-only flow'
 type: 'feature'
 ticket: '12'
 created: '2026-10-07'
-status: 'built'
+status: done
 route: 'full'
 route_source: 'auto'
 review: 'thorough'
