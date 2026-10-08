@@ -59,6 +59,7 @@ PWA config and service worker, `ui/a11y/`, the storage-full status and restore c
 - Decision (user, 2026-10-07): the capability check requires every API the app uses (AudioWorklet, OPFS, WebAssembly, Web Locks, BroadcastChannel, MediaRecorder, IndexedDB, module Workers), run in main.tsx before the instance lock.
 - Decision (user, 2026-10-07): "initial JS" is the gzip size of the entry chunk plus its static imports; CSS, workers, worklets and lazy chunks are excluded.
 - Decision (user, 2026-10-07): the manual NVDA/VoiceOver check is hitl entry 14, which also carries the Ctrl/⌘+Shift+C check, the standalone-window check and the benchmark calibration.
+- Decision (user, 2026-10-08): entry 14 runs on a Windows device only: NVDA, Ctrl+Shift+C in Chrome, Edge and Firefox, the standalone window and the calibration on a 2022 mid-range Windows laptop. VoiceOver and the ⌘+Shift+C check on macOS are deferred, so US-8.2's VoiceOver criterion stays open. The app's Mac support (⌘ labels and key mapping, unit-tested) is unchanged.
 - Decision (user, 2026-10-07): Library retro B3 is entry 17, right after the restore stories; the builder generates the PWA icons (a token-coloured glyph, replaceable later).
 - Decision (2026-10-07, inception): focus moves to each screen's h1 on route change (entry 10) as standard accessibility practice; no spec line requires it.
 - Recording retro A5's "WAV fallback in a real browser" was done by epic Tab view entry 12 and is not repeated here.
