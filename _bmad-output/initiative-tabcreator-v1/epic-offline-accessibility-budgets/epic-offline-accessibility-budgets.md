@@ -6,7 +6,7 @@ covers: [CAP-19, CAP-20, CAP-21, CAP-22, CAP-23, CAP-25]
 after: []
 assignee: ""
 risk: medium
-status: in-progress
+status: done
 ---
 
 # Offline, accessibility and budgets
@@ -64,3 +64,25 @@ PWA config and service worker, `ui/a11y/`, the storage-full status and restore c
 - Decision (2026-10-07, inception): focus moves to each screen's h1 on route change (entry 10) as standard accessibility practice; no spec line requires it.
 - Recording retro A5's "WAV fallback in a real browser" was done by epic Tab view entry 12 and is not repeated here.
 - Decision (user, 2026-10-09, story 7.15): the shared platform check treats an empty `userAgentData.platform` as unknown and falls back to `navigator.platform` (closes the 6.9 deferral).
+- Closed (user, 2026-10-09): all 17 entries done, with CI green on af127fe. The closure check against Done when:
+  - (1) **Met.** `offline.prod.spec.ts` makes one online visit, then with the network off records, analyses, edits and exports on the production build. The full flow runs at root only; under the sub-path only the offline reload is tested.
+  - (2) **Met.**
+    - `a11y-matrix*.spec.ts` finds no serious or critical axe violations on every screen and state, in light and dark.
+    - `keyboard-flow.prod.spec.ts` runs the core flow keyboard-only in both themes.
+    - The hook-only states are checked on the dev server.
+  - (3) **Met.** CI fails on a breach of each gate: the size step (initial JS 200 KiB, wasm 1 MiB), the benchmark step (60 s analysis 2000 ms × calibration 1.14), and the edit p95 100 ms gate in the perf Playwright project.
+  - (4) **Met.**
+    - `cap25-states.test.ts` maps every State Patterns row, plus "player left during analysis", to a test.
+    - `unsupported.spec.ts` removes each required API and checks the unsupported screen appears.
+    - The mapping proves a test exists, not that it really reaches the state.
+- Open after closure, carried with owners:
+  - **VoiceOver and ⌘+Shift+C on macOS** (US-8.2's VoiceOver criterion stays open; user decision 2026-10-08; needs a Mac).
+  - **The user-visible end-to-end time for a 60 s take** (about 2.8 s, against the 2 s analysis gate): an open question for the owner.
+  - **7.15's ten deferrals** in `story-refactor-sweep-plan.md` frontmatter:
+    - UX: the Trim Home/End listing, the unpinned Library footer, the off-scale 6 px spacing;
+    - dev decision: the `persisted()` wait, `copyText`'s plain Error, the worker → backup import;
+    - CI (US-8.1): the deploy head-of-main API failure;
+    - later test work: the restore-signal ↔ recovery-scan e2e, live-region observers, per-file unit fixtures.
+  - **Timing e2e tests that flake under full-suite load** (playback cursor, re-fit outline, record Space latency): they need their own story.
+  - 7.3's frontmatter deferral (the waiting service worker) is closed by `update.prod.spec.ts`.
+
