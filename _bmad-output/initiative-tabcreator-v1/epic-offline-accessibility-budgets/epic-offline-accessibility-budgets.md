@@ -63,3 +63,4 @@ PWA config and service worker, `ui/a11y/`, the storage-full status and restore c
 - Decision (user, 2026-10-07): Library retro B3 is entry 17, right after the restore stories; the builder generates the PWA icons (a token-coloured glyph, replaceable later).
 - Decision (2026-10-07, inception): focus moves to each screen's h1 on route change (entry 10) as standard accessibility practice; no spec line requires it.
 - Recording retro A5's "WAV fallback in a real browser" was done by epic Tab view entry 12 and is not repeated here.
+- Decision (user, 2026-10-09, story 7.15): the shared platform check treats an empty `userAgentData.platform` as unknown and falls back to `navigator.platform` (closes the 6.9 deferral).
