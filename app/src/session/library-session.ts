@@ -32,7 +32,7 @@ import { AppError, isAppError, type AppErrorCode } from '../model/errors';
 import { devWarn } from '../model/log';
 import { renamedTitle } from '../model/title';
 import type { Tab, Take, TakeWriter } from '../model/types';
-import { audioStore, type CompressedFile } from '../storage/audio-store';
+import { audioStore, removeTakeFiles, type CompressedFile } from '../storage/audio-store';
 import { createBackup, type BackupResult } from '../storage/backup';
 import { db, type ImportRecord } from '../storage/db';
 import {
@@ -605,15 +605,9 @@ export function createLibrarySession(deps: LibraryDeps): LibrarySession {
       throw err;
     }
     // Files go after the record; a failure leaves files for the start-up scan (AD-15).
-    let removed = true;
-    await deps.deleteAudio(id).catch((err: unknown) => {
-      removed = false;
-      devWarn(`Library: removing the compressed audio of take ${id} failed`, err);
-    });
-    await deps.deleteRaw(id).catch((err: unknown) => {
-      removed = false;
-      devWarn(`Library: removing the raw audio of take ${id} failed`, err);
-    });
+    const removed = await removeTakeFiles(deps, id, (file, err) =>
+      devWarn(`Library: removing the ${file} audio of take ${id} failed`, err),
+    );
     // Space was freed: the storage-full status clears (when both removals succeeded) and is
     // re-checked without holding the delete; the usage is read again now the files are gone.
     void freed(removed);

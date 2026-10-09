@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { BUDGETS_PATH } from '../../build/budgets';
 import {
-  BUDGETS_PATH,
   check,
   main,
   measure,

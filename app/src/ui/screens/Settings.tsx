@@ -21,6 +21,7 @@ import { AnalysisSettingsFields } from '../components/AnalysisSettingsFields';
 import banner from '../components/banner.module.css';
 import buttons from '../components/buttons.module.css';
 import { CheckIcon, ErrorIcon, KeyboardIcon, WarnIcon } from '../components/icons';
+import segmented from '../components/segmented.module.css';
 import { routeToHash } from '../router';
 import { reloadOrExplain } from '../reload-or-explain';
 import { openShortcutsDialog } from '../shortcuts-dialog';
@@ -89,12 +90,12 @@ export function Settings({ session = settingsSession }: SettingsProps = {}) {
         </h2>
         <div className={settingsStyles.row}>
           <span id="settings-theme">{strings['settings.theme']}</span>
-          <div role="group" aria-labelledby="settings-theme" className={settingsStyles.segments}>
+          <div role="group" aria-labelledby="settings-theme" className={segmented.segments}>
             {THEMES.map(({ pref, label }) => (
               <button
                 key={pref}
                 type="button"
-                className={`${buttons.secondary} ${buttons.toggle} ${settingsStyles.segment}`}
+                className={`${buttons.secondary} ${buttons.toggle} ${segmented.segment}`}
                 aria-pressed={prefs.theme === pref}
                 onClick={() => session.setTheme(pref)}
               >

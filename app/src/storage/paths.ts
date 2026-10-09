@@ -4,3 +4,6 @@
 
 /** The directory of compressed audio, in OPFS and in a backup zip. */
 export const AUDIO_DIR = 'audio';
+
+/** The zip entry name of a backup's manifest. */
+export const MANIFEST_NAME = 'manifest.json';

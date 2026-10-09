@@ -4,7 +4,7 @@
  * goes in through the Library's own Restore from backup, as a user would restore it.
  *
  * - `readFixtureWav` / `loopPcm` / `wavFile`: a 16-bit mono PCM fixture from testdata/, looped
- *   to an exact length and written back as a WAV.
+ *   to an exact length and written back as a WAV (`readFixtureWav` is also engine.spec.ts's).
  * - `seedTake` / `seedBackup`: a format-1 backup zip (fflate, in Node) at this build's
  *   `schemaVersion`: one `recorded` take with `audioMime: 'audio/wav'`, no tab, and its
  *   `audio/{id}.wav` (`seedBackup(take, wav)`), or several takes, each with optional audio (named

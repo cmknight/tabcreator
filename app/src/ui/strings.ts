@@ -53,13 +53,36 @@ function commandPhrase(label: CommandLabel): string {
   }
 }
 
+/**
+ * Text shared by keys that mean the same thing at every use site (refactor sweep): each value is
+ * written once. Keys whose text matches by chance (an action and a history label, a button and a
+ * link) keep their own literal.
+ */
+const SCREEN_RECORD = 'Record';
+const SCREEN_LIBRARY = 'Library';
+const SCREEN_TUNER = 'Tuner';
+const SCREEN_SETTINGS = 'Settings';
+/** The last step of every microphone error's fix list. */
+const MIC_TRY_AGAIN_STEP = 'Come back here and choose Try again.';
+/** A take's title field while renaming (the Tab screen's header and a Library row). */
+const TAKE_TITLE = 'Take title';
+/** The take's audio is gone (EXPERIENCE.md Audio deleted, on the Tab screen and in the Library). */
+const AUDIO_DELETED = 'Audio deleted';
+/** Ending a count-in: the Record button's name during it, and the Esc shortcut. */
+const CANCEL_COUNT_IN = 'Cancel count-in';
+/** Undo and Redo: the toolbar buttons and their shortcuts. */
+const UNDO = 'Undo';
+const REDO = 'Redo';
+/** The Keyboard shortcuts dialog, and the Settings button that opens it. */
+const KEYBOARD_SHORTCUTS = 'Keyboard shortcuts';
+
 export const strings = {
   'global.appName': 'TabCreator',
   'global.navLabel': 'Main',
-  'global.navRecord': 'Record',
-  'global.navLibrary': 'Library',
-  'global.navTuner': 'Tuner',
-  'global.navSettings': 'Settings',
+  'global.navRecord': SCREEN_RECORD,
+  'global.navLibrary': SCREEN_LIBRARY,
+  'global.navTuner': SCREEN_TUNER,
+  'global.navSettings': SCREEN_SETTINGS,
   'global.engineFailed': 'The analysis engine failed to load',
   'global.reload': 'Reload',
   'global.cancel': 'Cancel',
@@ -152,30 +175,30 @@ export const strings = {
   'global.micErrorMicDeniedStep1':
     'Click the site settings icon at the left end of the address bar.',
   'global.micErrorMicDeniedStep2': 'Turn on Microphone.',
-  'global.micErrorMicDeniedStep3': 'Come back here and choose Try again.',
+  'global.micErrorMicDeniedStep3': MIC_TRY_AGAIN_STEP,
   'global.micErrorMicNoDeviceTitle': 'No microphone found',
   'global.micErrorMicNoDeviceBody': "Chrome can't find a microphone. To fix it:",
   'global.micErrorMicNoDeviceStep1':
     'Plug in a microphone or headset, or turn on your built-in mic.',
   'global.micErrorMicNoDeviceStep2': 'If your computer has a mic mute switch or key, turn it off.',
-  'global.micErrorMicNoDeviceStep3': 'Come back here and choose Try again.',
+  'global.micErrorMicNoDeviceStep3': MIC_TRY_AGAIN_STEP,
   'global.micErrorMicInUseTitle': 'Your microphone is busy',
   'global.micErrorMicInUseBody': 'Another app or tab is using the microphone. To free it:',
   'global.micErrorMicInUseStep1': 'Close apps that use the mic, such as video calls.',
   'global.micErrorMicInUseStep2': 'Close other browser tabs that are using the microphone.',
-  'global.micErrorMicInUseStep3': 'Come back here and choose Try again.',
+  'global.micErrorMicInUseStep3': MIC_TRY_AGAIN_STEP,
   'global.micErrorMicFailedTitle': "The microphone didn't start",
   'global.micErrorMicFailedBody': 'Something went wrong opening the microphone. To fix it:',
   'global.micErrorMicFailedStep1': 'Unplug the microphone and plug it back in.',
   'global.micErrorMicFailedStep2': "Check it works in your computer's sound settings.",
-  'global.micErrorMicFailedStep3': 'Come back here and choose Try again.',
+  'global.micErrorMicFailedStep3': MIC_TRY_AGAIN_STEP,
   'global.micErrorMicLostTitle': 'Microphone access was lost',
   'global.micErrorMicLostBody': 'The microphone stopped or access was turned off. To get it back:',
   'global.micErrorMicLostStep1': 'Check the microphone is still plugged in.',
   'global.micErrorMicLostStep2':
     'Check Microphone is still allowed in the site settings icon at the left end of the address bar.',
   'global.micErrorMicLostStep3': 'Choose Try again.',
-  'record.title': 'Record',
+  'record.title': SCREEN_RECORD,
   'record.tuneFirst': 'Tune first',
   'record.record': 'Record',
   'record.stop': 'Stop',
@@ -215,19 +238,19 @@ export const strings = {
   /** The Record button's label during a count-in. */
   'record.cancel': 'Cancel',
   /** The Record button's accessible name during a count-in. */
-  'record.cancelCountIn': 'Cancel count-in',
+  'record.cancelCountIn': CANCEL_COUNT_IN,
   /** The indicator above the beat number during a count-in: "Count-in · 90 BPM". */
   'record.countInState': (bpm: number) => `Count-in · ${bpm} BPM`,
   /** A count-in beat, as shown and announced (4, 3, 2, 1). */
   'record.countInBeat': (beat: number) => `${beat}`,
   /** The Esc shortcut's description in the keyboard shortcuts dialog (EXPERIENCE.md). */
-  'global.shortcutCancelCountIn': 'Cancel count-in',
+  'global.shortcutCancelCountIn': CANCEL_COUNT_IN,
   /** The `?` shortcut's description (EXPERIENCE.md Interaction Primitives). */
   'global.shortcutHelp': 'Show keyboard shortcuts',
   /** The overlays' Esc, as the `?` dialog lists it (ui/a11y/overlays.ts handles it). */
   'global.shortcutCloseOverlay': 'Close dialog, popover or panel',
   /** The Keyboard shortcuts dialog (EXPERIENCE.md :89; mockup settings.html): title and note. */
-  'global.shortcutsTitle': 'Keyboard shortcuts',
+  'global.shortcutsTitle': KEYBOARD_SHORTCUTS,
   'global.shortcutsNote':
     "Shortcuts don't fire while you are typing in a field, except Esc cancelling a count-in.",
   /** The dialog's scrolling list of shortcut tables, as a named region. */
@@ -304,7 +327,7 @@ export const strings = {
   /** The pencil button beside the title: switches it to a text field (DESIGN.md Inline-editable title). */
   'tab.rename': 'Rename take',
   /** The title field's accessible name while renaming. */
-  'tab.titleField': 'Take title',
+  'tab.titleField': TAKE_TITLE,
   /** The line under the title: recording date and time, then the duration. */
   'tab.meta': (date: string, duration: string) => `${date} · ${duration}`,
   /** The skip link, the screen's first focusable element (EXPERIENCE.md Accessibility floor). */
@@ -376,7 +399,7 @@ export const strings = {
   /** The Play/Pause button's accessible name while playing. */
   'tab.pause': 'Pause',
   /** Why Play is disabled: the take's audio is gone (EXPERIENCE.md Audio deleted). */
-  'tab.audioDeleted': 'Audio deleted',
+  'tab.audioDeleted': AUDIO_DELETED,
   /** Why Play is disabled: the browser cannot play the take's audio file. */
   'tab.audioUnplayable': "Audio can't be played",
   /** A speed option's accessible name: "0.5 times speed" (the visible text is "0.5×"). */
@@ -393,9 +416,9 @@ export const strings = {
   /** The `0`–`9` shortcut's description (EXPERIENCE.md Interaction Primitives). */
   'tab.shortcutSetFret': 'Set fret; two digits within 400 ms make one number',
   /** The Ctrl/⌘+Z shortcut's description. */
-  'tab.shortcutUndo': 'Undo',
+  'tab.shortcutUndo': UNDO,
   /** The Ctrl/⌘+Shift+Z and Ctrl+Y shortcuts' description. */
-  'tab.shortcutRedo': 'Redo',
+  'tab.shortcutRedo': REDO,
   /** An edit command's name (`model/edit-history.ts` `CommandLabel`), as undo and redo name it. */
   'tab.commandSetFret': (fret: number) => `Set fret ${fret}`,
   /** Announced after a fret edit: "Fret 5 on the G string". */
@@ -492,8 +515,8 @@ export const strings = {
   /** Delete's tooltip with notes but none selected. */
   'tab.selectToDelete': 'Select a note to delete',
   /** The toolbar's Undo and Redo buttons (EXPERIENCE.md Toolbar). */
-  'tab.undo': 'Undo',
-  'tab.redo': 'Redo',
+  'tab.undo': UNDO,
+  'tab.redo': REDO,
   /** Undo's and Redo's tooltips, naming the step: "Undo move to string 3", "Redo set fret 5". */
   'tab.undoAction': (label: CommandLabel) => `Undo ${commandPhrase(label)}`,
   'tab.redoAction': (label: CommandLabel) => `Redo ${commandPhrase(label)}`,
@@ -510,7 +533,7 @@ export const strings = {
   /** The edit popover's position buttons' group name. */
   'tab.popoverPositions': 'Other strings',
   'tab.popoverConfirm': 'Confirm',
-  'library.title': 'Library',
+  'library.title': SCREEN_LIBRARY,
   /** The take list's accessible name. */
   'library.listLabel': 'Takes, newest first',
   /** Status badges (EXPERIENCE.md Library row). */
@@ -521,7 +544,7 @@ export const strings = {
   'library.notes': (n: number) => `${n} ${n === 1 ? 'note' : 'notes'}`,
   /** A row's audio size: "0.2 MB" (`mb` already formatted to one place). */
   'library.size': (mb: string) => `${mb} MB`,
-  'library.audioDeleted': 'Audio deleted',
+  'library.audioDeleted': AUDIO_DELETED,
   /** The metadata separator between date, duration, note count and size. */
   'library.metaSeparator': ' · ',
   /** The preview of a row with no notes or no analysis. */
@@ -540,7 +563,7 @@ export const strings = {
   'library.deleteAudio': 'Delete audio only',
   'library.deleteTake': 'Delete take',
   /** The inline rename field. */
-  'library.titleField': 'Take title',
+  'library.titleField': TAKE_TITLE,
   /** The Delete take dialog (EXPERIENCE.md :88). */
   'library.deleteTakeTitle': (title: string) => `Delete "${title}"?`,
   'library.deleteTakeBody':
@@ -624,7 +647,7 @@ export const strings = {
   'library.persistNoticeDismiss': 'Dismiss storage notice',
   /** The footer: "23 takes · 41.0 MB used" (the MB from `formatMegabytes`). */
   'library.footer': (n: number, mb: string) => `${n} ${n === 1 ? 'take' : 'takes'} · ${mb} MB used`,
-  'tuner.title': 'Tuner',
+  'tuner.title': SCREEN_TUNER,
   /** The string name in display type; both E strings show "E". */
   'tuner.stringLetter': (string: StringNo) =>
     string === 1 || string === 6 ? 'E' : STRING_NAMES[string],
@@ -646,7 +669,7 @@ export const strings = {
   'tuner.stringInTune': (string: StringNo) => `${STRING_NAMES[string]} string in tune`,
   'tuner.allInTune': 'All six strings in tune',
   'tuner.done': 'Done — go to Record',
-  'settings.title': 'Settings',
+  'settings.title': SCREEN_SETTINGS,
   'settings.about': 'About',
   'settings.defaults': 'Defaults for new takes',
   'settings.defaultsHint':
@@ -668,7 +691,7 @@ export const strings = {
   'settings.themeLight': 'Light',
   'settings.themeDark': 'Dark',
   /** About's button that opens the Keyboard shortcuts dialog (mockup settings.html). */
-  'settings.keyboardShortcuts': 'Keyboard shortcuts',
+  'settings.keyboardShortcuts': KEYBOARD_SHORTCUTS,
   /** Its key hint: the key that opens the dialog anywhere. */
   'settings.keyboardShortcutsKey': '?',
 } as const;

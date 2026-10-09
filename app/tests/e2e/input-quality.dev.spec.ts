@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { collectErrors } from './helpers';
+import { collectErrors, liveLog, logLive } from './helpers';
 import { expectNoSeriousAxe, goLive, meter } from './mic-helpers';
 
 // Runs in the `dev` project only: each `?fakeMic` fixture is one fake input device (story 2.2),
@@ -165,27 +165,6 @@ test('reload after Dismiss: the banner shows again while the condition holds', a
   expect(errors).toEqual([]);
 });
 
-declare global {
-  interface Window {
-    __politeLog?: string[];
-  }
-}
-
-/** Logs every non-empty text the shared polite live region takes, in order. */
-async function logPolite(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const log: string[] = [];
-    window.__politeLog = log;
-    const region = document.querySelector('[aria-live="polite"]')!;
-    new MutationObserver(() => {
-      const said = region.textContent ?? '';
-      if (said) log.push(said);
-    }).observe(region, { subtree: true, childList: true, characterData: true });
-  });
-}
-
-const politeLog = (page: Page) => page.evaluate(() => window.__politeLog ?? []);
-
 test('unplug onto a headset: the switch toast and the warning are both announced, in order', async ({
   page,
 }) => {
@@ -193,7 +172,7 @@ test('unplug onto a headset: the switch toast and the warning are both announced
     [SILENCE]: { label: 'AirPods Pro' },
   });
   await expect(banner(page)).toHaveCount(0);
-  await logPolite(page);
+  await logLive(page);
   await page.evaluate((id) => window.__fakeMic!.unplug(id), OPEN);
   const switched = 'Microphone disconnected — switched to AirPods Pro';
   await expect(page.getByTestId('toast')).toHaveText(switched);
@@ -202,7 +181,7 @@ test('unplug onto a headset: the switch toast and the warning are both announced
   // in one commit, the banner's effect first (it comes before the shell's toast host in the
   // tree), and spoken in that order.
   const pair = async () =>
-    (await politeLog(page)).filter((said) => said === switched || said === WARNING);
+    (await liveLog(page)).polite.filter((said) => said === switched || said === WARNING);
   await expect.poll(pair).toEqual([WARNING, switched]);
   expect(errors).toEqual([]);
 });
@@ -215,7 +194,7 @@ test('Tuner at 16 kHz: the banner shows above the Tuner h1, is announced, and Di
   const allow = page.getByRole('button', { name: 'Allow microphone' });
   await expect(allow).toBeVisible();
   await configure(page, { [OPEN]: { sampleRate: 16000 } });
-  await logPolite(page);
+  await logLive(page);
   await allow.click();
   await expect(meter(page)).toBeVisible();
   await expect(banner(page)).toBeVisible();
@@ -227,7 +206,7 @@ test('Tuner at 16 kHz: the banner shows above the Tuner h1, is announced, and Di
     return Boolean(b.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING);
   });
   expect(before).toBe(true);
-  await expect.poll(() => politeLog(page)).toContain(WARNING);
+  await expect.poll(async () => (await liveLog(page)).polite).toContain(WARNING);
   // By keyboard: focus moves to the Tuner heading as the button goes.
   await dismiss(page).focus();
   await page.keyboard.press('Enter');

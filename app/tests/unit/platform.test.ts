@@ -14,6 +14,7 @@ import {
   downloadBlob,
   downloadText,
   isWindowsPlatform,
+  platformName,
   PICK_FOCUS_GRACE_MS,
   pickFile,
   REVOKE_DELAY_MS,
@@ -119,7 +120,31 @@ describe('withPlatformLineEndings', () => {
   });
 });
 
+// Story "Refactor sweep" (6.9 deferral; ruling: an empty name means unknown): one platform name.
+describe('platformName', () => {
+  it('is userAgentData.platform, else navigator.platform, else empty', () => {
+    expect(platformName({ platform: 'Win32', userAgentData: { platform: 'macOS' } })).toBe('macOS');
+    expect(platformName({ platform: 'Win32' })).toBe('Win32');
+    expect(platformName({ platform: 'Win32', userAgentData: {} })).toBe('Win32');
+    expect(platformName({ platform: '', userAgentData: { platform: '' } })).toBe('');
+    expect(platformName(undefined)).toBe('');
+  });
+
+  it('an empty userAgentData.platform is unknown: navigator.platform is used', () => {
+    expect(platformName({ platform: 'MacIntel', userAgentData: { platform: '' } })).toBe(
+      'MacIntel',
+    );
+  });
+});
+
 describe('isWindowsPlatform', () => {
+  it('an empty userAgentData.platform falls back to navigator.platform', () => {
+    expect(isWindowsPlatform({ platform: 'Win32', userAgentData: { platform: '' } })).toBe(true);
+    expect(isWindowsPlatform({ platform: 'MacIntel', userAgentData: { platform: '' } })).toBe(
+      false,
+    );
+  });
+
   it('prefers userAgentData.platform', () => {
     expect(
       isWindowsPlatform({ platform: 'Linux x86_64', userAgentData: { platform: 'Windows' } }),

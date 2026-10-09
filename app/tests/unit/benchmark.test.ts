@@ -9,8 +9,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { strFromU8, unzipSync } from 'fflate';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BUDGETS_PATH } from '../../build/budgets';
 import {
-  BUDGETS_PATH,
   BenchmarkError,
   CONFIG_PATH,
   decide,

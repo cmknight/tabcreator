@@ -75,6 +75,7 @@ import {
   shownNotes,
   type TakeSession,
 } from '../../session/take-session';
+import { platformName, type PlatformSource } from '../platform';
 import { parseRoute, type Route } from '../router';
 import { isOverlayOpen } from './overlays';
 import { NOTE_BUTTON, TAB_AREA, TEXT_FIELD, TOOLBAR, TRIM_STRIP } from './selectors';
@@ -118,11 +119,12 @@ export interface Shortcut {
   shiftOk?: boolean;
 }
 
-/** Whether the platform is a Mac (⌘ is the command modifier there). */
-export function isMacPlatform(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  const data = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
-  return /mac|iphone|ipad|ipod|ios/i.test(data?.platform ?? navigator.platform ?? '');
+/**
+ * Whether the platform is a Mac (⌘ is the command modifier there), by `platformName`: `source`
+ * defaults to the page's `navigator` (tests pass their own).
+ */
+export function isMacPlatform(source?: PlatformSource): boolean {
+  return /mac|iphone|ipad|ipod|ios/i.test(platformName(source));
 }
 
 /** The latency mark set at a handled Space keydown on Record (story 3.5, Done when 1). */

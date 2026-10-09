@@ -178,10 +178,10 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # Spine AD-17 (CAP-23): the initial JS (entry chunk, its static imports and index.html's
-      # classic scripts) and each wasm under their gzip budgets in app/budgets.json; the sizes go
-      # to the job summary. The Vite manifest it reads (build paths, the chunk graph) is then
-      # deleted so it is never published.
+      # Spine AD-17 (CAP-23): the initial JS (defined in app/build/size-budget.ts's header) and
+      # each wasm under their gzip budgets in app/budgets.json; the sizes go to the job summary.
+      # The Vite manifest it reads (build paths, the chunk graph) is then deleted so it is never
+      # published.
       - name: Size budgets
         run: |
           pnpm --filter app size:check

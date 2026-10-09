@@ -1221,6 +1221,24 @@ describe('isMacPlatform', () => {
     userAgentData(value);
     expect(isMacPlatform()).toBe(mac);
   });
+
+  // Story "Refactor sweep" (6.9 deferral; ruling: an empty name means unknown).
+  it.each([
+    ['MacIntel', true],
+    ['Win32', false],
+  ])('an empty userAgentData.platform falls back to navigator.platform %s: %s', (value, mac) => {
+    platform(value);
+    userAgentData('');
+    expect(isMacPlatform()).toBe(mac);
+    expect(isMacPlatform({ platform: value, userAgentData: { platform: '' } })).toBe(mac);
+  });
+
+  it('takes its own platform source', () => {
+    platform('Win32');
+    expect(isMacPlatform({ platform: 'MacIntel' })).toBe(true);
+    expect(isMacPlatform({ platform: 'Win32', userAgentData: { platform: 'macOS' } })).toBe(true);
+    expect(isMacPlatform({ platform: '' })).toBe(false);
+  });
 });
 
 // Story "Copy and Download on the Tab screen": Ctrl/⌘+Shift+C copies the shown tab.

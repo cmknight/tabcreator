@@ -1,7 +1,8 @@
 import { deflateSync } from 'fflate';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createAudioStore,
+  removeTakeFiles,
   type FromOpfsWorker,
   type OpfsWorker,
   type ToOpfsWorker,
@@ -538,5 +539,55 @@ describe('restoreCompressed', () => {
       store.restoreCompressed('t1', new Blob([], { type: 'audio/wav' })),
     ).rejects.toMatchObject({ code: 'instance-taken' });
     expect(fake.log).toEqual([]);
+  });
+});
+
+// Refactor sweep: the one best-effort removal of a take's files (db.ts deleteTake, Delete audio).
+describe('removeTakeFiles', () => {
+  const store = (audio: boolean, raw: boolean) => {
+    const calls: string[] = [];
+    return {
+      calls,
+      deleteAudio: vi.fn(async (id: string) => {
+        calls.push(`audio ${id}`);
+        if (!audio) throw new Error('audio');
+      }),
+      deleteRaw: vi.fn(async (id: string) => {
+        calls.push(`raw ${id}`);
+        if (!raw) throw new Error('raw');
+      }),
+    };
+  };
+
+  it('removes the compressed audio, then the raw file, and resolves true', async () => {
+    const s = store(true, true);
+    const onFailure = vi.fn();
+    await expect(removeTakeFiles(s, 't1', onFailure)).resolves.toBe(true);
+    expect(s.calls).toEqual(['audio t1', 'raw t1']);
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it('still tries the raw file after the compressed one fails, and resolves false', async () => {
+    const s = store(false, true);
+    const onFailure = vi.fn();
+    await expect(removeTakeFiles(s, 't1', onFailure)).resolves.toBe(false);
+    expect(s.calls).toEqual(['audio t1', 'raw t1']);
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure).toHaveBeenCalledWith(
+      'compressed',
+      expect.objectContaining({ message: 'audio' }),
+    );
+  });
+
+  it('names the raw file when it fails, and resolves false', async () => {
+    const onFailure = vi.fn();
+    await expect(removeTakeFiles(store(true, false), 't1', onFailure)).resolves.toBe(false);
+    expect(onFailure.mock.calls.map(([file]) => file)).toEqual(['raw']);
+  });
+
+  it('never throws, with both failing and no onFailure', async () => {
+    const s = store(false, false);
+    await expect(removeTakeFiles(s, 't1')).resolves.toBe(false);
+    expect(s.calls).toEqual(['audio t1', 'raw t1']);
   });
 });

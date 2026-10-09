@@ -49,3 +49,30 @@ export const timer = (page: Page) => page.getByRole('timer');
 /** The announcer's polite region (not the Library's storage notice, also role status). */
 export const politeRegion = (page: Page): Locator =>
   page.locator('[role="status"][aria-live="polite"]');
+
+declare global {
+  interface Window {
+    __liveLog?: { polite: string[]; assertive: string[] };
+  }
+}
+
+/**
+ * Logs every non-empty text each shared live region takes, in order (read with `liveLog`); the
+ * regions must be on the page.
+ */
+export async function logLive(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const log = { polite: [] as string[], assertive: [] as string[] };
+    window.__liveLog = log;
+    for (const kind of ['polite', 'assertive'] as const) {
+      const region = document.querySelector(`[aria-live="${kind}"]`)!;
+      new MutationObserver(() => {
+        const said = region.textContent ?? '';
+        if (said) log[kind].push(said);
+      }).observe(region, { subtree: true, childList: true, characterData: true });
+    }
+  });
+}
+
+export const liveLog = (page: Page) =>
+  page.evaluate(() => window.__liveLog ?? { polite: [], assertive: [] });

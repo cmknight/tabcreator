@@ -21,7 +21,7 @@
  * The report is a Markdown table on stdout, appended to `$GITHUB_STEP_SUMMARY` when set. Run with
  * Node's type stripping through `build/benchmark-cli.ts` (`pnpm --filter app benchmark`).
  */
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -36,13 +36,13 @@ import {
   seedTake,
   wavFile,
 } from '../tests/e2e/seed-helpers.ts';
+import { engineWorker as sharedEngineWorker } from '../tests/e2e/engine-helpers.ts';
 import { DEFAULT_PREFS } from '../src/storage/prefs.ts';
+import { BUDGETS_PATH, readBudgetsJson, readJsonObject } from './budgets.ts';
 
-/** The app directory (`app/`), which holds the budgets, the config and the default `dist/`. */
+/** The app directory (`app/`), which holds the config and the default `dist/`. */
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url));
 
-/** `app/budgets.json`: `analysis60sMs` is this gate's limit. */
-export const BUDGETS_PATH = resolve(APP_DIR, 'budgets.json');
 /** `app/benchmark.config.json`: the runner's `calibrationFactor`. */
 export const CONFIG_PATH = resolve(APP_DIR, 'benchmark.config.json');
 /** The fixture every run analyses, looped. */
@@ -78,22 +78,13 @@ export interface BenchmarkConfig {
   calibrationFactor: number;
 }
 
-function readJsonObject(path: string, what: string): Record<string, unknown> {
-  let json: unknown;
-  try {
-    json = JSON.parse(readFileSync(path, 'utf8'));
-  } catch (e) {
-    throw new BenchmarkError(`cannot read ${what} ${path}: ${(e as Error).message}`);
-  }
-  if (!json || typeof json !== 'object' || Array.isArray(json))
-    throw new BenchmarkError(`${what} ${path}: not a JSON object`);
-  return json as Record<string, unknown>;
-}
+const benchmarkError = (message: string) => new BenchmarkError(message);
 
 /** Reads and validates `analysis60sMs` (a positive number) and `calibrationFactor` (positive). */
 export function readConfig(budgetsPath: string, configPath: string): BenchmarkConfig {
-  const budgets = readJsonObject(budgetsPath, 'budgets');
-  const config = readJsonObject(configPath, 'benchmark config');
+  // `analysis60sMs` is this gate's limit.
+  const budgets = readBudgetsJson(budgetsPath, benchmarkError);
+  const config = readJsonObject(configPath, 'benchmark config', benchmarkError);
   const limit = budgets.analysis60sMs;
   if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0)
     throw new BenchmarkError(
@@ -256,21 +247,8 @@ export async function withTimeout<T>(
   }
 }
 
-/** Opens Settings and returns the production engine worker once the engine is ready. */
-async function engineWorker(page: Page): Promise<Worker> {
-  await page.goto('./#/settings');
-  try {
-    await page
-      .getByTestId('engine-version')
-      .filter({ hasText: /^Engine v\d+\.\d+\.\d+$/ })
-      .waitFor({ state: 'visible', timeout: 30_000 });
-  } catch (e) {
-    throw new BenchmarkError(`the engine did not become ready: ${(e as Error).message}`);
-  }
-  const worker = page.workers().find((w) => w.url().includes('engine-worker'));
-  if (!worker) throw new BenchmarkError('no engine worker found');
-  return worker;
-}
+/** The production engine worker once the engine is ready; a failure is a BenchmarkError. */
+const engineWorker = (page: Page): Promise<Worker> => sharedEngineWorker(page, benchmarkError);
 
 /**
  * Runs `count` analyze calls, back to back, of the fixture looped to `samples` samples on the

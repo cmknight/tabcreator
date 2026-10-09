@@ -13,6 +13,7 @@ import { SPEEDS, type Playback } from '../use-playback';
 import buttons from './buttons.module.css';
 import { PauseIcon, PlayIcon } from './icons';
 import styles from './PlaybackControls.module.css';
+import segmented from './segmented.module.css';
 
 export function PlaybackControls({ playback }: { playback: Playback }) {
   const reasonId = useId();
@@ -48,12 +49,12 @@ export function PlaybackControls({ playback }: { playback: Playback }) {
           {reason}
         </span>
       )}
-      <div role="group" aria-label={strings['tab.speed']} className={styles.speeds}>
+      <div role="group" aria-label={strings['tab.speed']} className={segmented.segments}>
         {SPEEDS.map((s) => (
           <button
             key={s}
             type="button"
-            className={`${buttons.secondary} ${buttons.toggle} ${styles.speed}`}
+            className={`${buttons.secondary} ${buttons.toggle} ${segmented.segment}`}
             aria-pressed={speed === s}
             aria-label={strings['tab.speedLabel'](s)}
             onClick={() => setSpeed(s)}

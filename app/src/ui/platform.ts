@@ -163,12 +163,22 @@ export type PlatformSource = Pick<Navigator, 'platform'> & {
   userAgentData?: { platform?: string } | undefined;
 };
 
-/** Whether the platform is Windows (`userAgentData.platform`, else `navigator.platform`). */
+/** The page's `navigator` as a platform source; undefined where there is none. */
+const currentNavigator = (): PlatformSource | undefined =>
+  typeof navigator === 'undefined' ? undefined : (navigator as PlatformSource);
+
+/**
+ * The platform's name: `userAgentData.platform`, else `navigator.platform`. An empty name means
+ * unknown, so it falls through to the next; '' when neither names one (or there is no source).
+ */
+export function platformName(source: PlatformSource | undefined = currentNavigator()): string {
+  if (!source) return '';
+  return source.userAgentData?.platform || source.platform || '';
+}
+
+/** Whether the platform is Windows (by `platformName`). */
 export function isWindowsPlatform(
-  source: PlatformSource | undefined = typeof navigator === 'undefined'
-    ? undefined
-    : (navigator as PlatformSource),
+  source: PlatformSource | undefined = currentNavigator(),
 ): boolean {
-  if (!source) return false;
-  return /^win/i.test(source.userAgentData?.platform || source.platform || '');
+  return /^win/i.test(platformName(source));
 }

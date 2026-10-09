@@ -9,11 +9,8 @@
  *
  * Pure Node (no Playwright import), so the unit tests cover it.
  */
-import { appendFileSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
-/** `app/budgets.json`. */
-export const BUDGETS_PATH = resolve(import.meta.dirname, '..', '..', 'budgets.json');
+import { appendFileSync } from 'node:fs';
+import { BUDGETS_PATH, readBudgetsJson } from '../../build/budgets.ts';
 
 /** A budgets or override problem: the spec fails with this message. */
 export class PerfConfigError extends Error {
@@ -49,15 +46,7 @@ export function readLimit(
   env: NodeJS.ProcessEnv = process.env,
   budgetsPath: string = BUDGETS_PATH,
 ): Limit {
-  let json: unknown;
-  try {
-    json = JSON.parse(readFileSync(budgetsPath, 'utf8'));
-  } catch (e) {
-    throw new PerfConfigError(`cannot read budgets ${budgetsPath}: ${(e as Error).message}`);
-  }
-  if (!json || typeof json !== 'object' || Array.isArray(json))
-    throw new PerfConfigError(`budgets ${budgetsPath}: not a JSON object`);
-  const budgetMs = (json as Record<string, unknown>)[key];
+  const budgetMs = readBudgetsJson(budgetsPath, (message) => new PerfConfigError(message))[key];
   if (!positive(budgetMs))
     throw new PerfConfigError(
       `budgets ${budgetsPath}: "${key}" must be a positive number of milliseconds`,

@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { expect, test, type Page, type Worker } from '@playwright/test';
+import { expect, test, type Worker } from '@playwright/test';
+import { engineWorker } from './engine-helpers';
 import { collectErrors } from './helpers';
+import { readFixtureWav } from './seed-helpers';
 
 const ROOT = join(import.meta.dirname, '..', '..', '..');
 const SYNTH = join(ROOT, 'testdata', 'synth');
@@ -44,30 +46,6 @@ test('a wasm that fails to load shows the engine-failed banner with Reload', asy
   await expect(page.getByTestId('engine-version')).toHaveText(/^Engine v\d+\.\d+\.\d+$/);
 });
 
-/** The PCM data chunk (16-bit mono) and sample rate of a fixture WAV. */
-function readFixtureWav(path: string): { data: Buffer; sampleRate: number } {
-  const b = readFileSync(path);
-  if (b.toString('ascii', 0, 4) !== 'RIFF' || b.toString('ascii', 8, 12) !== 'WAVE') {
-    throw new Error(`${path}: not a RIFF/WAVE file`);
-  }
-  let sampleRate = 0;
-  for (let at = 12; at + 8 <= b.length;) {
-    const id = b.toString('ascii', at, at + 4);
-    const size = b.readUInt32LE(at + 4);
-    if (id === 'fmt ') {
-      if (b.readUInt16LE(at + 8) !== 1 || b.readUInt16LE(at + 10) !== 1) {
-        throw new Error(`${path}: not PCM mono`);
-      }
-      if (b.readUInt16LE(at + 22) !== 16) throw new Error(`${path}: not 16-bit`);
-      sampleRate = b.readUInt32LE(at + 12);
-    } else if (id === 'data') {
-      return { data: b.subarray(at + 8, at + 8 + size), sampleRate };
-    }
-    at += 8 + size + (size & 1);
-  }
-  throw new Error(`${path}: no data chunk`);
-}
-
 type Reply = {
   type: string;
   reqId: number;
@@ -91,7 +69,9 @@ type FixtureNote = { startMs: number; endMs: number; midi: number; string: numbe
 
 /** The `c_major_scale_pos1` fixture: its PCM, sample rate and ground-truth notes. */
 function readScaleFixture(): { data: Buffer; sampleRate: number; truth: FixtureNote[] } {
-  const { data, sampleRate } = readFixtureWav(join(SYNTH, 'c_major_scale_pos1.wav'));
+  const { samples, sampleRate } = readFixtureWav(join(SYNTH, 'c_major_scale_pos1.wav'));
+  // Back to the WAV's little-endian 16-bit bytes: assumes a little-endian host (Int16Array order).
+  const data = Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength);
   const answer = JSON.parse(readFileSync(join(SYNTH, 'c_major_scale_pos1.json'), 'utf8')) as {
     notes: FixtureNote[];
   };
@@ -100,15 +80,6 @@ function readScaleFixture(): { data: Buffer; sampleRate: number; truth: FixtureN
 
 /** The sentinel panic message the `test-panic` engine raises. */
 const PANIC_TEXT = 'test-panic: sentinel sample rate';
-
-/** Opens Settings and returns the engine worker it spawned, once the engine is ready. */
-async function engineWorker(page: Page): Promise<Worker> {
-  await page.goto('./#/settings');
-  await expect(page.getByTestId('engine-version')).toHaveText(/^Engine v\d+\.\d+\.\d+$/);
-  const worker = page.workers().find((w) => w.url().includes('engine-worker'));
-  expect(worker, 'the engine worker').toBeDefined();
-  return worker!;
-}
 
 /**
  * Sends `requests` in order to the engine worker's own onmessage handler, with postMessage

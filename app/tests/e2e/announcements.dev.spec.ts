@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { strings } from '../../src/ui/strings';
-import { politeRegion, recordButton, stopButton, timer } from './helpers';
+import { liveLog, logLive, politeRegion, recordButton, stopButton, timer } from './helpers';
 import { nav } from './library-helpers';
 import { goLive, held } from './mic-helpers';
 import { readTake, takeIds } from './storage-helpers';
@@ -10,30 +10,6 @@ import { openSeededTab } from './tab-helpers';
 // toolbar is one Tab stop with arrow keys across its enabled buttons; the first analysis
 // finishing and "Take not found" are announced; a storage-full stop is announced once, by the
 // shell, on whatever screen the player is.
-
-declare global {
-  interface Window {
-    __liveLog?: { polite: string[]; assertive: string[] };
-  }
-}
-
-/** Logs every non-empty text each shared live region takes, in order. */
-async function logLive(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const log = { polite: [] as string[], assertive: [] as string[] };
-    window.__liveLog = log;
-    for (const kind of ['polite', 'assertive'] as const) {
-      const region = document.querySelector(`[aria-live="${kind}"]`)!;
-      new MutationObserver(() => {
-        const said = region.textContent ?? '';
-        if (said) log[kind].push(said);
-      }).observe(region, { subtree: true, childList: true, characterData: true });
-    }
-  });
-}
-
-const liveLog = (page: Page) =>
-  page.evaluate(() => window.__liveLog ?? { polite: [], assertive: [] });
 
 const toolbar = (page: Page) => page.getByRole('toolbar', { name: strings['tab.toolbar'] });
 const tool = (page: Page, name: string) => toolbar(page).getByRole('button', { name });

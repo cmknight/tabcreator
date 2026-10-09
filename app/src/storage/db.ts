@@ -6,7 +6,7 @@
 import { openDB, type IDBPDatabase, type IDBPTransaction, type StoreNames } from 'idb';
 import { AppError } from '../model/errors';
 import { TAKE_FIELD_OWNERS, type Tab, type Take, type TakeWriter } from '../model/types';
-import { audioStore, type AudioStore } from './audio-store';
+import { audioStore, removeTakeFiles, type AudioStore } from './audio-store';
 import { emit, type StorageEvent } from './events';
 import { beginFreeing } from './persistence';
 import {
@@ -343,13 +343,7 @@ export function createTakeDb(options: TakeDbOptions = {}): TakeDb {
       });
       if (existed) emit({ type: 'take-deleted', takeId: id, writer });
       // Files go after the records; a failure leaves an orphan for the start-up scan (AD-15).
-      let removed = true;
-      await audio.deleteAudio(id).catch(() => {
-        removed = false;
-      });
-      await audio.deleteRaw(id).catch(() => {
-        removed = false;
-      });
+      const removed = await removeTakeFiles(audio, id);
       // Space was freed: the status clears once both removals succeeded; the re-check that may
       // also clear it runs on without holding the delete.
       if (existed && freed) void freed(removed);

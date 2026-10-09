@@ -6,12 +6,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { strFromU8, unzipSync } from 'fflate';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BUDGETS_PATH } from '../../build/budgets';
 import { LIBRARY500_COUNT, library500Notes, library500Title } from '../../src/dev/library500';
 import { validateBackup } from '../../src/storage/restore';
 import { DEFAULT_PREFS } from '../../src/storage/prefs';
 import {
   appendSummary,
-  BUDGETS_PATH,
   limitLabel,
   markdownTable,
   PerfConfigError,

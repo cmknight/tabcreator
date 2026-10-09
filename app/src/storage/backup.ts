@@ -11,6 +11,7 @@ import { extensionFor, preferredExtensions } from '../model/audio-format';
 import { AppError, type AppErrorCode } from '../model/errors';
 import type { Tab, Take } from '../model/types';
 import { DB_VERSION } from './migrations';
+import { MANIFEST_NAME } from './paths';
 
 /** The backup format this build writes; a new shape bumps it. */
 export const BACKUP_FORMAT = 1;
@@ -118,9 +119,6 @@ export interface BackupResult {
   /** How many takes were left out because they are still recording (unfinished). */
   skippedUnfinished: number;
 }
-
-/** The zip entry name of the manifest. */
-export const MANIFEST_NAME = 'manifest.json';
 
 const byCreatedAt = (a: Take, b: Take) =>
   a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;

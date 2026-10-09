@@ -480,5 +480,29 @@ async function readInflated(
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
+/**
+ * Removes every file of a take, best effort, after its record changed (AD-15): its compressed
+ * audio, then its raw file, the second tried whatever the first did. A failure is never thrown:
+ * it goes to `onFailure` (naming the file) and leaves an orphan for the start-up scan. Resolves
+ * whether both removals succeeded. Shared by db.ts `deleteTake` and library-session's Delete
+ * audio.
+ */
+export async function removeTakeFiles(
+  store: Pick<AudioStore, 'deleteAudio' | 'deleteRaw'>,
+  takeId: string,
+  onFailure?: (file: 'compressed' | 'raw', err: unknown) => void,
+): Promise<boolean> {
+  let removed = true;
+  await store.deleteAudio(takeId).catch((err: unknown) => {
+    removed = false;
+    onFailure?.('compressed', err);
+  });
+  await store.deleteRaw(takeId).catch((err: unknown) => {
+    removed = false;
+    onFailure?.('raw', err);
+  });
+  return removed;
+}
+
 /** The app-wide audio store; its OPFS worker is created on the first raw write. */
 export const audioStore: AudioStore = createAudioStore();

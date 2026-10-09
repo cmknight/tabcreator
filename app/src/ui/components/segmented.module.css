@@ -1,0 +1,39 @@
+/* A segmented control (DESIGN.md): joined toggle buttons in a group, each `buttons.secondary`
+   with `buttons.toggle` (the pressed style while `aria-pressed` is true). Shared by the Tab
+   screen's speed control (PlaybackControls) and Settings' Theme control. Import it after
+   buttons.module.css: `.segment`'s padding overrides `.secondary`'s by source order. */
+.segments {
+  display: inline-flex;
+}
+
+.segment {
+  padding-inline: var(--space-3);
+}
+
+/* The pressed segment's border sits above its neighbours'; a focused segment's ring above all. */
+.segment[aria-pressed='true'] {
+  position: relative;
+}
+
+.segment:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+.segment:not(:first-child) {
+  margin-inline-start: -1px;
+}
+
+.segment:not(:first-child, :last-child) {
+  border-radius: 0;
+}
+
+.segment:first-child:not(:last-child) {
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+}
+
+.segment:last-child:not(:first-child) {
+  border-start-start-radius: 0;
+  border-end-start-radius: 0;
+}

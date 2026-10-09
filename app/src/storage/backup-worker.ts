@@ -30,8 +30,8 @@
 // of memory. It writes nothing; restore.ts validates what comes back.
 
 import { inflateSync, strToU8, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
-import { backupEntryNames, MANIFEST_NAME } from './backup';
-import { AUDIO_DIR } from './paths';
+import { backupEntryNames } from './backup';
+import { AUDIO_DIR, MANIFEST_NAME } from './paths';
 import type {
   BackupEntry,
   BackupRequest,
@@ -86,7 +86,11 @@ const errorMessage = (err: unknown): string =>
 /** A file or directory that is not there (or is the wrong kind). */
 const isGone = (err: unknown) => ['NotFoundError', 'TypeMismatchError'].includes(errorName(err));
 
-/** An error with the code it is reported with. */
+/**
+ * An error with the code it is reported with. Not an AppError on purpose: it never leaves the
+ * worker (its code and message are posted as a plain `error` reply, and backup.ts rebuilds the
+ * AppError on the main thread), so the worker chunk needs nothing from model/errors.ts.
+ */
 class Failure extends Error {
   constructor(
     readonly code: 'storage-failed',

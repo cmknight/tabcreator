@@ -33,7 +33,9 @@ vi.mock('../../src/ui/a11y/announcer', async (importOriginal) => ({
   announce: vi.fn(),
 }));
 vi.mock('../../src/ui/reload-or-explain', () => ({ reloadOrExplain: vi.fn() }));
-vi.mock('../../src/ui/platform', () => ({
+vi.mock('../../src/ui/platform', async (importOriginal) => ({
+  // The real platform name (the shortcuts' Mac check reads it).
+  platformName: (await importOriginal<typeof import('../../src/ui/platform')>()).platformName,
   copyText: vi.fn(() => Promise.resolve()),
   downloadText: vi.fn(),
   isWindowsPlatform: vi.fn(() => false),

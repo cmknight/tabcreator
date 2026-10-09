@@ -18,6 +18,7 @@ import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { posix, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
+import { BUDGETS_PATH, readBudgetsJson } from './budgets.ts';
 
 /** The budgets this script reads from `budgets.json` (other stories add their own keys). */
 export interface SizeBudgets {
@@ -44,11 +45,8 @@ export class SizeBudgetError extends Error {
   override name = 'SizeBudgetError';
 }
 
-/** The app directory (`app/`), which holds `budgets.json` and the default `dist/`. */
+/** The app directory (`app/`), which holds the default `dist/` (`budgets.json` is `./budgets.ts`'s). */
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url));
-
-/** The default budgets file, `app/budgets.json`. */
-export const BUDGETS_PATH = resolve(APP_DIR, 'budgets.json');
 
 /** A file's bytes; any read error (missing, EISDIR, EACCES, ...) as a SizeBudgetError naming it. */
 function readFile(path: string): Buffer {
@@ -61,15 +59,7 @@ function readFile(path: string): Buffer {
 
 /** Reads and validates the keys this script uses from a budgets file. */
 export function readBudgets(path: string): SizeBudgets {
-  let json: unknown;
-  try {
-    json = JSON.parse(readFileSync(path, 'utf8'));
-  } catch (e) {
-    throw new SizeBudgetError(`cannot read budgets ${path}: ${(e as Error).message}`);
-  }
-  if (!json || typeof json !== 'object' || Array.isArray(json))
-    throw new SizeBudgetError(`budgets ${path}: not a JSON object`);
-  const record = json as Record<string, unknown>;
+  const record = readBudgetsJson(path, (message) => new SizeBudgetError(message));
   const read = (key: keyof SizeBudgets): number => {
     const value = record[key];
     if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)
@@ -126,7 +116,7 @@ export function scriptSources(html: string): string[] {
   return sources;
 }
 
-/** The initial JS files: the entry, its static imports (transitively), then `index.html`'s other scripts. */
+/** The initial JS files, as defined in this file's header, entry first. */
 function initialJsFiles(distDir: string): string[] {
   const manifestPath = resolve(distDir, '.vite/manifest.json');
   if (!existsSync(manifestPath))
